@@ -1,0 +1,133 @@
+# Builds the two downloadable installers and, on a version tag, attaches them to a GitHub Release.
+#
+#   git tag v0.2 && git push origin v0.2        (tags must be vN.N or vN.N.N; anything else fails the version job)
+#     -> OpenLoops-Setup.exe and OpenLoops.dmg on https://github.com/<repo>/releases/tag/v0.2
+#     -> stable links: https://github.com/<repo>/releases/latest/download/OpenLoops-Setup.exe
+#                      https://github.com/<repo>/releases/latest/download/OpenLoops.dmg
+#
+# "Run workflow" on any branch builds both installers as workflow artifacts (no release); those
+# installers download that branch when run - handy for testing a branch on a clean machine. Branch
+# names must use only letters, digits, . _ / - for the Mac build to accept them.
+#
+# The installers do not contain the app. They download source from GitHub when the person runs
+# them. Tagged builds are given the commit the tag pointed to, so an installer someone downloaded
+# keeps installing exactly that code even if the tag is later moved; branch builds follow the branch.
+name: Build installers
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Read-only by default; only the release job, which uploads the assets, gets write access.
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      ref: ${{ steps.v.outputs.ref }}
+      label: ${{ steps.v.outputs.label }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # The number after "v" lands in Info.plist CFBundleShortVersionString (dotted integers, max 3)
+            # and Inno's AppVersion; build-dmg.sh also refuses anything outside letters, digits, . _ / -.
+            # Fail here, on the cheap job, rather than minutes later on the Mac runner.
+            if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]]; then
+              echo "::error::Release tags must look like v0.2 or v0.2.1 - got '$GITHUB_REF_NAME'. Delete the tag and re-tag."
+              exit 1
+            fi
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"          # pinned: the commit the tag points to
+          else
+            # Branch builds template the branch name into the Mac installer (packaging/macos/build-dmg.sh).
+            if [[ ! "$GITHUB_REF_NAME" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "::error::Branch name '$GITHUB_REF_NAME' may only contain letters, digits, . _ / - to be built into an installer."
+              exit 1
+            fi
+            echo "version=0.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"     # branch build follows the branch
+          fi
+          echo "label=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build OpenLoops-Setup.exe
+        shell: pwsh
+        # Outputs come in through env, never interpolated into the script: a ref name can contain $().
+        env:
+          APP_VERSION: ${{ needs.version.outputs.version }}
+          APP_REF: ${{ needs.version.outputs.ref }}
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=$env:APP_VERSION" `
+            "/DRef=$env:APP_REF" `
+            packaging\windows\OpenLoops.iss
+          Get-Item dist\OpenLoops-Setup.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OpenLoops-Setup.exe
+          path: dist/OpenLoops-Setup.exe
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build OpenLoops.dmg
+        env:
+          APP_VERSION: ${{ needs.version.outputs.version }}
+          APP_REF: ${{ needs.version.outputs.ref }}
+          APP_LABEL: ${{ needs.version.outputs.label }}
+        run: |
+          bash packaging/macos/build-dmg.sh \
+            --ref "$APP_REF" \
+            --label "$APP_LABEL" \
+            --version "$APP_VERSION" \
+            --out dist/OpenLoops.dmg
+          ls -l dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OpenLoops.dmg
+          path: dist/OpenLoops.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # creates the release and uploads the two installers
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/OpenLoops-Setup.exe dist/OpenLoops.dmg --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/OpenLoops-Setup.exe dist/OpenLoops.dmg \
+              --repo "$GITHUB_REPOSITORY" --title "Open Loops $GITHUB_REF_NAME" --generate-notes
+          fi

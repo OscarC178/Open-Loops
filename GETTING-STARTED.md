@@ -11,9 +11,12 @@ computer only. It never sends anything unless you turn that on.
 
 ## 1. Install
 
-1. Open the **OpenLoops** folder you were given.
-2. **Windows**: double-click **Open Loops.cmd**. **Mac**: double-click **Open Loops.command** — if you see a
-   warning that it's from an unidentified developer, right-click it and choose **Open** instead, just this once.
+1. Download the installer for your computer: **[Windows](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops-Setup.exe)** or **[Mac](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops.dmg)**.
+   (Or, if you were given an **OpenLoops** folder instead, open it and double-click **Open Loops.cmd** on
+   Windows or **Open Loops.command** on Mac.)
+2. Run it. **Windows** may warn that the publisher is unknown — click **More info**, then **Run anyway**.
+   **Mac** may say it can't check the app — right-click it and choose **Open** (macOS 15 and later: close the
+   warning, then **System Settings → Privacy & Security → Open Anyway**), just this once.
 3. A window appears. It may ask for your first name. Let it finish (1–3 minutes). It installs two
    helper programs if you don't have them (Python and Claude), puts **Open Loops.app** (the orange loop)
    on your Desktop and in the Dock, and opens the app.

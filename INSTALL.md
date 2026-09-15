@@ -54,6 +54,25 @@ always drafts even if *Send* is ticked; Slack sending still works.
 
 ## 2. Install (10 minutes)
 
+**Easiest: the one-file installer.** [OpenLoops-Setup.exe](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops-Setup.exe) (Windows) or [OpenLoops.dmg](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops.dmg) (Mac),
+from the [Releases page](https://github.com/OscarC178/Open-Loops/releases). Neither contains the app: when run,
+it downloads the release's source from this repo and hands over to the same `setup.ps1` / `install.sh` described
+below, so the two routes end up identical.
+
+- **Windows**: `OpenLoops-Setup.exe` is an Inno Setup wizard. It asks for the first name and refresh time, downloads
+  the repo zip, unpacks it to `%LOCALAPPDATA%\Programs\Open Loops` (the per-user Programs folder - no admin rights,
+  and the app can write its `config.json` / `state.json` there, which `C:\Program Files` would not allow), runs
+  `setup.ps1 -Dest … -NoLaunch`, and registers an uninstaller in *Apps & features*. Uninstalling removes the program
+  files, the icons and the scheduled task, and asks before deleting `config.json` / `state.json`.
+  SmartScreen shows "unknown publisher" because the exe is not code-signed: *More info → Run anyway*.
+- **Mac**: `OpenLoops.dmg` holds **Install Open Loops.app**. Double-clicked, it opens Terminal, downloads the repo zip
+  and runs `install.sh`. It is not signed with a Developer ID, so macOS 14 and earlier need *right-click → Open*, and
+  macOS 15+ needs *System Settings → Privacy & Security → Open Anyway* once.
+
+Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see `packaging/README.md`).
+
+**Alternative: the zip.**
+
 1. Unzip anywhere (Downloads is fine).
    - **Windows**: double-click **`Open Loops.cmd`**. It runs `setup.ps1`, which installs Python / Claude Code via
      winget if missing, copies the app to `%LOCALAPPDATA%\OpenLoops` (no admin rights), asks for the user's first

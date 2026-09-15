@@ -42,16 +42,29 @@ No Node? `python -m openloops.app --port 8766`, `python -m openloops.app --stop 
 Never start a checkout on 8765: the launcher would find the installed copy already there and open *its* page, and
 you would be reading old code while thinking you were on new.
 
+## Two branches
+
+- **`develop`** is where work happens. Every branch starts from it and every PR lands on it. It is GitHub's
+  default branch.
+- **`main`** is the live app. It only moves when the owner fast-forwards it from `develop`
+  (`git checkout main && git merge --ff-only develop && git push`), which is what the installed copy and the
+  GitHub Pages site (`docs/` on `main`) pick up. Tag a release from `main` (`git tag v0.2 && git push origin v0.2`)
+  to publish new installers; each release's installers fetch the commit that tag points to, and a locally built
+  installer fetches `main` unless told otherwise.
+- Fallen behind? Rebase onto `develop`, never `main` (`git fetch origin develop && git rebase origin/develop`),
+  then `npm test`. Park uncommitted work on a temporary branch rather than `git stash`: the stash is shared
+  across worktrees.
+
 ## Making a change
 
-1. Branch from `main`.
+1. Branch from `develop`.
 2. Edit. The page (`openloops/index.html`) is served fresh on every load, so reload the browser to see it. Python
    changes need `npm run dev` again (it restarts the dev session for you); job scripts (`refresh`, `chase`, `daylog`, `roadmap`, …) are
    separate processes and pick up edits on their next run without a restart.
 3. `npm test`. Tests build a throwaway install on a spare port and never call Slack, Gmail or Claude.
 4. Keep the docs honest: `INSTALL.md` for users, `README.md` for the folder map, the spec under `docs/superpowers/specs/`
    for design decisions.
-5. Open a PR against `main`. Describe what a user sees differently, not just what changed.
+5. Open a PR against `develop`. Describe what a user sees differently, not just what changed.
 
 ## Where things live
 
