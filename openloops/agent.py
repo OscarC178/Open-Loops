@@ -23,7 +23,11 @@ _GROK_JOB_HOME = ROOT / "state" / "grok-home"
 _CLAUDE_SLACK = {"plugin": "mcp__plugin_slack_slack__slack_{}", "connector": "mcp__claude_ai_Slack__slack_{}"}
 # Miro likewise: the Miro plugin (plugin:miro:miro) or the claude.ai Miro connector. Jobs allow the
 # whole server either way; doctor.py stores which one is connected as config "miro_source".
-_CLAUDE_MIRO = {"plugin": "mcp__plugin_miro_miro", "connector": "mcp__claude_ai_Miro"}
+_CLAUDE_MIRO = {"plugin": "mcp__plugin_miro_miro", "connector": "mcp__claude_ai_Miro",
+                "server": "mcp__miro"}
+# "server" = a user-added HTTP server literally named "miro":
+#   claude mcp add --scope user --transport http miro https://mcp.miro.com/
+# (--transport http is required: `claude mcp add` defaults to stdio and would try to run the URL.)
 _FMT = {
     "claude": {"slack": _CLAUDE_SLACK["plugin"], "gmail": "mcp__claude_ai_Gmail__{}", "miro": _CLAUDE_MIRO["plugin"]},
     "grok":   {"slack": "slack__slack_{}",       "gmail": "gmail__{}",                "miro": "miro"},
@@ -52,7 +56,7 @@ def slack_source():
 
 
 def miro_source():
-    """Claude only: "plugin" (default) or "connector" - see _CLAUDE_MIRO."""
+    """Claude only: "plugin" (default), "connector" or "server" - see _CLAUDE_MIRO."""
     v = (_cfg().get("miro_source") or "plugin").strip().lower()
     return v if v in _CLAUDE_MIRO else "plugin"
 

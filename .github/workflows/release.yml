@@ -1,62 +1,171 @@
-# Builds the two downloadable installers and, on a version tag, attaches them to a GitHub Release.
+# Builds the two downloadable installers and publishes them as a GitHub Release. Nobody tags by hand:
 #
-#   git tag v0.2 && git push origin v0.2        (tags must be vN.N or vN.N.N; anything else fails the version job)
-#     -> OpenLoops-Setup.exe and OpenLoops.dmg on https://github.com/<repo>/releases/tag/v0.2
+#   merge to develop -> tags v0.1.1-dev.<run>, builds, publishes a *pre-release* test build
+#                       (https://github.com/<repo>/releases?q=prerelease%3Atrue). Pre-releases never
+#                       become "latest", so the download links below keep pointing at main.
+#   merge to main    -> tags v0.1.1 (patch bump over the newest stable tag; label the PR
+#                       `release:minor` or `release:major` to bump v0.2.0 / v1.0.0 instead),
+#                       builds, publishes the release.
 #     -> stable links: https://github.com/<repo>/releases/latest/download/OpenLoops-Setup.exe
 #                      https://github.com/<repo>/releases/latest/download/OpenLoops.dmg
+#   "[skip release]" anywhere in the merge commit message skips the tag and the build.
 #
-# "Run workflow" on any branch builds both installers as workflow artifacts (no release); those
-# installers download that branch when run - handy for testing a branch on a clean machine. Branch
-# names must use only letters, digits, . _ / - for the Mac build to accept them.
+# Pushing a tag by hand (v0.2, v0.2.1 or v0.2.1-dev.3) still builds and releases that tag. "Run workflow"
+# on any branch builds both installers as workflow artifacts (no tag, no release); those installers
+# download that branch when run - handy for testing a branch on a clean machine. Branch names must use
+# only letters, digits, . _ / - for the Mac build to accept them.
 #
 # The installers do not contain the app. They download source from GitHub when the person runs
 # them. Tagged builds are given the commit the tag pointed to, so an installer someone downloaded
 # keeps installing exactly that code even if the tag is later moved; branch builds follow the branch.
+#
+# Tags are created here (in the version job) rather than by a separate tagging workflow because a tag
+# pushed with the workflow token does not fire other workflows' `on: push: tags` triggers.
 name: Build installers
 
 on:
   push:
+    branches: [main, develop]
     tags: ["v*"]
   workflow_dispatch:
 
-# Read-only by default; only the release job, which uploads the assets, gets write access.
+# One run per branch or tag at a time, so two quick merges cannot both compute the same next version.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Read-only by default; only the version job (creates the tag) and the release job (uploads the assets)
+# get write access.
 permissions:
   contents: read
 
 jobs:
   version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # creates the release tag on branch pushes
+      pull-requests: read
     outputs:
+      skip: ${{ steps.v.outputs.skip }}
+      release: ${{ steps.v.outputs.release }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
       ref: ${{ steps.v.outputs.ref }}
       label: ${{ steps.v.outputs.label }}
     steps:
       - id: v
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            # The number after "v" lands in Info.plist CFBundleShortVersionString (dotted integers, max 3)
-            # and Inno's AppVersion; build-dmg.sh also refuses anything outside letters, digits, . _ / -.
-            # Fail here, on the cheap job, rather than minutes later on the Mac runner.
-            if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]]; then
-              echo "::error::Release tags must look like v0.2 or v0.2.1 - got '$GITHUB_REF_NAME'. Delete the tag and re-tag."
+          set -euo pipefail
+          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; echo "  $1=$2"; }
+          # Every value is validated here, on the cheap job, rather than minutes later on the Mac runner:
+          # the version lands in Info.plist CFBundleShortVersionString and Inno's AppVersion, and
+          # build-dmg.sh refuses anything outside letters, digits, . _ / -.
+          # No leading zeroes: bump() does Bash arithmetic on the parts, and "08" is an invalid octal number
+          # there, so one hand-pushed v0.1.08 would break every automatic release after it.
+          NUM='(0|[1-9][0-9]*)'
+          STABLE_RE="^v${NUM}\.${NUM}(\.${NUM})?$"
+          ANY_RE="^v${NUM}\.${NUM}(\.${NUM}(-dev\.${NUM})?)?$"
+
+          # Newest stable tag (v0.1 counts as 0.1.0), or 0.0.0 when there is none yet.
+          newest_stable() {
+            gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
+              | sed 's|^refs/tags/||' | { grep -E "$STABLE_RE" || true; } | sort -V | tail -n 1
+          }
+          # bump <v0.1.2|empty> <patch|minor|major> -> 0.1.3 style number
+          bump() {
+            local v="${1#v}" level="$2" maj min pat
+            IFS=. read -r maj min pat <<< "${v:-0.0.0}"
+            pat="${pat:-0}"
+            case "$level" in
+              major) echo "$((maj + 1)).0.0" ;;
+              minor) echo "$maj.$((min + 1)).0" ;;
+              *)     echo "$maj.$min.$((pat + 1))" ;;
+            esac
+          }
+          # Creates the tag at the pushed commit through the API (no checkout needed).
+          create_tag() {
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$1" -f sha="$GITHUB_SHA" > /dev/null
+            echo "Created tag $1 at $GITHUB_SHA"
+          }
+
+          out skip false
+          out release false
+          out prerelease false
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="$GITHUB_REF_NAME"
+            if [[ ! "$TAG" =~ $ANY_RE ]]; then
+              echo "::error::Release tags must look like v0.2, v0.2.1 or v0.2.1-dev.3 - got '$TAG'. Delete the tag and re-tag."
               exit 1
             fi
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"          # pinned: the commit the tag points to
-          else
+            out tag "$TAG"
+            out version "${TAG#v}"
+            out ref "$GITHUB_SHA"           # pinned: the commit the tag points to
+            out label "$TAG"
+            out release true
+            [[ "$TAG" == *-dev.* ]] && out prerelease true
+            exit 0
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             # Branch builds template the branch name into the Mac installer (packaging/macos/build-dmg.sh).
             if [[ ! "$GITHUB_REF_NAME" =~ ^[A-Za-z0-9._/-]+$ ]]; then
               echo "::error::Branch name '$GITHUB_REF_NAME' may only contain letters, digits, . _ / - to be built into an installer."
               exit 1
             fi
-            echo "version=0.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"     # branch build follows the branch
+            out tag ""
+            out version "0.0.${GITHUB_RUN_NUMBER}"
+            out ref "$GITHUB_REF_NAME"      # branch build follows the branch
+            out label "$GITHUB_REF_NAME"
+            exit 0
           fi
-          echo "label=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+          # Push to main or develop: work out the next version and tag it.
+          if [[ "$HEAD_MESSAGE" == *"[skip release]"* ]]; then
+            echo "Commit message says [skip release] - not tagging or building."
+            out skip true
+            exit 0
+          fi
+          # Already tagged (someone tagged by hand, or a re-run): the tag push built it; nothing to do.
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate \
+                       --jq ".[] | select(.object.sha == \"$GITHUB_SHA\") | .ref" | sed 's|^refs/tags/||' | head -n 1)
+          if [[ -n "$EXISTING" ]]; then
+            echo "Commit $GITHUB_SHA is already tagged $EXISTING - not tagging or building again."
+            out skip true
+            exit 0
+          fi
+
+          LAST=$(newest_stable)
+          echo "Newest stable tag: ${LAST:-none}"
+          if [[ "$GITHUB_REF_NAME" == main ]]; then
+            LEVEL=patch
+            # Labels on the PR(s) this commit came from decide the bump size.
+            LABELS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[].labels[].name' || true)
+            grep -qx 'release:minor' <<< "$LABELS" && LEVEL=minor
+            grep -qx 'release:major' <<< "$LABELS" && LEVEL=major
+            TAG="v$(bump "$LAST" "$LEVEL")"
+            echo "main: $LEVEL bump -> $TAG"
+          else
+            # develop: next patch number plus a per-run suffix, published as a pre-release.
+            TAG="v$(bump "$LAST" patch)-dev.${GITHUB_RUN_NUMBER}"
+            out prerelease true
+            echo "develop: test build -> $TAG"
+          fi
+          create_tag "$TAG"
+          out tag "$TAG"
+          out version "${TAG#v}"
+          out ref "$GITHUB_SHA"
+          out label "$TAG"
+          out release true
 
   windows:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     runs-on: windows-latest
     permissions:
       contents: read
@@ -84,6 +193,7 @@ jobs:
 
   macos:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     runs-on: macos-latest
     permissions:
       contents: read
@@ -110,8 +220,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos]
+    if: needs.version.outputs.release == 'true'
+    needs: [version, windows, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # creates the release and uploads the two installers
@@ -123,11 +233,21 @@ jobs:
       - name: Create or update the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          COMMIT: ${{ needs.version.outputs.ref }}
         run: |
+          set -euo pipefail
           ls -l dist
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/OpenLoops-Setup.exe dist/OpenLoops.dmg --clobber --repo "$GITHUB_REPOSITORY"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/OpenLoops-Setup.exe dist/OpenLoops.dmg --clobber --repo "$GITHUB_REPOSITORY"
+            exit 0
+          fi
+          if [[ "$PRERELEASE" == true ]]; then
+            gh release create "$TAG" dist/OpenLoops-Setup.exe dist/OpenLoops.dmg \
+              --repo "$GITHUB_REPOSITORY" --prerelease --title "Open Loops $TAG (develop test build)" \
+              --notes "Test build of \`develop\` at $COMMIT. Not the live app: install it to try what is coming next. The installers download exactly this commit."
           else
-            gh release create "$GITHUB_REF_NAME" dist/OpenLoops-Setup.exe dist/OpenLoops.dmg \
-              --repo "$GITHUB_REPOSITORY" --title "Open Loops $GITHUB_REF_NAME" --generate-notes
+            gh release create "$TAG" dist/OpenLoops-Setup.exe dist/OpenLoops.dmg \
+              --repo "$GITHUB_REPOSITORY" --title "Open Loops $TAG" --generate-notes
           fi

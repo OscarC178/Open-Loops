@@ -23,27 +23,29 @@ install logic and means the installer rarely needs rebuilding.
 
 ## Releasing
 
-Work lands on `develop`; `main` is the live app. Fast-forward `main` when you want the installed copies and the
-installers to pick the new code up, then tag it:
+Nobody tags by hand. `.github/workflows/release.yml` runs on every push to `develop` and `main`, picks the next
+version number, creates the tag, builds both installers (Inno Setup is preinstalled on GitHub's Windows runners)
+with that version and `Ref=<the pushed commit>`, and publishes a GitHub Release. The installer therefore downloads
+exactly the code that was released even if the tag is later moved.
 
-```
-git checkout main && git merge --ff-only develop && git push
-git tag v0.2
-git push origin v0.2
-```
+| Merge to | Tag | Release | Who it is for |
+|---|---|---|---|
+| `develop` | `v0.1.1-dev.<run number>` | **pre-release** "Open Loops v0.1.1-dev.42 (develop test build)" | you and testers: https://github.com/OscarC178/Open-Loops/releases?q=prerelease%3Atrue |
+| `main` | `v0.1.1` (patch bump over the newest stable tag) | release "Open Loops v0.1.1" | everyone, via the stable links below |
 
-Tags must be `vN.N` or `vN.N.N` (the number becomes the Mac bundle version and the Windows AppVersion);
-the workflow's first job rejects anything else before the build runners start.
-
-`.github/workflows/release.yml` builds both installers (Inno Setup is preinstalled on GitHub's Windows runners)
-with `AppVersion=0.2` and `Ref=<the commit v0.2 pointed to>`, so the installer downloads exactly the code that
-was tagged even if the tag is later moved, and attaches them to a GitHub Release. Stable links, always the
-newest release:
+Pre-releases never count as *latest*, so the links on the website keep pointing at `main`:
 
 - https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops-Setup.exe
 - https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops.dmg
 
-*Run workflow* on any branch builds both as workflow artifacts that download that branch when run (no release).
+Bigger bumps: put the label `release:minor` (v0.1.x → v0.2.0) or `release:major` (→ v1.0.0) on the PR you merge
+into `main`. Put `[skip release]` in the merge commit message to merge without tagging or building. A commit
+that already carries a `v*` tag is not tagged or built again, so pushing a tag by hand (`v0.2`, `v0.2.1` or
+`v0.2.1-dev.3`, nothing else) still works and builds that tag; use plain (lightweight) tags for that, an
+annotated tag is not recognised by the already-tagged check.
+
+*Run workflow* on any branch builds both as workflow artifacts that download that branch when run (no tag,
+no release).
 
 ## Building and testing locally
 

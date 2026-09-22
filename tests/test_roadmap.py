@@ -57,6 +57,26 @@ try:
         raise SystemExit("FAIL: build without confirm did not exit")
     except SystemExit as e:
         check(e.code == 2, "build without --confirm exits 2 before any agent call")
+
+    # build: a created card is posted even when flagged (e.g. placed outside the frame - a card exists,
+    # re-adding would duplicate it); a row the agent could not create at all stays pending
+    class _P:  # what agent.run returns, minus everything build ignores
+        returncode, stderr = 0, ""
+        def __init__(self, out): self.stdout = out
+    d = roadmap.stage(rows=[{"id": "r1", "title": "A"}, {"id": "r2", "title": "B"}])
+    d["preview"] = {"at": "x", "plan": [{"id": "r1", "action": "add", "why": ""}, {"id": "r2", "action": "add", "why": ""}]}
+    roadmap.save(d)
+    roadmap.agent.run = lambda *a, **k: _P('<<<ROADMAP>>>{"created": [{"id": "r1", "item_id": "m1", "url": "", "note": "placed outside the frame"}, '
+                                           '{"id": "r2", "item_id": "", "url": "", "note": "tool failed"}]}<<<END>>>')
+    try:
+        roadmap.main("build", confirm=True)
+        raise SystemExit("FAIL: partial build did not exit 1")
+    except SystemExit as e:
+        check(e.code == 1, "build exits 1 when a row was not created")
+    rows = {r["id"]: r for r in roadmap.load()["rows"]}
+    check(rows["r1"]["posted_id"] == "m1" and rows["r2"]["posted_id"] is None, "flagged-but-created row is posted; uncreated row stays pending")
+    check(roadmap.CREATED.read_text(encoding="utf-8").strip() == "m1  A", "created log has only the real card")
+    check(roadmap.load()["preview"]["plan"] == [], "build clears the preview plan")
     roadmap.configured = lambda: {"board": "", "frame": "", "ok": False}
     try:
         roadmap.main("read")

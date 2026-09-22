@@ -637,7 +637,7 @@ function renderRmRows(){const rows=rmRows(),b=(RM.store.board||{}),lanes=b.lanes
   <input value="${esc(r.owners)}" placeholder="who" onchange="rmSet(${i},'owners',this.value)" ${d}>
   <select onchange="rmSet(${i},'lane',this.value)" ${d}>${opt(lanes,r.lane)}</select>
   <select onchange="rmSet(${i},'column',this.value)" ${d}>${opt(cols,r.column)}</select>
-  <select onchange="rmSet(${i},'state',this.value)" ${d}>${['not_started','in_progress','done'].map(s=>`<option value="${s}" ${s===r.state?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
+  <select onchange="rmSet(${i},'state',this.value)" ${d}>${['not_started','in_progress','blocked','done'].map(s=>`<option value="${s}" ${s===r.state?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
   <div>${r.posted_id?'<span class="pill" title="already on the board">✓</span>':`<button onclick="rmDrop(${i})" title="remove row">×</button>`}</div></div>`}).join(''):'<div class="empty">no rows yet — paste notes and press Read these notes, or add a row by hand</div>'}
 function rmSet(i,f,v){rmRows()[i][f]=v;rmDisarm();rmSave()}
 function rmDrop(i){rmRows().splice(i,1);rmRendered='';paintRm();rmDisarm();rmSave()}

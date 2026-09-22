@@ -59,7 +59,8 @@ def claude_steps(steps):
                 gmail = True
             if "miro" in low and up:
                 miro = True
-                src = "plugin" if "plugin" in low else "connector"
+                # plugin:miro:miro / claude.ai Miro / a user-added server literally named "miro"
+                src = "plugin" if "plugin" in low else ("connector" if "claude.ai" in low else "server")
                 if miro_source != "plugin":
                     miro_source = src
     steps.append({"id": "slack", "ok": slack, "optional": True, "title": "Slack connected (optional)",
@@ -67,7 +68,8 @@ def claude_steps(steps):
     steps.append({"id": "gmail", "ok": gmail, "optional": True, "title": "Gmail connected (optional)",
                   "fix": "Click 'Open Claude', type /mcp and press Enter, choose 'claude.ai Gmail', then Authenticate and approve in the browser." if not gmail else ""})
     steps.append({"id": "miro", "ok": miro, "optional": True, "title": "Miro connected (optional, for the Roadmap card)",
-                  "fix": "Click 'Open Claude', type /mcp and press Enter, choose Miro (the claude.ai connector, or the miro plugin if installed), Authenticate and approve in the browser." if not miro else ""})
+                  "fix": "Click 'Open Claude', type /mcp and press Enter, choose Miro (the claude.ai connector, or the miro plugin if installed), Authenticate and approve in the browser. "
+                         "No Miro entry? Add the server first: claude mcp add --scope user --transport http miro https://mcp.miro.com/ - then /mcp to authenticate." if not miro else ""})
     return email, slack, gmail, slack_source, miro, miro_source
 
 

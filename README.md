@@ -4,7 +4,7 @@
 
 <p align="center">The list of things you asked people for — and the things they are waiting on you for — on your computer, in your words.</p>
 
-<p align="center"><img src="docs/home.png" alt="Open Loops home: Needs me, Waiting on them, add a note"></p>
+<p align="center"><a href="https://oscarc178.github.io/Open-Loops/brag.mp4"><img src="docs/brag.jpg" alt="Open Loops home: Needs me, Waiting on them. Click to watch the 39-second tour."></a><br><sub>▶ <a href="https://oscarc178.github.io/Open-Loops/brag.mp4">Watch the 39-second tour</a> (with sound) · <a href="docs/brag.mp4">or open it on GitHub</a></sub></p>
 
 Runs locally. Uses the Claude or Grok subscription you already have. No API key costs.
 

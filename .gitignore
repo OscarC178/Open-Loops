@@ -73,6 +73,9 @@ venv/
 node_modules/
 package-lock.json
 
+# ---- /brag launch-video working files (the finished video lives in docs/) ---
+brag-output/
+
 # ---- Generic: built installers -----------------------------------------------
 dist/
 *.dmg
