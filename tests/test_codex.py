@@ -58,10 +58,16 @@ for said, want_text, want_seen in (
     got = agent.codex_tools_seen(said)
     check(got == (want_text, want_seen), f"the TOOLS_SEEN line is read and removed: {said!r} -> {got!r}")
 allowed = {"gmail.search_emails", "slack.slack_read_channel"}
-check(agent.codex_seen_services({"mcp__codex_apps__gmail__search_emails"}, allowed) == {"gmail"}
-      and agent.codex_seen_services({"slack_read_channel", "gmail.create_draft"}, allowed) == {"slack"}
+check(agent.codex_seen_services({"mcp__codex_apps__gmail_search_emails"}, allowed) == {"gmail"}
+      and agent.codex_seen_services({"slack.slack_read_channel", "gmail.create_draft"}, allowed) == {"slack"}
       and agent.codex_seen_services(set(), allowed) == set(),
-      "a seen tool counts for its connector in any spelling, and only if the job allows it")
+      "a seen tool counts for its connector by its exact name or its in-session name, and only if the job allows it")
+check(agent.codex_seen_services({"other.search_emails", "mcp__codex_apps__outlook_search_emails", "x_search_emails",
+                                 "mcp__codex_apps__gmail__search_emails"}, allowed) == set(),
+      "another connector's tool, or a near-miss spelling, is not evidence")
+check(agent.codex_seen_services({"search_emails"}, allowed) == set()
+      and agent.codex_seen_services({"search_emails"}, {"gmail.search_emails", "gmail.read_email_thread"}) == {"gmail"},
+      "a bare name counts only when the job lists one connector's tools")
 check(agent.login_cmd("login") == [[agent.cli(), "login"]] and agent.login_cmd("gmail") is None, "Sign in runs codex login")
 check(agent.connect_steps() == ("login", "gmail", "slack") and agent.connect_url("gmail") == "https://chatgpt.com/apps"
       and agent.connect_url("login") is None, "Gmail / Slack buttons open ChatGPT's apps page; no Miro or plugin step")

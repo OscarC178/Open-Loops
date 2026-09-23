@@ -216,18 +216,21 @@ def codex_tools_seen(text):
 
 
 def codex_seen_services(seen, allowed):
-    """The connectors ("gmail", "slack") at least one of whose allowed tools the run says it saw. A name counts in any
-    of the spellings a model may use: "gmail.search_emails", "search_emails", "mcp__codex_apps__gmail_search_emails" (the name inside the session)."""
-    norm = lambda x: re.sub(r"[^a-z0-9]+", "_", str(x).lower()).strip("_")
-    toks = {norm(t) for t in seen or ()}
-    out = set()
-    for q in allowed:
-        if "." in q:
-            svc, short = q.split(".", 1)
-            ns = norm(short)
-            if any(t == ns or t.endswith("_" + ns) for t in toks):
-                out.add(svc)
-    return out
+    """The connectors ("gmail", "slack") at least one of whose allowed tools the run says it saw. Only exact aliases of
+    the job's own allowed tools count, built from that list: "gmail.search_emails", its name inside the session
+    "mcp__codex_apps__gmail_search_emails", and the bare "search_emails" only when the job lists tools of one connector
+    alone (with two, a bare name could be either). Anything else ("other.search_emails", "..._outlook_search_emails") is
+    ignored, i.e. not evidence that the session had the tool."""
+    dotted = [q for q in allowed if "." in q]
+    one_connector = len({q.split(".", 1)[0] for q in dotted}) == 1
+    alias = {}
+    for q in dotted:
+        svc, short = q.split(".", 1)
+        alias[q.lower()] = svc
+        alias["mcp__codex_apps__" + q.replace(".", "_").lower()] = svc
+        if one_connector:
+            alias[short.lower()] = svc
+    return {alias[t.lower()] for t in seen or () if t.lower() in alias}
 
 
 _LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota", re.I)
