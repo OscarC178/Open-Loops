@@ -137,6 +137,11 @@ def _ended(name, rc, log, ai="Claude", failure=None):
 
 
 jobs_lock = threading.Lock()  # two requests at once (two tabs, a double click) must still start one run
+# Jobs claimed but whose process is not registered in procs yet. The reaper never shuts the server down while one is
+# here, and a "Quit now" that lands in that gap sets cut_jobs, which run_job checks when it registers the process: the
+# process is stopped then, so a job cannot outlive the server that started it.
+starting = set()
+cut_jobs = False
 
 
 def _run_failure(name, run_id, rc):
@@ -158,9 +163,10 @@ def _run_failure(name, run_id, rc):
 
 def run_job(name, extra=None):
     with jobs_lock:  # claimed before the process starts: a second start in the meantime sees "running" and does nothing
-        if jobs[name]["running"]:
+        if jobs[name]["running"] or quit_requested:  # nothing new starts once Open Loops is closing
             return False
         jobs[name] = {"running": True, "log": ""}
+        starting.add(name)
     args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
     ai = _ai_now()  # the AI this run uses, for its sentence if it fails; the job gets the same name (OPENLOOPS_AI)
     try:  # started here, not in the thread: a job the page sees as running always has a process /api/quit can stop
@@ -169,9 +175,16 @@ def run_job(name, extra=None):
         p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
                              encoding="utf-8", errors="replace", start_new_session=sys.platform != "win32")
     except Exception as e:  # no interpreter, no permission: say so in the job log rather than hang as "running"
-        jobs[name] = _ended(name, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
+        with jobs_lock:
+            starting.discard(name)
+            jobs[name] = _ended(name, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
         return False
-    procs[name] = p
+    with jobs_lock:  # registered under the lock the quit takes: a "Quit now" is either before this (cut_jobs) or sees p
+        procs[name] = p
+        starting.discard(name)
+        late = cut_jobs
+    if late:  # "Quit now" arrived while this process was starting: stop it too
+        kill_tree(p)
 
     def go():
         try:
@@ -619,14 +632,18 @@ class H(BaseHTTPRequestHandler):
             bye_at = time.time()
             return self._json({"ok": True, "pages": len(pages)})
         if self.path == "/api/quit":  # Settings button or `python -m openloops.app --stop [--now]`
-            global quit_requested, quit_now
-            quit_requested = True
+            global quit_requested, quit_now, cut_jobs
+            with jobs_lock:  # the same lock run_job registers its process under: no job slips between the two
+                quit_requested = True
+                busy = [k for k, j in jobs.items() if j["running"]]
+                cut = bool(body.get("now") and busy)
+                if cut:
+                    cut_jobs = True  # a job still starting stops itself as soon as its process is registered
+                to_stop = [procs[k] for k in busy if k in procs] if cut else []
             stop_connects()  # a sign-in still waiting in the browser is not worth holding a quit for
-            busy = [k for k, j in jobs.items() if j["running"]]
-            if body.get("now") and busy:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
-                for k in busy:
-                    if k in procs:
-                        kill_tree(procs[k])
+            if cut:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
+                for p in to_stop:
+                    kill_tree(p)
                 self._json({"ok": True, "after_jobs": [], "cut_short": busy})
                 quit_now = True  # only once the answer is out: the reaper stops the server the moment it sees this
                 return
@@ -962,6 +979,8 @@ if __name__ == "__main__":
             for pid, seen in list(pages.items()):
                 if now - seen > PAGE_STALE_S:
                     pages.pop(pid, None)
+            if starting:
+                continue  # a job's process is being started: never shut down before it is registered (and stoppable)
             if any(j["running"] for j in jobs.values()) and not quit_now:
                 continue  # never pull the rug from under a refresh/chase; check again once it is done
             if any(c.get("running") for c in connects.values()) and not quit_requested:
@@ -978,3 +997,8 @@ if __name__ == "__main__":
         pass
     finally:
         stop_connects()
+        if quit_now:  # "Quit now": whatever job process is still registered (one registered late included) goes too
+            with jobs_lock:
+                late_procs = list(procs.values())
+            for p in late_procs:
+                kill_tree(p)
