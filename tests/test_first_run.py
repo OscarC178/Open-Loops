@@ -591,6 +591,17 @@ def real_clis_ran(tmp):
     return [f"{k}={v}" for k, v in found.items() if not (v and str(v).startswith(str(tmp / "bin")))]
 
 
+def quit_app(port, srv, secs=10):
+    """Quit an app through /api/quit, as its Settings button does: that stops any setup step it is running (its fake
+    `claude mcp login` included), which terminating the server may not. Best effort; stop() still follows."""
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/quit", data=b"{}", method="POST",
+                                                      headers={"Content-Type": "application/json"}), timeout=5).read()
+        srv.wait(secs)
+    except Exception:
+        pass
+
+
 def setup_js(port, scenario, tmp, session=None):
     """The served page's Set-up view with everything it calls (stage machine, tick, checklist rows and buttons,
     connectStep, doctor), a stub DOM whose elements keep what they are given, talking to the real app on `port`."""
@@ -962,14 +973,15 @@ if NODE:
         out = setup_js(port, """
  await boot();await tick();
  await realFetch(BASE+'/api/connect/slack',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // pressed on the page before the reload
- for(let i=0;i<150;i++){const s=await (await realFetch(BASE+'/api/connect/slack')).json();if(s.url)break;await sleep(100)}
+ let link='';for(let i=0;i<150&&!link;i++){const s=await (await realFetch(BASE+'/api/connect/slack')).json();link=s.url||'';if(!link)await sleep(100)}
+ if(!link)throw new Error('the fake sign-in never printed its link');
  FAKE['/api/connect/gmail']=[{},{running:false,rc:1,url:'',step:'gmail',last:'Login cancelled'}];   // ran and finished before the reload
  out.before={slack:CONN.slack||null,open:$('#allow_dlg').open};
- const real=connectReattach;let n=0;connectReattach=()=>{n++;return real()};
- await loop();await until(()=>CONN.slack&&CONN.slack.busy,10000);   // the page load's first pass
+ const real=connectReattach;let n=0,sweep=null;connectReattach=()=>{n++;return sweep=real()};   // sweep: the latest one, to wait for
+ await loop();await until(()=>CONN.slack&&CONN.slack.busy,10000);out.first=await sweep;   // the page load's first pass, answered in full
  out.after={n,busy:CONN.slack.busy,url:CONN.slack.url,msg:CONN.slack.msg,gmail:CONN.gmail===undefined,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,
   link:$('#allow_link').innerHTML,rows:$('#su_src_rows').innerHTML,state:$('#su_src_state').textContent};
- await loop();out.n2=n;offline=true;await loop();await sleep(300);out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
+ await loop();out.n2=n;offline=true;await loop();await until(()=>n===2,5000);out.second=await sweep;out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
  allowDismiss();out.dismissed={open:$('#allow_dlg').open,busy:CONN.slack.busy,started:CONN.slack.started};out.SS=SS;
  // review of #58: an answer that arrives while the AI is being changed, or after it changed, restores nothing
  const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login'};
@@ -993,8 +1005,8 @@ if NODE:
               "...the Slack row shows the spinner and the fallback link instead of its button; the card says in progress")
         check(a["open"] and a["step"] == "slack" and "example.invalid/authorize" in a["link"],
               "...and the Allow pop-up is back, with the sign-in link in case no tab opened")
-        check(a["gmail"], "a step that finished before the reload leaves its row as the check paints it (no spinner, no old message)")
-        check(out["n2"] == 1 and out["n3"] == 2 and out["picked"] == 1,
+        check(out["first"] is True and a["gmail"], "a step that finished before the reload leaves its row as the check paints it (no spinner, no old message)")
+        check(out["n2"] == 1 and out["n3"] == 2 and out["second"] is True and out["picked"] == 1,
               f"later polls do not ask again; once the offline banner clears they do, without watching the same run twice ({out['n2']}, {out['n3']}, {out['picked']})")
         ds = out["dismissed"]
         gone = json.loads(out["SS"].get("ol.allowDismissed") or "{}")
@@ -1018,6 +1030,7 @@ if NODE:
         check(d["ok"] is True and not d["open"] and "spin" not in d["rows"],
               "clicking Allow finishes it as if pressed on this page: the row turns green")
     finally:
+        quit_app(port, srv)   # a failure part-way can leave the fake sign-in waiting: the app's own quit stops it
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
 
