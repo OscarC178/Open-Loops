@@ -183,13 +183,20 @@ check(banner_css, "the stylesheet hides #banner by default (so '' would hide it)
 JS = "\n".join([
     "const els={};const $=s=>els[s]||(els[s]={style:{},textContent:''});const CON=[];function clog(m){CON.push(String(m))}",
     "const PAGE='t';", grab("const MSG="), grab("const fill="), grab("function msg("), api_src,
-    "let lastBanner='';", grab("function banner("), grab("const appDown="),
+    "let lastBanner='';", grab("function banner("), grab("const appDown="), grab("const errSaid="),
     """(async()=>{const out={};
  global.fetch=async()=>{throw new TypeError('Failed to fetch')};
  try{await api('/api/state')}catch(e){appDown(e)}out.offline={display:$('#banner').style.display,text:$('#banner').textContent};
  global.fetch=async()=>({ok:false,status:500,text:async()=>'{"error":"boom"}'});
  try{await api('/api/state')}catch(e){out.status=e.status;out.body=e.body;appDown(e)}out.error={display:$('#banner').style.display,text:$('#banner').textContent};
  banner('');out.cleared=$('#banner').style.display;
+ global.fetch=async()=>({ok:false,status:400,text:async()=>'{"ok":false,"error":"Open Loops cannot create a file in that folder. Check the folder exists.","detail":"[Errno 13] Permission denied: /Users/x/notes"}'});
+ try{await api('/api/standing/create',{})}catch(e){out.said400=errSaid(e)}
+ global.fetch=async()=>({ok:false,status:409,text:async()=>'{"started":false,"error":"updated","said":"Open Loops was updated."}'});
+ try{await api('/api/connect/install',{})}catch(e){out.said409=errSaid(e)}
+ global.fetch=async()=>{throw new TypeError('Failed to fetch')};
+ try{await api('/api/config',{})}catch(e){out.saidOff=errSaid(e)}
+ out.console=CON.join(' | ');
  console.log(JSON.stringify(out))})();"""])
 r = subprocess.run([node, "-e", JS], capture_output=True, text=True, timeout=30)
 check(r.returncode == 0, f"node ran the page's own functions ({r.stderr.strip()[-300:]})")
@@ -200,4 +207,9 @@ check(out["offline"] == {"display": "block", "text": want},
 check(out["error"]["display"] == "block" and out["error"]["text"] == say("server_error") and out["status"] == 500
       and out["body"] == {"error": "boom"}, "app answered with an error: a different sentence, and the error carries status and body")
 check(out["cleared"] == "none", "banner('') hides it again")
+check(out["said400"] == "Open Loops cannot create a file in that folder. Check the folder exists." and out["said409"] == "Open Loops was updated."
+      and out["saidOff"] == want, "a failed request shows the app's own sentence (said, else error), or 'not running' when offline")
+check("Permission denied" in out["console"] and "-> 400" in out["console"], "...while the status, raw body and detail go to the Console only")
+check("e.message.replace(/^.*-> " not in html and html.count("errSaid(e)") >= 11,
+      "no toast or message shows a raw response body any more (Settings save, to-do file, dialogs, card actions)")
 show("PASS")

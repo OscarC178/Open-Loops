@@ -366,6 +366,9 @@ let lastBanner='';
 function banner(msg){const b=$('#banner');if(!msg){b.style.display='none';lastBanner='';return}b.style.display='block';b.textContent=msg;if(msg!==lastBanner){lastBanner=msg;clog('banner: '+msg)}}   // 'block': '' would fall back to the stylesheet's display:none
 // The page could not talk to the app: not running at all (the usual case: it quits when its last tab closes), or it answered with an error
 const appDown=e=>banner(e&&e.offline?msg('server_offline'):msg('server_error'));
+// The one sentence to show for a failed request: the app's own plain words (its "said", else its "error"), never the raw
+// body, status or "detail" - api() has already put those in the Console.
+const errSaid=e=>(e&&e.body&&(e.body.said||e.body.error))||(e&&e.offline?msg('server_offline'):msg('server_error'));
 // ---------- console: what the page did, timestamped, kept across reloads, one Copy away from a bug report ----------
 const CON_KEY='ol.console',CON_MAX=400;let CON=[];
 try{CON=JSON.parse(localStorage.getItem(CON_KEY)||'[]');if(!Array.isArray(CON))CON=[]}catch(e){CON=[]}
@@ -395,7 +398,7 @@ function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textCo
 function dlgClose(){dlgOk=null;$('#dlg').close()}
 function dlgVal(id){const e=$('#dlg_'+id);return e?e.value.trim():''}
 async function dlgSubmit(ev){ev.preventDefault();if(!dlgOk)return false;const b=$('#dlg_ok');b.disabled=true;$('#dlg_err').textContent='';
- try{const r=await dlgOk();if(r!==false)dlgClose()}catch(e){$('#dlg_err').textContent=e.message.replace(/^.*-> \d+ /,'')}b.disabled=false;return false}
+ try{const r=await dlgOk();if(r!==false)dlgClose()}catch(e){$('#dlg_err').textContent=errSaid(e)}b.disabled=false;return false}
 // Enter in a single-line dialog field submits; textarea keeps Enter for new lines
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.tagName==='INPUT'&&e.target.closest('#dlg')){e.preventDefault();$('#dlg_ok').click()}});
 
@@ -653,7 +656,7 @@ const UNDO={done:'reopen',reopen:'done',snooze:'unsnooze',unsnooze:'snooze',auto
 const SAID={priority:'Priority set',done:'Marked done',reopen:'Reopened',snooze:'Snoozed',unsnooze:'Unsnoozed',note:'Note saved',add_link:'Link added',drop_link:'Link removed',auto_off:'Auto-chase off for',auto_on:'Auto-chase on for'};
 async function act(id,action,extra,quiet){const l=S&&S.loops.find(x=>x.id===id);const card=document.querySelector(`.acts[data-id="${CSS.escape(id)}"]`);if(card)card.closest('.card').classList.add('busy');
  try{await api('/api/action',Object.assign({id,action},extra||{}))}
- catch(e){if(card)card.closest('.card').classList.remove('busy');toast((SAID[action]||action)+' failed: '+e.message.replace(/^.*-> \d+ /,''),{err:true});throw e}
+ catch(e){if(card)card.closest('.card').classList.remove('busy');toast((SAID[action]||action)+' failed: '+errSaid(e),{err:true});throw e}
  await loadState();renderLists();
  if(quiet)return;const undoTo=UNDO[action];
  if(undoTo)toast(`${SAID[action]}: ${who(l)}${action==='snooze'?' until '+extra.until:''}`,{undo:()=>act(id,undoTo,undoTo==='snooze'?{until:l.snooze_until||extra.until}:null,true)});
@@ -678,7 +681,7 @@ function paintPins(){const el=$('#pins');if(!el||!C)return;
  el.innerHTML=pins().map(p=>`<a class="chip" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(p.url)}"><span>${esc(p.label||host(p.url))}</span>${miroBoard(p.url)?`<button type="button" aria-label="view here" title="view here, read-only" onclick="event.preventDefault();pinEmbed('${esc(p.url)}')">▣</button>`:''}<button type="button" aria-label="unpin" title="unpin" onclick="event.preventDefault();pinDrop('${esc(p.url)}')">×</button></a>`).join('')||'<span class="sub">nothing pinned yet - boards and docs you open every day</span>';
  if(pinShown&&!pins().some(p=>p.url===pinShown))pinEmbed(null)}
 async function savePins(list,msg,undo){const prev=pins();try{await api('/api/config',{pinned_links:list});await loadCfg();paintPins();if(msg)toast(msg,undo?{undo:()=>savePins(prev)}:undefined)}
- catch(e){toast('Pins not saved: '+e.message.replace(/^.*-> \d+ /,''),{err:true});throw e}}
+ catch(e){toast('Pins not saved: '+errSaid(e),{err:true});throw e}}
 function pinAdd(){dlgOpen({title:'Pin a board or document',sub:'Shown at the top of Home. Miro boards can also open here, read-only.',ok:'Pin',
  fields:[{id:'url',label:'Link',type:'url',placeholder:'https://miro.com/app/board/…  or any document link'},{id:'label',label:'Label (optional)',placeholder:'e.g. Planning board'}],
  onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw new Error('the link must start with http:// or https://');if(pins().some(p=>p.url===u))throw new Error('already pinned');
@@ -698,11 +701,11 @@ async function addNeed(){const owner=$('#need_who').value.trim(),ask=$('#need_as
  if(!ask){$('#need_ask').focus();toast('Type what needs doing first',{err:true});return}
  try{const r=await api('/api/action',{action:'add',owner,ask,notes});$('#need_who').value='';$('#need_ask').value='';$('#need_notes').value='';banner('');await loadState();renderLists();
   toast('Added to Needs me: '+(owner?owner+' — ':'')+ask,{undo:()=>act(r.id,'done',null,true),undoLabel:'Undo'})}
- catch(e){toast('Could not add that: '+e.message.replace(/^.*-> \d+ /,''),{err:true})}}
+ catch(e){toast('Could not add that: '+errSaid(e),{err:true})}}
 const counts=()=>{const L=(S&&S.loops)||[],live=l=>l.status!=='done'&&!(l.snooze_until&&l.snooze_until>TODAY);return{needs:L.filter(l=>l.status==='needs_me'&&live(l)).length,wait:L.filter(l=>l.status==='waiting'&&live(l)).length,ids:new Set(L.map(l=>l.id))}};
 let before=null;   // counts when a refresh started, so the finish toast can say what changed
 async function refresh(slackOnly){if(running('refresh'))return;before=counts();
- try{await api('/api/refresh',{slack_only:!!slackOnly})}catch(e){toast('Refresh could not start: '+e.message.replace(/^.*-> \d+ /,''),{err:true});return}
+ try{await api('/api/refresh',{slack_only:!!slackOnly})}catch(e){toast('Refresh could not start: '+errSaid(e),{err:true});return}
  J.refresh={running:true};tick()}
 
 // ---------- day log: instant digest from state, prose on demand ----------
@@ -715,7 +718,7 @@ function paintDaylog(){const d=DL;if(!d||!$('#dl_digest'))return;const g=d.diges
  const has=!!d.text;$('#dl_text').style.display=has?'':'none';$('#dl_text').textContent=d.text||'';$('#dl_copy').style.display=has?'':'none';$('#dl_open').style.display=d.has_page?'':'none';
  const b=$('#dl_run');b.disabled=running('daylog');b.textContent=running('daylog')?'Writing…':(has?'Write it again':'Write it up');
  if(running('daylog'))$('#dl_msg').textContent='reading today\'s messages… about a minute';else if($('#dl_msg').textContent.startsWith('reading'))$('#dl_msg').textContent=''}
-async function writeDaylog(){if(running('daylog'))return;try{await api('/api/daylog',{});J.daylog={running:true};paintDaylog()}catch(e){$('#dl_msg').textContent=e.message}}
+async function writeDaylog(){if(running('daylog'))return;try{await api('/api/daylog',{});J.daylog={running:true};paintDaylog()}catch(e){$('#dl_msg').textContent=errSaid(e)}}
 async function copyDaylog(){try{await navigator.clipboard.writeText((DL&&DL.text)||'');$('#dl_msg').textContent='copied'}catch(e){$('#dl_msg').textContent='copy failed — select the text instead'}}
 
 // ---------- roadmap: stage rows here, add cards to the Miro frame through Claude ----------
@@ -752,8 +755,8 @@ function rmSet(i,f,v){rmRows()[i][f]=v;rmDisarm();rmSave()}
 function rmDrop(i){rmRows().splice(i,1);rmRendered='';paintRm();rmDisarm();rmSave()}
 function rmAddRow(){const b=RM.store.board||{};rmRows().push({title:'',detail:'',owners:'',lane:(b.lanes||[])[0]||'',column:(b.columns||[])[0]||'',state:'not_started',source:'hand'});rmRendered='';paintRm();rmDisarm();rmSave()}
 function rmTouch(){rmDisarm();rmSave()}
-function rmSave(){clearTimeout(rmSaveT);rmSaveT=setTimeout(async()=>{try{RM.store.pasted=$('#rm_paste').value;rmRendered=JSON.stringify(RM.store);await api('/api/roadmap',{mode:'save',rows:rmRows(),pasted:RM.store.pasted})}catch(e){$('#rm_msg').textContent='not saved: '+e.message}},500)}
-async function rmJob(mode,extra){try{$('#rm_msg').textContent='';const r=await api('/api/roadmap',Object.assign({mode},extra||{}));if(r.started===false){$('#rm_msg').textContent='already running';return}J.roadmap={running:true};paintRm()}catch(e){$('#rm_msg').textContent=e.message.replace(/^.*-> \d+ /,'')}}
+function rmSave(){clearTimeout(rmSaveT);rmSaveT=setTimeout(async()=>{try{RM.store.pasted=$('#rm_paste').value;rmRendered=JSON.stringify(RM.store);await api('/api/roadmap',{mode:'save',rows:rmRows(),pasted:RM.store.pasted})}catch(e){$('#rm_msg').textContent='not saved: '+errSaid(e)}},500)}
+async function rmJob(mode,extra){try{$('#rm_msg').textContent='';const r=await api('/api/roadmap',Object.assign({mode},extra||{}));if(r.started===false){$('#rm_msg').textContent='already running';return}J.roadmap={running:true};paintRm()}catch(e){$('#rm_msg').textContent=errSaid(e)}}
 function rmRead(){rmJob('read')}
 function rmParse(){const p=$('#rm_paste').value.trim();if(!p){$('#rm_msg').textContent='paste some notes first';return}clearTimeout(rmSaveT);rmJob('parse',{pasted:p})}
 function rmPreview(){rmDisarm();rmJob('preview')}
@@ -769,7 +772,7 @@ async function rmPost(){if(!rmArmed){rmArmed=true;$('#rm_armmsg').textContent='p
 async function chase(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  if(willSend(l)&&!confirm(`This will SEND a chase to ${l.owner} right now, in your name, without you seeing it first.\n\nSend?`))return;
  if(!willSend(l)&&l.last_chase_at&&!confirm(`You already ${l.last_chase_mode==='send'?'sent':'drafted'} a chase for ${l.owner} on ${fmt(l.last_chase_at)}.\nIf a draft is still unsent this will create a second one.\n\nDraft another?`))return;
- try{await api('/api/chase',{id})}catch(e){toast('Chase could not start: '+e.message.replace(/^.*-> \d+ /,''),{err:true});return}
+ try{await api('/api/chase',{id})}catch(e){toast('Chase could not start: '+errSaid(e),{err:true});return}
  J.chase={running:true};toast((willSend(l)?'Sending a chase to ':'Drafting a chase for ')+l.owner+'… about a minute');tick()}
 
 // ---------- settings form: painted only on first open and after Save, never by background ticks ----------
@@ -795,13 +798,13 @@ async function saveCfg(){try{const tone={};document.querySelectorAll('[data-tone
   exclude_people:$('#cfg_excl_people').value.split(',').map(s=>s.trim()).filter(Boolean),exclude_topics:$('#cfg_excl_topics').value.split(',').map(s=>s.trim()).filter(Boolean)};
  const mk=(MODELS[body.agent]||{}).keys;if(mk){body[mk[0]]=$('#cfg_model').value;body[mk[1]]=$('#cfg_effort').value}   // only the chosen AI's own keys
  const agentChanged=(C.agent||'claude')!==body.agent,slackChanged=!!C.use_slack!==body.use_slack;
- await api('/api/config',body);dirty=false;$('#cfg_save').textContent='Save settings';$('#cfg_msg').textContent='saved '+new Date().toLocaleTimeString()+(agentChanged||slackChanged?' - re-checking connections on Home':'');toast('Settings saved');await loadCfg();paintForm();if(agentChanged||slackChanged)doctor(true);await loadRm();tick()}catch(e){$('#cfg_msg').textContent='not saved: '+e.message;toast('Settings not saved: '+e.message.replace(/^.*-> \d+ /,''),{err:true})}}
+ await api('/api/config',body);dirty=false;$('#cfg_save').textContent='Save settings';$('#cfg_msg').textContent='saved '+new Date().toLocaleTimeString()+(agentChanged||slackChanged?' - re-checking connections on Home':'');toast('Settings saved');await loadCfg();paintForm();if(agentChanged||slackChanged)doctor(true);await loadRm();tick()}catch(e){$('#cfg_msg').textContent='not saved: '+errSaid(e);toast('Settings not saved: '+errSaid(e),{err:true})}}
 // the to-do file box: say whether the file is there and how many open items it has; offer to create it
 async function standingStatus(){try{const typed=$('#cfg_standing').value.trim();const s=await api('/api/standing'+(typed?'?path='+encodeURIComponent(typed):''));const el=$('#standing_status'),b=$('#standing_create');
   if(s.exists){el.textContent=`found: ${s.path} · ${s.open} open item${s.open===1?'':'s'}`;b.style.display='none'}
   else{el.textContent=$('#cfg_standing').value.trim()?`no file at ${s.path} yet`:'not set - nothing is read';b.style.display=$('#cfg_standing').value.trim()?'':'none'}}catch(e){}}
 async function standingCreate(){const b=$('#standing_create');b.disabled=true;try{if(dirty){await saveCfg()}const r=await api('/api/standing/create',{});toast('Starter file created: '+r.path+' - open it in your editor and replace the example line');await standingStatus();await loadState();renderLists()}
- catch(e){toast('Could not create it: '+e.message.replace(/^.*-> \d+ /,''),{err:true})}b.disabled=false}
+ catch(e){toast('Could not create it: '+errSaid(e),{err:true})}b.disabled=false}
 // Zeigarnik: an edited-but-unsaved form says so on the sticky bar (Save is always within reach) and on leaving the tab
 let dirty=false;
 function cfgDirty(){if(dirty)return;dirty=true;$('#cfg_save').textContent='Save settings (unsaved changes)';$('#cfg_msg').textContent=''}
