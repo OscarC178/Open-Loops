@@ -431,7 +431,7 @@ const MSG=/*OL_MESSAGES*/{};
 const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
 function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
 // A fetch that throws never reached the app (it is not running); an HTTP error did, and carries its status and body.
-const api=async(u,b)=>{let r;try{r=await fetch(u,b?{method:'POST',headers:{'Content-Type':'application/json','X-OL-Page':PAGE},body:JSON.stringify(b)}:{headers:{'X-OL-Page':PAGE}})}catch(e){clog('no answer from '+u+': '+e.message);e.offline=true;throw e}
+const api=async(u,b,signal)=>{let r;try{r=await fetch(u,Object.assign(b?{method:'POST',headers:{'Content-Type':'application/json','X-OL-Page':PAGE},body:JSON.stringify(b)}:{headers:{'X-OL-Page':PAGE}},signal?{signal}:{}))}catch(e){clog('no answer from '+u+': '+e.message);e.offline=true;throw e}
  if(!r.ok){const t=await r.text(),m=u+' -> '+r.status+' '+t.slice(0,300);clog(m);const e=new Error(m);e.status=r.status;try{e.body=JSON.parse(t)}catch(x){}throw e}return r.json()};
 let lastBanner='';
 function banner(msg){const b=$('#banner');if(!msg){b.style.display='none';lastBanner='';return}b.style.display='block';b.textContent=msg;if(msg!==lastBanner){lastBanner=msg;clog('banner: '+msg)}}   // 'block': '' would fall back to the stylesheet's display:none
@@ -738,9 +738,10 @@ async function chooseAI(a){if(suBusy||!C||(C.agent||'claude')===a||suRunning(Obj
  if(jobRunning()){toast(`Open Loops is still running a job with ${aiName(C.agent||'claude')}. Change your AI once it has finished.`,{err:true});return}
  suBusy='agent';aiSwitching=a;tick();   // "checking" until the new AI's own check is in: nothing starts meanwhile
  try{await api('/api/config',{agent:a});clog('set-up: your AI is now '+a);
+  try{await loadCfg()}catch(e){clog('set-up: settings not re-read, trying once more');try{await loadCfg()}catch(e2){if(C)C.agent=a}}   // saved: C must say so before the check
   for(const k of Object.keys(CONN))delete CONN[k];   // what the other AI's rows said
   if(formPainted){$('#cfg_agent').value=a;agentFormUI(a)}   // Settings shows the same choice, keeping its unsaved edits
-  await loadCfg();await doctor(true)}
+  await doctor(true)}
  catch(e){toast('Your AI was not changed: '+errSaid(e),{err:true})}
  finally{suBusy='';aiSwitching='';tick()}}
 // The AI picker as a radio group: arrow keys (and Home / End) move between the three, Enter or Space picks. Moving does not
@@ -1061,9 +1062,14 @@ async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').tex
 
 // ---------- doctor + the main loop ----------
 let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0;
+// The page's own limit on one check: the app gives up at 240 s (app.py), so a request still open after 250 s never will
+// answer. It then counts as a check that did not run (the Retry box), and whatever waited on it (an AI change) lets go.
+let DOC_DEADLINE_MS=250000;
 async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent=force?'checking…':'';
  const seq=++docSeq;   // only the newest check may repaint: an older one can finish last and would undo a tick
- let r;try{r=await api('/api/doctor',{force:!!force,detect:true})}catch(e){r={all_ok:false,error:e.message,steps:[]}}
+ const ac=typeof AbortController!=='undefined'?new AbortController():null,dl=ac&&setTimeout(()=>ac.abort(),DOC_DEADLINE_MS);
+ let r;try{r=await api('/api/doctor',{force:!!force,detect:true},ac&&ac.signal)}catch(e){r={all_ok:false,error:ac&&ac.signal.aborted?'no answer within '+Math.round(DOC_DEADLINE_MS/1000)+' s':e.message,steps:[]}}
+ finally{clearTimeout(dl)}
  if(seq!==docSeq)return;
  docAt=Date.now();
  if(r.error){docFails++;clog(`connection check did not run (${docFails}x): `+r.error);
@@ -1071,6 +1077,7 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
   else if(docFails===1)toast("Couldn't re-check your connections just now. Trying again in a moment.",{ms:6000});   // otherwise the list stays; one quiet line
   if(docFails<4){clearTimeout(docT);docT=setTimeout(()=>doctor(true).catch(()=>{}),15000)}}   // three quiet retries, then the normal once-a-minute rhythm
  else{if(docFails)clog('connection check ran fine again');docFails=0;DOC=r;
+  if(aiSwitching&&r.agent===aiSwitching&&C&&C.agent===aiSwitching)aiSwitching='';   // the new AI's own answer is in: however the change went, the gate lets go
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
 let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set();

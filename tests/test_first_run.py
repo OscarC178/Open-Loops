@@ -600,9 +600,10 @@ def setup_js(port, scenario, tmp):
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),
         """const CALLS=[];const realFetch=global.fetch;
 const FAKE={};   // url -> [answer to a POST, answer to a GET]: a setup step the app itself never runs (no browser opens)
-const FAIL_ONCE=new Set();
+const FAIL_ONCE=new Set(),FAIL_GET=new Set(),HANG=new Set();
 global.fetch=(u,o)=>{const post=!!(o&&o.method==='POST');if(post)CALLS.push(u+' '+(o.body||''));
- if(FAIL_ONCE.has(u)){FAIL_ONCE.delete(u);return Promise.resolve({ok:false,status:500,text:async()=>'{"error":"boom"}'})}
+ if(FAIL_ONCE.has(u)||(!post&&FAIL_GET.has(u))){FAIL_ONCE.delete(u);FAIL_GET.delete(u);return Promise.resolve({ok:false,status:500,text:async()=>'{"error":"boom"}'})}
+ if(HANG.has(u)){HANG.delete(u);return new Promise((res,rej)=>{const sg=o&&o.signal;if(sg)sg.addEventListener('abort',()=>rej(Object.assign(new Error('aborted'),{name:'AbortError'})))})}   // never answers
  if(FAKE[u])return Promise.resolve({ok:true,status:200,json:async()=>FAKE[u][post?0:1],text:async()=>JSON.stringify(FAKE[u][post?0:1])});
  return realFetch(BASE+u,o)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -831,6 +832,36 @@ if NODE:
         check(f["calls"][:2] == ['/api/config {"agent":"claude"}', '/api/doctor {"force":true,"detect":true}'] and f["error"] and f["all_ok"] is False
               and f["stage"] == "checkfail" and f["shown"] == "" and f["setup"] == "none",
               f"a failed check after the change keeps nothing of Codex's answer: not green, the 'couldn't run the check' box instead ({f['stage']})")
+    finally:
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7i. the AI-change gate always lets go: a check that never answers ends at the page's deadline; a later good answer
+    # for the new AI clears a stray gate; a saved change whose settings re-read fails once is read again
+    tmp = setup_install("openloops-setup-hang-", config={"slack_self_id": "U0TEST12345"})
+    (tmp / "bin" / "slack_ok").write_text("")
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ await boot();await tick();DOC_DEADLINE_MS=800;HANG.add('/api/doctor');const t0=Date.now();
+ const p=chooseAI('codex');await sleep(300);out.during={pend:aiPending(),stage:stage()};await p;
+ out.hung={ms:Date.now()-t0,pend:aiPending(),stage:stage(),error:DOC.error,box:$('#st_checkfail').style.display,said:$('#checkfail_said').textContent,agent:C.agent};
+ DOC_DEADLINE_MS=250000;clearTimeout(docT);aiSwitching='codex';out.stray=aiPending();await doctor(true);out.later={pend:aiPending(),doc:DOC.agent,stage:stage()};
+ FAIL_GET.add('/api/config');let n=CALLS.length;await chooseAI('claude');
+ out.reread={calls:CALLS.slice(n),agent:C.agent,doc:DOC.agent,pend:aiPending(),stage:stage(),toasts:TOASTS.filter(t=>/not changed/.test(t))};""", tmp)
+        check(out["during"] == {"pend": True, "stage": "checking"}, "a check that hangs after an AI change: the page waits in 'checking' meanwhile")
+        h = out["hung"]
+        check(800 <= h["ms"] < 5000 and h["pend"] is False and h["stage"] == "checkfail" and h["box"] == ""
+              and h["said"] == messages.say("check_failed") and "no answer within" in h["error"] and h["agent"] == "codex",
+              f"...at the page's deadline the gate lets go, and the page says the check didn't run, with Retry ({h['ms']} ms, {h['stage']})")
+        check(out["stray"] is True and out["later"] == {"pend": False, "doc": "codex", "stage": "connect"},
+              f"a stray gate is cleared by the next good answer for the new AI ({out['later']})")
+        r = out["reread"]
+        check(r["calls"][:2] == ['/api/config {"agent":"claude"}', '/api/doctor {"force":true,"detect":true}'] and r["agent"] == "claude"
+              and r["doc"] == "claude" and r["pend"] is False and r["toasts"] == [],
+              f"a saved change whose settings re-read fails once is read again, then checked ({r['stage']})")
+        check("DOC_DEADLINE_MS=250000" in page and "app.py" in page[page.index("let DOC_DEADLINE_MS") - 300:page.index("let DOC_DEADLINE_MS")],
+              "the deadline is 250 s, past the app's own 240 s")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
