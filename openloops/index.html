@@ -449,17 +449,20 @@ function paintConnect(){$('#st_connect').style.display='';
 const CONNECT_WAIT_MS=5.5*60000;   // app.py CONNECT_TIMEOUT_S (5 min) plus a little: the page stops watching only once the app has stopped the run
 const INSTALL_WAIT_MS=10.5*60000;  // app.py INSTALL_TIMEOUT_S (10 min) plus a little
 const CONNECT_LABEL={install:'Install',login:'Sign in',slack_install:'Install Slack plugin',slack:'Connect Slack',gmail:'Connect Gmail',miro:'Connect Miro'};
-const CONN={};   // step -> {busy, url, msg}: kept here because the rows are repainted on every tick
+const CONN={};   // step -> {busy, url, msg, agent, command}: kept here because the rows are repainted on every tick
+const AI_NAME={claude:'Claude',grok:'Grok',codex:'Codex'},aiName=a=>AI_NAME[a]||String(a||'the AI');   // the install names its AI from the row, never from cached settings
 const repaint=()=>{if(DOC&&stage()==='connect')paintConnect()};   // never bring the checklist back once the page has moved on
 function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
- const cmd=s.command?`<div class="sub" style="margin-top:4px">${c.busy?'Running':'This runs'}:<code style="display:block;white-space:pre-wrap;word-break:break-all">${esc(s.command)}</code></div>`:'';   // shown before the press: nothing runs unseen
+ const shown=c.busy&&c.command?c.command:s.command;   // while it runs: the command the app captured for this run, not what the row says now
+ const cmd=shown?`<div class="sub" style="margin-top:4px">${c.busy?'Running':'This runs'}:<code style="display:block;white-space:pre-wrap;word-break:break-all">${esc(shown)}</code></div>`:'';   // shown before the press: nothing runs unseen
  if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}</div>${cmd}`;
- const label=s.connect==='install'?'Install '+agentLabel():CONNECT_LABEL[s.connect];
+ const label=s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect];   // the same row identity the press sends
  return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
 async function connectStep(step){
- const inst=step==='install',installing=`Installing ${agentLabel()}. This can take a few minutes.`;
- const row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // the install names the AI and command this row showed
- CONN[step]={busy:true,msg:inst?installing:step==='slack_install'?'Installing the Slack plugin…':'Waiting for you in the browser: click Allow there.'};repaint();
+ const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
+ const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
+ CONN[step]={busy:true,msg:inst?installing(row.agent):step==='slack_install'?'Installing the Slack plugin…':'Waiting for you in the browser: click Allow there.',
+  ...(inst?{agent:row.agent,command:row.command}:{})};repaint();
  try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});clog('setup: '+step+(r.started?' started':' already running'))}
  catch(e){const changed=inst&&/-> 409/.test(e.message);
   CONN[step]={msg:changed?"The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. Press Check again."
@@ -468,10 +471,12 @@ async function connectStep(step){
  while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
   if(s.url&&!CONN[step].url){CONN[step].url=s.url;repaint()}
+  if(inst&&s.running&&(s.agent!==CONN[step].agent||s.command!==CONN[step].command)){Object.assign(CONN[step],{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
   if(inst&&s.running&&s.last&&s.last!==CONN[step].last){CONN[step].last=s.last;clog('install: '+s.last)}   // raw progress: Console only
   if(s.running)continue;
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
-  CONN[step]=s.rc===0?{}:{msg:inst?(s.said||`${agentLabel()}'s installer stopped with an error. Press Install ${agentLabel()} to try again.`)
+  const ai=aiName(CONN[step].agent||row.agent);
+  CONN[step]=s.rc===0?{}:{msg:inst?(s.said||`${ai}'s installer stopped with an error. Press Install ${ai} to try again.`)
    :"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open Claude (advanced).'};
   await doctor(true);return}   // repaints the checklist: the row goes green, or offers its next step
  CONN[step]={msg:inst?'The install is taking longer than 10 minutes, so the app stopped it. Press Install again.':'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}

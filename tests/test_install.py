@@ -96,6 +96,29 @@ row = doctor.install_row("Grok", False)
 check(row["connect"] == "install" and row["command"] == SHOWN("grok") and "xAI" in row["fix"], "Grok selected -> Grok's installer")
 agent.shutil.which, agent._cfg, agent.WIN = _which, _real_cfg, sys.platform == "win32"
 
+# ---------------------------------------------------------------- the page's Install button (node, if installed)
+# Label, progress and the command shown come from the doctor row (and, while running, from the run's status), never from
+# cached settings: a tab whose settings are stale must not say "Install Claude" while it sends Grok's identity.
+_node = shutil.which("node")
+if _node:
+    import re
+    page = (REPO / "openloops" / "index.html").read_text(encoding="utf-8")
+    grab = lambda start: next(l for l in page.splitlines() if l.startswith(start))
+    fn = page[page.index("function connectBtn("):page.index("async function connectStep(")]
+    js = "\n".join([grab("const esc="), grab("const CONNECT_LABEL="), grab("const CONN="), grab("const AI_NAME="), fn, """
+let C={agent:'claude'};const agentLabel=()=>'Claude';   // stale settings: this tab still thinks Claude
+const row={connect:'install',agent:'grok',command:'grok-cmd'};
+const idle=connectBtn(row,true);
+CONN.install={busy:true,msg:'Installing Claude.',agent:'claude',command:'claude-cmd'};
+const busy=connectBtn(row,true);
+console.log(JSON.stringify({idle,busy}));"""])
+    out = json.loads(subprocess.run([_node, "-e", js], capture_output=True, text=True, check=True).stdout)
+    check("Install Grok" in out["idle"] and "Install Claude" not in out["idle"] and "grok-cmd" in out["idle"],
+          "page: the button is labelled from the row's agent, not cached settings")
+    check("claude-cmd" in out["busy"] and "grok-cmd" not in out["busy"], "page: while running it shows the run's own command")
+else:
+    say("skip the page check: node not installed")
+
 # ---------------------------------------------------------------- the runner's Windows branch, in-process
 # Windows installs capture output to the log instead of a console window. The branch is taken here with app.WIN forced
 # on (CREATE_NO_WINDOW is 0 off Windows), so the log header, the capture and the timeout note are checked on any OS.
