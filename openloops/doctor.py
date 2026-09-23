@@ -272,9 +272,27 @@ def slack_name(text):
 
 
 def slack_name_of(text):
-    """The display name in an answer's single "SLACK_NAME: ..." line -> str ("" without exactly one such line)."""
-    got = [ln.split(":", 1)[1] for ln in (text or "").splitlines() if ln.strip().upper().startswith("SLACK_NAME:")]
+    """The display name in an answer's single "SLACK_NAME: ..." line -> str ("" without exactly one such line). Only
+    that line counts (a name never continues on the next one); colons after the first are part of the name."""
+    got = [ln.strip().split(":", 1)[1] for ln in (text or "").splitlines() if ln.strip().upper().startswith("SLACK_NAME:")]
     return slack_name(got[0]) if len(got) == 1 else ""
+
+
+SLACK_ID_LINE = re.compile(r"SLACK_ID:\s*(U[0-9A-Z]{8,})")   # a whole line, nothing before or after the id
+SLACK_ID_BARE = re.compile(r"U[0-9A-Z]{8,}")
+
+
+def slack_id_of(text, bare=False):
+    """The Slack user id in an answer -> str, "" when it does not give exactly one (review of #52). Only a complete
+    "SLACK_ID: U..." line counts, and only when it is the answer's one SLACK_ID line: a "SLACK_ID: NONE", a second
+    SLACK_ID line or an id inside another line (SLACK_NAME: Ops: SLACK_ID: U999...) gives nothing. bare=True (the
+    Claude lookup, for answers in the old one-token shape): an answer that is nothing but one id counts too."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    tagged = [ln for ln in lines if ln.upper().startswith("SLACK_ID:")]
+    if tagged:
+        m = SLACK_ID_LINE.fullmatch(tagged[0]) if len(tagged) == 1 else None
+        return m.group(1) if m else ""
+    return lines[0] if bare and len(lines) == 1 and SLACK_ID_BARE.fullmatch(lines[0]) else ""
 
 
 def parse_probe(text):
@@ -287,8 +305,7 @@ def parse_probe(text):
     for key in ("gmail", "slack", "miro"):
         said = [ln.split(":", 1)[1].strip() for ln in lines if ln.upper().startswith(key.upper() + ":")]
         got[key] = True if said == ["CONNECTED"] else False if said == ["NOT-CONNECTED"] else None
-    ids = [m.group(1) for ln in lines if (m := re.fullmatch(r"SLACK_ID:\s*(U[0-9A-Z]{8,})", ln))]
-    got["slack_id"] = ids[0] if len(ids) == 1 else ""
+    got["slack_id"] = slack_id_of(text)
     got["slack_name"] = slack_name_of(text) if got["slack_id"] else ""
     return got
 
@@ -595,10 +612,10 @@ def main(detect=False, recheck=False):
                       "SLACK_NAME: <their display name as Slack shows it, else their real name> or NONE\n"
                       "The Slack search tool's description states the id; if not, use slack_search_users with query 'me'.",
                       ["slack.search_users"], effort_="low")
-        # the SLACK_ID line first (a name in capitals could look like an id), else any id in the answer, as before
-        m = re.search(r"SLACK_ID:\s*(U[0-9A-Z]{8,})\b", p.stdout or "") or re.search(r"\b(U[0-9A-Z]{8,})\b", p.stdout or "")
-        if m:
-            sid, sname = m.group(1), slack_name_of(p.stdout)
+        # one complete SLACK_ID line (or an answer that is only an id); never an id found inside other text (#52 review)
+        found = slack_id_of(p.stdout, bare=True)
+        if found:
+            sid, sname = found, slack_name_of(p.stdout)
             cfg.update(slack_self_id=sid, slack_self_name=sname)
             _save({"slack_self_id": sid, "slack_self_name": sname})
     # a remembered id is not a tick while the AI is missing or signed out (#49): no job could use it, and the row

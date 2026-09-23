@@ -92,6 +92,22 @@ check(doctor.parse_probe("SLACK: CONNECTED\nSLACK_ID: U01ABCDEF9\nSLACK_NAME: Sa
       and doctor.parse_probe("SLACK: CONNECTED\nSLACK_ID: NONE\nSLACK_NAME: Sam")["slack_name"] == ""
       and doctor.parse_probe("SLACK: CONNECTED\nSLACK_ID: U01ABCDEF9\nSLACK_NAME: NONE")["slack_name"] == "",
       "the Slack display name (#50): read with the id only, cleaned of markup, NONE is no name")
+# review of #52: an id is taken only from one complete SLACK_ID line, never from the name or another line
+sid_of = doctor.slack_id_of
+check(sid_of("SLACK_NAME: Ops: SLACK_ID: U999999999\nSLACK_ID: U0123456789") == "U0123456789",
+      "an id inside the SLACK_NAME line is ignored; the SLACK_ID line wins")
+check(sid_of("SLACK_ID: NONE\nSLACK_NAME: UNKNOWNUSER", bare=True) == "" and doctor.slack_name_of("SLACK_ID: NONE\nSLACK_NAME: UNKNOWNUSER") == "UNKNOWNUSER"
+      and doctor.parse_probe("SLACK: CONNECTED\nSLACK_ID: NONE\nSLACK_NAME: UNKNOWNUSER")["slack_id"] == "",
+      "SLACK_ID: NONE with an id-shaped name: no id")
+check(sid_of("SLACK_ID: U0123456789\nSLACK_ID: U0987654321") == "" and sid_of("SLACK_ID: U0123456789\nSLACK_ID: NONE") == "",
+      "two SLACK_ID lines: no id (one per reply)")
+check(sid_of("SLACK_ID: U0123456789 (probably)") == "" and sid_of("x SLACK_ID: U0123456789") == "", "the line must be the id and nothing else")
+check(sid_of("U0123456789", bare=True) == "U0123456789" and sid_of("U0123456789") == ""
+      and sid_of("Your id is U0123456789", bare=True) == "" and sid_of("U0123456789\nU0987654321", bare=True) == "",
+      "a bare id counts only for the Claude lookup, and only when it is the whole answer")
+check(doctor.slack_name_of("SLACK_NAME: Sam\nLee") == "Sam" and doctor.slack_name_of("SLACK_NAME: Ops: London") == "Ops: London"
+      and doctor.slack_name_of("SLACK_NAME: A\nSLACK_NAME: B") == "" and len(doctor.slack_name_of("SLACK_NAME: " + "x" * 90)) == 60,
+      "SLACK_NAME: one line, colons kept, one line per reply, 60 characters at most")
 check(doctor.parse_probe("I could not tell.") == {"gmail": None, "slack": None, "miro": None, "slack_id": "", "slack_name": ""},
       "an answer without the lines is unknown, not 'not connected'")
 cfg["agent"] = "grok"
