@@ -81,6 +81,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 <button class="primary" id="refresh" onclick="refresh()" title="" style="display:none">Refresh</button>
 <button id="uslack" onclick="refresh(true)" title="quick pass: Slack only, skips email" style="display:none">Update Slack</button>
 <span class="pill" id="gmail" style="display:none"></span>
+<span class="pill" id="isolated_pill" style="display:none" title="An isolated test copy: it reads no to-do file and starts no scan by itself">Test copy: no automatic scans</span>
 <span class="meta" id="meta"></span></header>
 <main>
 <div id="banner"></div>
@@ -119,6 +120,18 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <button class="primary" id="people_save" onclick="savePeople()">Save</button>
    <button id="people_again" onclick="findPeople(true)">Look again</button>
    <span class="sub" id="people_msg"></span>
+  </div>
+ </div>
+
+ <!-- before the first automatic job (who's who, tone, first scan): say what it reads and wait for a press (#38) -->
+ <div id="st_start" class="box" style="display:none">
+  <h3>Start the first scan?</h3>
+  <div class="sub" id="start_said" style="margin-bottom:4px"></div>
+  <div class="sub" id="start_ask"></div>
+  <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+   <button class="primary" id="start_go" onclick="startScan()">Start the first scan</button>
+   <button id="start_later" onclick="notNow()">Not now</button>
+   <span class="sub" id="start_msg"></span>
   </div>
  </div>
 
@@ -417,7 +430,7 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
  if(t==='settings'&&!formPainted)paintForm();if(t==='settings'&&sec){const d=cfgShow(sec);if(d)d.scrollIntoView({behavior:'smooth',block:'start'})}}
 
 // ---------- data ----------
-async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today}
+async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today;ISO=!!r.isolated}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;
@@ -453,14 +466,33 @@ const havePeople=()=>!!(C&&C.people&&Object.keys(C.people).length);
 const haveVoice=()=>!!(V&&V.people&&Object.keys(V.people).length);
 
 // ---------- the stage machine: derived from facts on disk every tick, never from what fired earlier ----------
-function stage(){if(!DOC)return 'checking';if(DOC.error)return 'checkfail';if(!DOC.all_ok)return 'connect';if(!havePeople())return 'people';if(!haveVoice())return 'voice';if(!S.last_refresh)return 'scan';return 'ready'}
+function stage(){if(!DOC)return 'checking';if(DOC.error)return 'checkfail';if(!DOC.all_ok)return 'connect';if(!havePeople())return 'people';if(!haveVoice())return 'voice';if(!scanned())return 'scan';return 'ready'}
+// Which sources the checklist has ticked. The first scan is done once a full refresh ran (last_refresh), or, on an
+// install without Gmail, once the Slack-only pass ran (last_slack_refresh): that pass is then the first scan (#38).
+const srcOk=id=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id===id&&x.ok));
+const scanned=()=>!!(S&&(S.last_refresh||(S.last_slack_refresh&&!srcOk('gmail'))));
+const slackOnlyScan=()=>slackOk()&&!srcOk('gmail');
+const scanSources=()=>srcOk('slack')&&srcOk('gmail')?'Slack and Gmail':srcOk('slack')?'Slack':srcOk('gmail')?'Gmail':'Slack and Gmail';
+const histDays=()=>Math.min(+(C&&C.history_days)||30,365);   // app.py history_days(): how far back the first scan reads
+// Nothing reads your accounts by itself: the first automatic job (who's who, tone, first scan) waits for Start the first
+// scan, remembered for this browser session (#38). An isolated test copy (#36) never goes on by itself, not even after a
+// reload: only a press on this page load starts it.
+const GO_KEY='ol.firstscan';let GO=null,ISO=false,pressed=false;try{GO=sessionStorage.getItem(GO_KEY)}catch(e){}
+const scanAllowed=()=>pressed||(!ISO&&GO==='go');
+const JOB_OF={people:'people',voice:'voice',scan:'refresh'};
+function waitsForGo(st){return !scanAllowed()&&!!JOB_OF[st]&&!kicked[st]&&!running(JOB_OF[st])&&!(st==='people'&&P)}
+function goRemember(v){GO=v;try{v?sessionStorage.setItem(GO_KEY,v):sessionStorage.removeItem(GO_KEY)}catch(e){}}
+function startScan(){pressed=true;goRemember('go');clog('first scan: started by the button');tick()}
+function notNow(){goRemember('later');clog('first scan: not now');tick()}
+function paintStart(){$('#st_start').style.display='';$('#start_said').textContent=msg('first_scan',{days:histDays(),sources:scanSources()});
+ $('#start_ask').textContent=msg('first_scan_ask');$('#start_msg').textContent=GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
 const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone'],['scan','First scan'],['ready','Ready']];
 async function tick(){
  const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step
  $('#steps').innerHTML=st==='ready'?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
- for(const k of ['connect','checkfail','people','auto'])$('#st_'+k).style.display='none';
+ for(const k of ['connect','checkfail','people','auto','start'])$('#st_'+k).style.display='none';
  if(st!==lastStage)clog('stage: '+st);
  // Hick / Prägnanz: while setting up, the page is the setup - the lists, Day log and Roadmap wait until "ready"
  $('#lists').style.display=st==='ready'?'':'none';
@@ -468,6 +500,7 @@ async function tick(){
  lastStage=st;
  if(st==='connect')paintConnect();
  else if(st==='checkfail'){$('#st_checkfail').style.display='';$('#checkfail_said').textContent=msg('check_failed');$('#checkfail_msg').textContent=docFails>1?`tried ${docFails} times`:''}
+ else if(waitsForGo(st))paintStart();   // nothing starts until Start the first scan is pressed
  else if(st==='people'){$('#st_people').style.display='';await stagePeople()}
  else if(st==='voice'||st==='scan'){$('#st_auto').style.display='';await stageAuto(st)}
  renderLists();paintVoice();paintButtons(st);paintSchedule(st)}
@@ -576,8 +609,8 @@ async function stageAuto(st){const t=$('#auto_title'),s=$('#auto_sub'),r=$('#aut
   if(running('voice')){t.innerHTML='<span class="spin"></span>3 · Learning how you write…';s.textContent='Reading your own messages to the people you just picked, so chases sound like you. About a minute.'}
   else{t.textContent='3 · Learning your tone didn\'t finish';s.innerHTML=jobSaid('voice','Learning your tone');r.style.display=''}}
  else{
-  if(!running('refresh')&&!kicked.scan){kicked.scan=true;await api('/api/refresh',{});J.refresh={running:true}}
-  if(running('refresh')){t.innerHTML='<span class="spin"></span>4 · First scan of your Slack and email…';s.textContent=`Reading the last ${(C&&C.history_days)||30} days of your Slack and email for things you've asked people for and things they've asked you. The first pass can take ten minutes.`}
+  if(!running('refresh')&&!kicked.scan){kicked.scan=true;await api('/api/refresh',slackOnlyScan()?{slack_only:true}:{});J.refresh={running:true}}
+  if(running('refresh')){t.innerHTML='<span class="spin"></span>4 · First scan of your '+esc(scanSources())+'…';s.textContent=msg('first_scan',{days:histDays(),sources:scanSources()})}
   else{t.textContent='4 · The first scan didn\'t finish';s.innerHTML=jobSaid('refresh','The first scan');r.style.display=''}}}
 // A setup job that failed: the app's plain sentence (who stopped it, what to do); what it printed is one click away (#25)
 function jobSaid(k,job){const j=J[k]||{},tail=(j.log||'').trim().slice(-400);
@@ -587,9 +620,10 @@ function retryStage(){const st=stage();kicked[st==='voice'?'voice':'scan']=false
 // Update Slack needs Slack connected AND the owner's Slack id known (refresh --slack-only is SKIPPED without it)
 const slackOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='slack'&&x.ok)&&DOC.steps.some(x=>x.id==='self'&&x.ok));
 function paintButtons(st){const rb=$('#refresh');rb.style.display=st==='ready'&&$('#page_home').style.display!=='none'?'':'none';rb.disabled=running('refresh');rb.textContent=running('refresh')?'Refreshing…':'Refresh';   // hidden, not disabled, until setup is done
- const ub=$('#uslack');ub.style.display=st==='ready'&&slackOk()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
+ const ub=$('#uslack');ub.style.display=slackOk()&&$('#page_home').style.display!=='none'?'':'none';   // setup included (#38): the quick pass needs no Who's whoub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
  const vb=$('#voicebtn');vb.disabled=!havePeople()||running('voice');vb.textContent=running('voice')?'Learning…':'Learn my tone';vb.title=havePeople()?'':'save Who\'s who first';
- $('#meta').textContent=S?'last refresh '+(S.last_refresh?fmt(S.last_refresh):'never')+(S.last_slack_refresh?' · slack '+fmt(S.last_slack_refresh):''):'';
+ $('#meta').textContent=S?[S.last_refresh?'last refresh '+fmt(S.last_refresh):S.last_slack_refresh?'':'last refresh never',S.last_slack_refresh?'slack '+fmt(S.last_slack_refresh):''].filter(Boolean).join(' · '):'';
+ $('#isolated_pill').style.display=ISO?'':'none';
  const src=['slack','gmail'].map(id=>DOC&&DOC.steps&&DOC.steps.find(x=>x.id===id)).filter(Boolean);   // only after a check, and not over the checklist that says it already
  $('#gmail').textContent=['checking','checkfail','connect'].includes(st)?'':src.map(x=>(x.id==='slack'?'Slack':'Gmail')+(x.ok?' connected':' not connected')).join(' · ');$('#gmail').style.display=$('#gmail').textContent?'':'none';
  $('#log').textContent=J?Object.keys(J).map(k=>J[k]&&J[k].log?`--- ${k}\n${J[k].log}`:'').filter(Boolean).join('\n'):'';
@@ -813,7 +847,7 @@ function cfgDirty(){if(dirty)return;dirty=true;$('#cfg_save').textContent='Save 
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
 async function saveTime(){$('#time_msg').textContent='updating task…';const r=await api('/api/schedule',{time:$('#cfg_time').value});$('#time_msg').textContent=r.ok?'scheduled weekdays at '+$('#cfg_time').value:'failed: '+(r.error||r.out)}
 async function learnVoice(){if(!havePeople()||running('voice'))return;kicked.voice=true;await api('/api/voice',{});J.voice={running:true};paintButtons(stage())}
-async function startOver(){if(!confirm('Wipe the list, people picks and learned tone, and go back to step 1?\n\nThis cannot be undone.'))return;await api('/api/reset',{});DOC=null;docAt=0;P=null;peopleRendered='';Object.keys(kicked).forEach(k=>delete kicked[k]);formPainted=false;await loadCfg();showTab('home');loop()}
+async function startOver(){if(!confirm('Wipe the list, people picks and learned tone, and go back to step 1?\n\nThis cannot be undone.'))return;await api('/api/reset',{});DOC=null;docAt=0;P=null;peopleRendered='';Object.keys(kicked).forEach(k=>delete kicked[k]);pressed=false;goRemember(null);formPainted=false;await loadCfg();showTab('home');loop()}
 async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').textContent=agentLabel()+' window opened — finish there, then come back. The ticks update by themselves.'}
 
 // ---------- doctor + the main loop ----------

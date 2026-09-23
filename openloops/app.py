@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import messages
 from .paths import PKG, ROOT
-from .store import load_cfg, norm_date, read_json, update_json, write_json
+from .store import isolated, load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
@@ -556,7 +556,8 @@ class H(BaseHTTPRequestHandler):
                 save(s)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
-                        "pages": len(pages), "quitting": quit_requested})  # who is holding the server up
+                        "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
+                        "isolated": isolated()})  # a test copy (#36): the page starts no scan by itself, and says so
         elif self.path == "/api/config":
             self._json({"config": cfg(), "voice": read_json(VOICEF), "people_suggested": read_json(PEOPLEF)})
         elif self.path == "/api/diag":  # what the Console's "Copy all" pastes: enough to debug from a screenshot-free report
@@ -568,6 +569,7 @@ class H(BaseHTTPRequestHandler):
                         "python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
                         "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
+                        "isolated": isolated(),   # #36: a test copy that reads no to-do file and starts no scan by itself
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
                         "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
                         "launchd_err_log": le.read_text(encoding="utf-8", errors="replace")[-2000:] if le.exists() else ""})

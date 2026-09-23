@@ -12,6 +12,7 @@ load_state / update_state
     applies the change to that fresh copy, so anything the page wrote meanwhile - a note,
     a snooze, a vault save, a done click - survives.
 norm_date               zero-pads YYYY-M-D; snooze checks are string comparisons everywhere.
+isolated                whether this copy is an isolated test copy (#36): no to-do file, no automatic scans.
 """
 import json, os, sys, tempfile
 from contextlib import contextmanager
@@ -118,6 +119,18 @@ def load_cfg():
         else:
             out[k] = v
     return out
+
+
+def isolated(cfg=None):
+    """An isolated test copy (#36): `install.sh --isolated` / `setup.ps1 -Isolated` writes "isolated": true into its
+    config.json, and OPENLOOPS_ISOLATED=1 in the environment does the same at run time (the jobs inherit it). Such a
+    copy reads no to-do file, and the page starts no scan by itself: only a press of Start the first scan does."""
+    if str(os.environ.get("OPENLOOPS_ISOLATED") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return (cfg if cfg is not None else read_json(CONFIG, {}) or {}).get("isolated") is True
+    except AttributeError:  # a config.json that is not a JSON object is not a record of anything
+        return False
 
 
 def load_state():

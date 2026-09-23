@@ -33,7 +33,11 @@ def _cfg():
 
 def standing_path(cfg=None):
     """The file, from "standing_file" (a file path), else "vault_path" (a folder or a file), else None:
-    with both blank there is no to-do file. A folder means <folder>/02-Research/standing-items.md."""
+    with both blank there is no to-do file. A folder means <folder>/02-Research/standing-items.md.
+    An isolated test copy (store.isolated, #36) has no to-do file whatever is set: nothing is read or written back."""
+    from .store import isolated
+    if isolated():
+        return None
     cfg = cfg if cfg is not None else _cfg()
     p = (cfg.get("standing_file") or cfg.get("vault_path") or "").strip()
     if not p:
