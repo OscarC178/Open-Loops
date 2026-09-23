@@ -34,8 +34,8 @@ SLACK_TOOLS = ["slack.read_channel", "slack.read_thread", "slack.search_public_a
 
 PROMPT = """UNATTENDED RUN - nobody can answer questions. Do not ask any. Output only what is requested.
 
-{mode_note}You maintain {name}'s "open loops": requests they made to a named person that have not yet
-been actioned.{slack_note} Today is {today}.
+{mode_note}You maintain {name}'s "open loops": requests they made to a named person, and requests people
+made of them, that have not yet been actioned.{slack_note} Today is {today}.
 
 ## Existing open loops (JSON)
 {loops}
@@ -74,8 +74,8 @@ Reply with ONLY a JSON object between the markers, nothing else:
 <<<OPENLOOPS>>>
 {{
   "new_loops": [{{"id": "<owner-slug>-<topic-slug>", "owner": "...", "owner_email": "... or null",
-                  "ask": "one line", "channel": "slack|email", "thread": "DM <name> <channel id> | #channel | email subject",
-                  "link": "slack://channel?team=&id=<id> or gmail search url", "asked_at": "ISO datetime",
+                  "ask": "one line", "channel": "slack|email", "thread": "DM <name> <channel id> <ask ts> | #<channel> <channel id> <thread ts> <ask ts> | email subject",
+                  "link": "Slack message permalink or gmail search url", "asked_at": "ISO datetime",
                   "status": "waiting, or needs_me for inbound", "inbound": false, "notes": "",
                   "priority": "high|normal|low", "theme": "2-4 words",
                   "links": [{{"url": "https://...", "label": "short label"}}]}}],
@@ -159,15 +159,16 @@ def build_prompt(s, slack_only, slack_on):
         inbound.append(
             '   - Slack (if the Slack tools are available): slack_search_public_and_private queries '
             '"to:<@{u}> after:{d}" (DMs) and "<@{u}> after:{d}" (@-mentions), sort=timestamp, paginate until '
-            "you pass the cursor. Read each DM/thread and keep it only where the LATEST message is from someone "
-            "else, asks {n} for a specific action or answer, and {n} has not replied since. Drop bots, apps, "
-            "workflows, joins, reminders, reactions and {n}'s own messages. Slack loops: channel \"slack\", "
+            "you pass the cursor. Read each DM/thread; first ignore bots, apps, workflows, joins, reminders, "
+            "reactions and {n}'s own messages, then keep each message from someone else that asks {n} for a "
+            "specific action or answer and that {n} has not answered since (a later message from someone else "
+            "does not cancel it). Slack loops: channel \"slack\", "
             'thread "DM <asker> <DM channel id> <ask ts>" or "#<channel> <channel id> <thread ts> <ask ts>" '
             "(<ask ts> = the ts of the message that asks), link = that message's permalink. Several asks in one "
             "DM/thread are separate loops.".format(n=name, u=SELF_ID, d=slack_date))
     inbound = ("1b. ASKS OF {n} (inbound). Search what others sent {n}:\n{parts}\n   These become new loops with "
                '"status": "needs_me" and "inbound": true - owner is the person asking; ask = one line on what they '
-               "need from {n}. The same exclusions and duplicate rule apply.").format(n=name, parts="\n".join(inbound)) if inbound else ""
+               "need from {n}. The same exclusions (excluded people as askers too) and duplicate rule apply.").format(n=name, parts="\n".join(inbound)) if inbound else ""
     prompt = PROMPT.format(
         name=name,
         mode_note=("SLACK-ONLY RUN: you have no Gmail tools. Ignore email entirely - do not report email loops. "
