@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import agent
+from .messages import FAILURES as _F, say
 from .paths import ROOT
 CONFIG = ROOT / "config.json"
 LOGS = ROOT / "state" / "logs"
@@ -81,15 +82,12 @@ def install_row(label, have, found=None):
     ic = agent.install_cmd()
     missing = [t for t in (ic or {}).get("needs", []) if not agent.prereq().get(t)]
     if not ic:
-        r["fix"] = f"Open Loops couldn't find {label} on this computer. Ask IT to install it, then press Check again."
+        r["fix"] = say("ai_no_installer", ai=label)
     elif missing:
-        r["fix"] = (f"Open Loops couldn't find {label} on this computer, and the installer can't run here because a tool "
-                    f"it needs is missing ({', '.join(missing)}). Ask IT to install {label}, then press Check again.")
+        r["fix"] = say("ai_installer_blocked", ai=label, tools=", ".join(missing))
     else:
-        said = (f"{label} is on this computer but won't start. Press Install {label} to install it again: " if broken else
-                f"Open Loops couldn't find {label} on this computer. Press Install {label}: ")
-        r.update(fix=said + f"it downloads {label} from {ic['vendor']} and takes a minute or two.", connect="install", command=ic["command"],
-                 agent=ic["agent"], command_id=ic["id"])  # sent back with the press: app.py runs nothing else
+        r.update(fix=say("ai_broken" if broken else "ai_missing", ai=label, vendor=ic["vendor"]), connect="install",
+                 command=ic["command"], agent=ic["agent"], command_id=ic["id"])  # sent back with the press: app.py runs nothing else
     return r
 
 
@@ -113,9 +111,10 @@ def claude_steps(steps):
                 email = cj.get("oauthAccount", {}).get("emailAddress", "")
             except Exception:
                 pass
-    login = {"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email else ''}",
-             "fix": "" if logged else "Install Claude first (the row above)." if not have else
-                    "Press Sign in: your browser opens the Claude sign-in page. Use your work Google account."}
+    # Not signed in, but Claude still remembers an account: the sign-in ran out or was signed out (#25), not "never".
+    login = {"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email and logged else ''}",
+             "fix": "" if logged else say("needs_install", ai="Claude") if not have else
+                    say("signin_expired", email=email) if email else say("signin_needed")}
     if have and not logged:
         login["connect"] = "login"
     steps.append(login)
@@ -128,39 +127,36 @@ def claude_steps(steps):
         servers = parse_mcp_list(txt)
         if rc != 0:  # the listing failed (timeout, CLI error), perhaps part-way: a service it did not print may
             # still be set up, so it is "unknown", not "missing". Services it did print keep what it said about them.
-            unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]
+            unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]  # Console / diag only
     (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (route(k, servers) for k in ("slack", "gmail", "miro"))
     names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
     slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
-    first = "Sign in to Claude first (the row above)."
+    # the step that blocks every source row: installing Claude, else signing in (#25: not "Sign in" before it exists)
+    first = say("needs_install", ai="Claude") if not have else say("needs_signin", ai="Claude")
 
-    def row(id_, ok, title, state, connect, fix_missing, fix_auth):
+    def row(id_, ok, title, state, connect, fix_missing, fix_auth, service):
         r = {"id": id_, "ok": ok, "optional": True, "title": title, "fix": ""}
         if not ok:
             if not logged:
                 r["fix"] = first
             elif unlisted and not state:  # no button: installing would not fix a listing that did not finish
-                r["fix"] = f"Couldn't ask Claude which connections it has just now ({unlisted}). Press Check again."
+                r["fix"], r["detail"] = say("listing_failed"), unlisted  # what the CLI said: Console / diag, not the sentence
             elif not state:
                 r["fix"], r["connect"] = fix_missing
             else:
                 r["fix"], r["connect"] = fix_auth, connect
                 if state == "failed":
-                    r["fix"] = "It is set up but did not answer just now. " + fix_auth
+                    r["fix"] = say("source_not_answering", service=service)
             if not r.get("connect"):
                 r.pop("connect", None)
         return r
 
     steps.append(row("slack", slack, "Slack connected (optional)", s_st, "slack",
-                     ("Press Install Slack plugin (it takes about half a minute), then Connect Slack.", "slack_install"),
-                     "Press Connect Slack: your browser opens Slack's sign-in page; click Allow."))
+                     (say("slack_missing"), "slack_install"), say("slack_signin"), "Slack"))
     steps.append(row("gmail", gmail, "Gmail connected (optional)", g_st, "gmail",
-                     ("Gmail is added on claude.ai, not here: claude.ai → Settings → Connectors → Gmail. Then press Check again.", None),
-                     "Press Connect Gmail: your browser opens Google's sign-in page; click Allow."))
+                     (say("gmail_missing"), None), say("gmail_signin"), "Gmail"))
     steps.append(row("miro", miro, "Miro connected (optional, for the Roadmap card)", m_st, "miro",
-                     ("Add Miro first: claude.ai → Settings → Connectors → Miro, or in a terminal: "
-                      "claude plugin install miro@claude-plugins-official. Then press Check again and Connect Miro.", None),
-                     "Press Connect Miro: your browser opens Miro's sign-in page; pick the team and click Allow."))
+                     (say("miro_missing"), None), say("miro_signin"), "Miro"))
     return email, slack, gmail, slack_source, miro, miro_source, names
 
 
@@ -468,12 +464,11 @@ def _save(updates, names=None):
 
 
 # What the page says about the Mac's weekday morning refresh (launchd, scripts/run-refresh.sh).
-# Plain words (issue #25): what happened in one sentence, one thing to do, no jargon, no paths.
+# Plain words (issue #25): what happened in one sentence, one thing to do, no jargon, no paths. The failures are
+# worded in messages.py with every other failure; "started" is not a failure, so it lives here.
 SCHEDULE_MSG = {
-    "blocked": {"title": "Your Mac's privacy settings stopped the automatic morning refresh, so your list only updates when you press Refresh.",
-                "fix": "Download and run the latest Open Loops installer."},
-    "failed": {"title": "The automatic morning refresh could not start, so your list only updates when you press Refresh.",
-               "fix": "Download and run the latest Open Loops installer."},
+    "blocked": {"title": _F["schedule_blocked"]["what"], "fix": _F["schedule_blocked"]["fix"]},
+    "failed": {"title": _F["schedule_failed"]["what"], "fix": _F["schedule_failed"]["fix"]},
     "started": {"title": "The automatic morning refresh last started by itself on {when}.", "fix": ""},
 }
 # where "the latest installer" is: the page shows it as a button under the red row (the installer moves old installs)
@@ -485,7 +480,15 @@ STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written b
 TAIL_BYTES = 256 * 1024   # the latest lines are what matter; a years-old log is not read whole every minute
 
 
-def schedule_step(logs=None, root=None):
+def usual_places():
+    """Where a Mac install lives unless the installer was told otherwise: install.sh's DEFAULT_DEST, and ~/Documents
+    where installs before #24 went (the installer is exactly the fix for those). A copy anywhere else is a --dest test
+    copy (or a checkout): the installer would update the copy in the usual place, not it (#25, from the #31 test)."""
+    home = Path.home()
+    return [home / "Library" / "Application Support" / "OpenLoops", home / "Documents" / "OpenLoops"]
+
+
+def schedule_step(logs=None, root=None, usual=None):
     """The weekday morning refresh, as far as launchd.err.log shows. Returns a checklist step or None (no evidence).
 
     That log gets two kinds of line about an install: launchd's own start failures, e.g. #24's
@@ -495,7 +498,8 @@ def schedule_step(logs=None, root=None):
     by its position in the file - never the file's modified time, which a line about another install can move.
     - last is a failure -> red ("blocked" for Operation not permitted, else "failed")
     - last is a start   -> green "started" with its own time. It proves the script ran, not that the refresh
-      inside it succeeded, and says only that."""
+      inside it succeeded, and says only that.
+    A red row for a copy outside the usual place (a test copy) says the installer won't fix it, with no download link."""
     logs, root = Path(logs or LOGS), Path(root or ROOT)
     mine = os.path.realpath(root / "scripts" / "run-refresh.sh")  # the plist may name it via a symlink (/var -> /private/var)
     home = os.path.realpath(root)
@@ -523,9 +527,13 @@ def schedule_step(logs=None, root=None):
         return {"id": "schedule", "ok": True, "optional": True, "kind": "started",
                 "title": SCHEDULE_MSG["started"]["title"].format(when=when), "fix": ""}
     kind = "blocked" if "operation not permitted" in ln.lower() else "failed"
-    return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
-            "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
-            "detail": ln[-300:]}  # developer detail for the Console / diag, never shown in the sentence
+    r = {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
+         "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
+         "detail": ln[-300:]}  # developer detail for the Console / diag, never shown in the sentence
+    if home not in [os.path.realpath(p) for p in (usual if usual is not None else usual_places())]:  # a test copy
+        r.update(fix=say("schedule_test_copy"), test_copy=True)
+        r.pop("link")
+    return r
 
 
 def main(detect=False, recheck=False):
@@ -545,7 +553,7 @@ def main(detect=False, recheck=False):
 
     # Sources are pluggable: any ONE of them is enough to be useful
     out["steps"].append({"id": "channel", "ok": slack or gmail, "title": "At least one source connected (Slack or Gmail)",
-                         "fix": "Connect whichever you actually use, above - one is enough. You can add the other any time." if not (slack or gmail) else ""})
+                         "fix": say("no_source") if not (slack or gmail) else ""})
 
     # Who am I on Slack (needed to find your own messages - Slack only)
     sid = cfg.get("slack_self_id") or ""
@@ -568,8 +576,8 @@ def main(detect=False, recheck=False):
             _save({"slack_self_id": sid})
     out["steps"].append({"id": "self", "ok": bool(sid), "optional": not slack,
                          "title": f"Knows who you are on Slack{(' (' + sid + ')') if sid else ''}",
-                         "fix": ("This fills in by itself once Slack is connected - nothing to do."
-                                 if slack else "Only needed if you connect Slack.") if not sid else ""})
+                         # Slack ticked but no id: the lookup ran (the page always asks with --detect) and failed
+                         "fix": (say("slack_id_unknown") if slack else "Only needed if you connect Slack.") if not sid else ""})
 
     # Mac only: the weekday morning refresh runs from launchd, and a failure there is otherwise silent (#24).
     # Optional, so a broken schedule never sends a set-up user back to the connection steps.
