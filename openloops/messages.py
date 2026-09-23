@@ -341,7 +341,7 @@ FAILURES = {
         "fix": "Choose a file in Settings → Connections.",
         "button": None},
     "standing_exists": {
-        "what": "There is already a file at {path}, so Open Loops left it alone.",
+        "what": "There is already a file there, so Open Loops left it alone.",
         "fix": "Use that file, or choose another name.",
         "button": None},
     "standing_write": {

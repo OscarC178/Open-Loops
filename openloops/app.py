@@ -634,7 +634,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 p = standing.create_starter(body.get("path") or None)
             except FileExistsError as e:
-                return self._json({"ok": False, "error": messages.say("standing_exists", path=str(e))}, 400)
+                return self._json({"ok": False, "error": messages.say("standing_exists"), "detail": str(e)}, 400)
             except ValueError as e:  # no path set: standing.py's own sentence (messages "standing_no_path")
                 return self._json({"ok": False, "error": str(e)}, 400)
             except OSError as e:  # the OS's reason is developer detail

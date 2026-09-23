@@ -62,22 +62,71 @@ check("internet" not in FAILURES["install_vendor"]["what"] + FAILURES["install_v
       and "internet" in FAILURES["install_network"]["fix"], "a vendor's error is never blamed on the user's internet; no network is")
 
 # ---------------------------------------------------------------- 2. who uses it
-show("2. every id used exists, and every entry is used")
-SOURCES = {p: (REPO / "openloops" / p).read_text(encoding="utf-8") for p in ("doctor.py", "app.py", "agent.py", "standing.py", "index.html", "messages.py")}
-used = set()
+show("2. every id used exists, and every entry is used; every placeholder is filled where it is shown")
+import ast  # noqa: E402
+SOURCES = {p: (REPO / "openloops" / p).read_text(encoding="utf-8")
+           for p in ("doctor.py", "app.py", "agent.py", "standing.py", "index.html", "messages.py", "refresh.py", "chase.py")}
+asked, fmt_at, dynamic = set(), {}, []   # ids the code asks for; id -> keyword names given at its call sites
+
+
+def ids_of(node):
+    """The message ids an argument can evaluate to: a string, or either branch of a conditional (a if c else b)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, ast.IfExp):
+        return ids_of(node.body) | ids_of(node.orelse)
+    return None
+
+
 for name, text in SOURCES.items():
-    used |= set(re.findall(r"""\b(?:say|part|msg)\(\s*["']([a-z_]+)["']""", text))
-    used |= set(re.findall(r"""_F\[["']([a-z_]+)["']\]""", text))
+    if not name.endswith(".py"):
+        continue
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Call) and node.args:
+            fn = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if fn in ("say", "part"):
+                got = ids_of(node.args[0])
+                if got is None:
+                    if "INSTALL_WHY" not in (ast.get_source_segment(text, node.args[0]) or ""):  # a table: TABLES below
+                        dynamic.append(f"{name}:{node.lineno}")
+                    continue
+                asked |= got
+                for i in got:
+                    fmt_at.setdefault(i, set()).update(k.arg for k in node.keywords if k.arg)
+for text in SOURCES.values():   # doctor.SCHEDULE_MSG reads the table directly: _F["schedule_blocked"]["what"]
+    asked |= set(re.findall(r"""_F\[["']([a-z_]+)["']\]""", text))
+page_src = SOURCES["index.html"]
+for m in re.finditer(r"""\bmsg\('([a-z_]+)'(?:,\{([^}]*)\})?\)""", page_src):
+    asked.add(m.group(1))
+    fmt_at.setdefault(m.group(1), set()).update(re.findall(r"(\w+)\s*(?::|,|$)", m.group(2) or ""))
 from openloops import app  # noqa: E402  (importing app writes config/state into the throwaway install only)
-used |= set(app.INSTALL_WHY.values()) | {i for i, _ in messages.AI_SIGNS}
-missing = sorted(i for i in used if i not in FAILURES)
-for text in SOURCES.values():  # an id picked by a condition on the same line: say("ai_broken" if broken else "ai_missing")
-    for line in text.splitlines():
-        if re.search(r"\b(?:say|msg)\(", line):
-            used |= set(re.findall(r"""["']([a-z_]+)["']""", line)) & set(FAILURES)
-check(not missing, f"every id asked for is in FAILURES (missing: {missing})")
-unused = sorted(set(FAILURES) - used)
+# ids reached through tables rather than a literal call, and what their callers fill in
+TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entries below say what these are filled with
+          **{i: {"ai", "limit", "vendor"} for i in app.INSTALL_WHY.values()},
+          **{i: {"job", "ai"} for i, _ in messages.AI_SIGNS}, "job_failed": {"job"}, "job_start_failed": {"job", "job_lower"},
+          **{i: {"store", "limit"} for i in messages.CODEX_JOB_IDS}}   # agent.py .format(store=, limit=)
+for i, keys in TABLES.items():
+    asked.add(i)
+    fmt_at.setdefault(i, set()).update(keys)
+missing = sorted(i for i in asked if i not in FAILURES)
+check(not missing, f"every id the code asks for (conditional ones included) is in FAILURES (missing: {missing})")
+check(set(dynamic) <= {f"messages.py:{n}" for n in range(1, 10000)},
+      f"ids chosen at run time are only chosen inside messages.py itself (elsewhere: {[d for d in dynamic if not d.startswith('messages.py')]})")
+unused = sorted(set(FAILURES) - asked)
 check(not unused, f"every FAILURES entry is used somewhere (unused: {unused})")
+
+# Render every entry as its callers do, with realistic values, and scan what a person would actually read
+SAMPLE = {"ai": "Claude", "vendor": "Anthropic", "tools": "curl", "email": "sam@example.com", "service": "Slack",
+          "party": "Google", "limit": "10 minutes", "job": "The refresh", "job_lower": "the refresh", "port": "8791",
+          "store": "the Mac keychain"}
+import string as _string  # noqa: E402
+for fid, m in FAILURES.items():
+    holes = {f for part_ in ("what", "fix", "fix_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
+    check(holes <= fmt_at.get(fid, set()), f"{fid}: every placeholder {sorted(holes)} is filled at a call site (given {sorted(fmt_at.get(fid, set()))})")
+    for win in (False, True):
+        text = say(fid, win=win, **{k: SAMPLE[k] for k in holes})
+        bad = [w for w in FORBIDDEN if w in text]
+        check("{" not in text and "}" not in text and not bad, f"{fid} as shown{' on Windows' if win else ''}: no leftover placeholder or forbidden token {bad}")
 check("INSTALL_SAID" not in (REPO / "openloops" / "agent.py").read_text(encoding="utf-8"),
       "the install sentences live in messages.py only (was agent.INSTALL_SAID)")
 for inline in ("Couldn't ask Claude which connections", "Sign in to Claude first (the row above).\"",
