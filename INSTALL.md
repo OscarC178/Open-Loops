@@ -94,7 +94,11 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
      `~/Applications` and pins it to the Dock, and registers
      the weekday refresh as a `launchd` agent (`com.openloops.refresh`, default 09:15).
      Older versions installed to `~/Documents/OpenLoops`; running the installer again moves that copy (list,
-     settings, tone and logs included) and re-registers the morning refresh. See gotcha 8 for why.
+     settings, tone, logs, `.grok/` and anything else in the folder) and re-registers the morning refresh. See
+     gotcha 8 for why. The move stops Open Loops first and refuses, changing nothing, if anything is still
+     working in the old folder. On the same disk it is a single rename; otherwise (or with files still only in
+     iCloud) it copies, checks every file byte for byte, and only then switches over and says the old folder can
+     be deleted. With Grok, open Grok once in the new folder and trust it.
 
    The downloaded folder can be deleted afterwards either way.
 2. On first open the app shows the **connection checklist** (`doctor.py`, re-checked every minute) until Claude is
@@ -269,9 +273,9 @@ state/logs/       one log per run
    because every job re-reads `state.json` just before writing (`store.update_state`).
 8. **Mac: keep Open Loops out of Documents, Desktop and Downloads.** macOS privacy protection stops a background
    job started by `launchd` from reading those folders, so a weekday refresh installed there fails every morning
-   with `Operation not permitted` in `state/logs/launchd.err.log`, and nothing notices while a browser tab is doing
-   the refresh instead. That is why the install lives in `~/Library/Application Support/OpenLoops` (Finder:
+   with `Operation not permitted` in `state/logs/launchd.err.log`, and nothing notices unless you press Refresh
+   yourself. That is why the install lives in `~/Library/Application Support/OpenLoops` (Finder:
    *Go → Go to Folder…* and paste the path). If the morning refresh cannot start, the page says so in a red box with
    the fix, and *Copy all* in the Console includes the tail of that log. The same limit applies to anything the
-   morning refresh reads: keep your own to-do file outside those three folders too, or it is only read while the
-   page is open.
+   morning refresh reads: keep your own to-do file outside those three folders too, or the morning refresh cannot
+   read it.
