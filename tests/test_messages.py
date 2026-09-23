@@ -125,7 +125,7 @@ check(not unused, f"every FAILURES entry is used somewhere (unused: {unused})")
 # Render every entry as its callers do, with realistic values, and scan what a person would actually read
 SAMPLE = {"ai": "Claude", "vendor": "Anthropic", "tools": "curl", "email": "sam@example.com", "service": "Slack",
           "party": "Google", "limit": "10 minutes", "job": "The refresh", "job_lower": "the refresh", "port": "8791",
-          "store": "the Mac keychain"}
+          "store": "the Mac keychain", "days": "30", "sources": "Slack and Gmail"}
 import string as _string  # noqa: E402
 
 
@@ -400,8 +400,10 @@ check(re.search(r'href="\$\{esc\(l\.link\)\}" target="_blank" rel="noopener">ope
 check("they replied or you wrote a note, you owe a reply" not in html and "someone asked you something" in html,
       "Needs me says inbound asks are in it")
 check("you haven't replied yet" in html and "no reply yet`" not in html, "inbound cards say you haven't replied, not 'no reply yet'")
-check("Two or three minutes" not in html and "C.history_days" in html and "ten minutes" in html,
-      "first scan copy uses the History setting and an honest time")
+check("Two or three minutes" not in html and "C.history_days" in html and "the last ${" not in html
+      and "msg('first_scan',{days:histDays(),sources:scanSources()})" in html
+      and say("first_scan", days=30, sources="Slack") == "Looking back 30 days across Slack. The first pass can take ten minutes.",
+      "first scan copy (#38): from messages.py, with the History setting, the sources connected and an honest time")
 check("gmail ok" not in html and "not connected (optional)" not in html, "no lower-case 'gmail ok' pill")
 check("<summary>Show the exact command" in html and "This runs" not in html, "the install command is folded behind 'Show the exact command'")
 check("'▫️'" not in html and "'⬜'" not in html and "!s.optional||s.connect||s.alert?'<b style=\"color:var(--r)\" title=\"needs attention\"" in html,
