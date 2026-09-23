@@ -1042,19 +1042,8 @@ def install_cmd(agent=None, win=None):
             "id": hashlib.sha256((who + "\0" + command).encode("utf-8")).hexdigest()[:16]}
 
 
-# What the checklist says when an install ends badly, by what went wrong (app.py records which). Plain words as
-# #25 asks: what happened, then what to do; no exit codes or file paths. The installer's own output stays in
-# state/connect-install.log and the page's Console.
-INSTALL_SAID = {
-    "download": "{ai}'s installer couldn't download. Check your internet connection and press Install {ai} again.",
-    "check":   "{ai} was installed but won't start. Press Install {ai} to try again, or ask IT to install {ai}.",
-    "install": "{ai}'s installer stopped with an error. Press Install {ai} to try again. If it fails again, paste the "
-               "commands below into Terminal (Windows: PowerShell) and press Enter.",
-    "timeout": "The install took longer than {limit}, so Open Loops stopped it. Press Install {ai} to try again.",
-    "start":   "Open Loops couldn't start {ai}'s installer. Press Install {ai} to try again.",
-    "changed": "The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. "
-               "Press Check again.",
-}
+# What the checklist says when an install ends badly lives in messages.py (install_*), with every other failure
+# the page can show (#25); app.py picks the sentence by what went wrong.
 
 
 def install_dirs():
