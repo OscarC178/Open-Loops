@@ -247,6 +247,9 @@ Manual equivalents, for support: `python -m openloops.doctor`, `python -m openlo
 
 ### Testing a fresh install
 
+`bash install.sh --help` (Windows: `setup.ps1 -Help`) lists every option and installs nothing; an option it does not
+know stops it before anything is written.
+
 To try the installer as a new user would, next to the copy you use every day and without touching it (8790 is only
 an example: any free port from 1024 to 65535 outside 8765–8784 will do; give each test copy its own and use the same
 number in the commands below):
