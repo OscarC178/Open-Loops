@@ -194,6 +194,63 @@ def _route_of(server, svc):
     return ("plugin" if low.startswith("plugin:") else "connector" if low.startswith("claude.ai") else None) if svc in low else None
 
 
+# ---- Installing the agent's CLI from the checklist: the "install" setup step (doctor.py offers it on the
+# "<AI> is installed" row when the CLI is missing, app.py runs it like the sign-in steps). Every vendor now ships
+# a standalone installer script, so no route needs Node, npm or Homebrew: the scripts need only curl + bash on a
+# Mac and PowerShell on Windows, which both come with the OS. Checked against the vendors' pages on 2026-09-23:
+#   Claude Code  https://code.claude.com/docs/en/setup  (native install, "Recommended"; lands in ~/.local/bin)
+#   Codex        https://github.com/openai/codex        (install script; lands in ~/.local/bin, Windows
+#                %LOCALAPPDATA%\Programs\OpenAI\Codex\bin). npm i -g @openai/codex and brew install --cask codex
+#                also work but need Node or Homebrew first, so they are the manual fallback in INSTALL.md.
+#   Grok         https://docs.x.ai/build/overview        (install script; lands in ~/.grok/bin)
+# The line shown on the page is the line that runs: bash -c <line> on a Mac, powershell -Command <line> on Windows.
+INSTALL_STEP = "install"
+_INSTALL = {  # agent -> (Mac/Linux line, Windows PowerShell line, where it is documented, who makes it)
+    "claude": ("curl -fsSL https://claude.ai/install.sh | bash", "irm https://claude.ai/install.ps1 | iex",
+               "https://code.claude.com/docs/en/setup", "Anthropic"),
+    "codex":  ("curl -fsSL https://chatgpt.com/codex/install.sh | sh", "irm https://chatgpt.com/codex/install.ps1 | iex",
+               "https://github.com/openai/codex", "OpenAI"),
+    "grok":   ("curl -fsSL https://x.ai/cli/install.sh | bash", "irm https://x.ai/cli/install.ps1 | iex",
+               "https://docs.x.ai/build/overview", "xAI"),
+}
+_PS = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+
+
+def prereq(win=None):
+    """What is on this computer that an install route could use -> {tool: bool}. The installer scripts need only
+    curl + bash (Mac/Linux) or PowerShell (Windows); node / npm / brew / winget are reported for the manual routes."""
+    win = WIN if win is None else win
+    tools = ["powershell", "node", "npm", "winget"] if win else ["curl", "bash", "node", "npm", "brew"]
+    return {t: shutil.which(t) is not None for t in tools}
+
+
+def install_cmd(agent=None, win=None):
+    """How to install an agent's CLI (default: the selected one) -> {"argv", "command", "needs", "source", "vendor"}, or None
+    for an agent with no known installer. "command" is what the page shows before the button is pressed; "needs"
+    the tools "argv" cannot run without (doctor.py says so, and offers no button, when one is missing)."""
+    win = WIN if win is None else win
+    got = _INSTALL.get((agent or name()).strip().lower())
+    if not got:
+        return None
+    unix, ps, src, vendor = got
+    if win:
+        argv = _PS + [ps]
+        return {"argv": argv, "command": subprocess.list2cmdline(argv), "needs": ["powershell"], "source": src, "vendor": vendor}
+    # pipefail: a download that fails would otherwise hand bash an empty script, which "succeeds" with exit 0
+    return {"argv": ["bash", "-o", "pipefail", "-c", unix], "command": unix, "needs": ["curl", "bash"], "source": src,
+            "vendor": vendor}
+
+
+def install_dirs():
+    """Where the installer scripts put the CLIs. A Finder-launched app, or a terminal opened before the install, does
+    not have them on PATH yet; app.py adds the ones that exist so the re-check and the jobs find the new CLI."""
+    home = Path.home()
+    dirs = [home / ".local" / "bin", home / ".grok" / "bin"]
+    if WIN and os.environ.get("LOCALAPPDATA"):
+        dirs.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OpenAI" / "Codex" / "bin")
+    return dirs
+
+
 def model():
     """config.json "model": the Claude model the jobs run on. An alias (sonnet, haiku, opus) or a
     full id. Blank means whatever `claude` defaults to on this machine, which is usually the most
