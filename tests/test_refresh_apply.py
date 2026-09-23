@@ -98,6 +98,14 @@ check(s["cursor"] == "2026-09-15T15:00+01:00" and s["slack_cursor"] == "2026-09-
 s = base()
 refresh.apply(s, {"new_loops": [], "slack_available": False}, slack_only=True, now="2026-09-15T15:00+01:00")
 check(s["slack_cursor"] == "2026-09-10T12:00+01:00" and "last_slack_refresh" not in s, "slack-only run whose Slack search failed moves nothing")
+for junk in ("false", "no", 0):
+    s = base()
+    refresh.apply(s, {"new_loops": [], "slack_available": junk}, slack_only=True, now="2026-09-15T15:00+01:00")
+    check(s["slack_cursor"] == "2026-09-10T12:00+01:00", f"slack_available {junk!r} is not coverage: Slack cursor kept")
+for yes in (True, "true"):
+    s = base()
+    refresh.apply(s, {"new_loops": [], "slack_available": yes}, slack_only=True, now="2026-09-15T15:00+01:00")
+    check(s["slack_cursor"] == "2026-09-15T15:00+01:00", f"slack_available {yes!r} advances the Slack cursor")
 
 # --- Slack inbound: asks OF the owner from DMs and @-mentions, one loop per ask (conversation + ask ts)
 JO_DM, NOW = "D0JODM0001", "2026-09-15T17:00+01:00"

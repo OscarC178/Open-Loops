@@ -70,7 +70,7 @@ made of them, that have not yet been actioned.{slack_note} Today is {today}.
    a "links" array; omit it when there is nothing.
 
 ## Output
-Reply with ONLY a JSON object between the markers, nothing else:
+Reply with ONLY a JSON object between the markers, nothing else ("slack_available": false if the Slack searches failed):
 <<<OPENLOOPS>>>
 {{
   "new_loops": [{{"id": "<owner-slug>-<topic-slug>", "owner": "...", "owner_email": "... or null",
@@ -83,7 +83,7 @@ Reply with ONLY a JSON object between the markers, nothing else:
                 "reply_snippet": "<=120 chars", "reply_ts": "Slack ts of that reply, or null", "asked_at": "ISO (only if a new ask by {name})",
                 "priority": "high|normal|low (only if it changed)", "theme": "2-4 words (only if missing)",
                 "links": [{{"url": "https://...", "label": "short label"}}]}}],
-  "gmail_available": true, "slack_available": "true if the Slack searches worked, false if they failed"
+  "gmail_available": true, "slack_available": true
 }}
 <<<END>>>
 """
@@ -266,7 +266,7 @@ def apply(s, out, slack_only, now, slack_on=True):
         elif l["status"] == "done" and was != "done":
             l["closed_at"] = now
         n_upd += 1
-    searched = slack_on and out.get("slack_available") is not False   # missing -> trust the run, as before
+    searched = slack_on and str(out.get("slack_available", True)).lower() == "true"   # missing -> trust the run, as before; "false"/junk -> not searched
     if slack_only:
         if searched:
             s["slack_cursor"] = now
@@ -291,6 +291,8 @@ def main():
     kind = "refresh-slack" if SLACK_ONLY else "refresh"
     print(f"[{stamp}] {kind}: {n_open} open loops, cursor {s.get('slack_cursor') or s['cursor'] if SLACK_ONLY else s['cursor']}")
     tools = SLACK_TOOLS if SLACK_ONLY else (SLACK_TOOLS if slack_on else []) + GMAIL_TOOLS
+    # the new cursor is taken BEFORE the agent searches: anything that lands while it runs is after it
+    now = datetime.now().astimezone().isoformat(timespec="minutes")
     p = agent.run(prompt, tools)
     (LOG / f"{kind}-{stamp}.log").write_text(p.stdout + "\n--- stderr ---\n" + p.stderr, encoding="utf-8")
     # some agents drop the markers and emit bare JSON - accept that too
@@ -300,7 +302,6 @@ def main():
         print(p.stdout[-1500:])
         sys.exit(1)
     out = json.loads(m.group(1))
-    now = datetime.now().astimezone().isoformat(timespec="minutes")
     counts = {}
     # re-read state.json at write time: the page may have added notes or snoozes meanwhile
     s = update_state(lambda fresh: counts.update(zip(("new", "upd"), apply(fresh, out, SLACK_ONLY, now, slack_on))))
