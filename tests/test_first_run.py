@@ -498,6 +498,19 @@ if a[:1] == ["-p"]:
     print("U0TEST12345" if kind == "slack-id" else ""); sys.exit(0)
 print("fake claude: unexpected " + " ".join(a)); sys.exit(9)
 '''.replace("PYTHON", sys.executable)
+# A fake Codex: installed, not signed in to ChatGPT. Every call is written down (calls-codex.txt).
+FAKE7_CODEX = r'''#!PYTHON
+import os, sys
+a = sys.argv[1:]
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "calls-codex.txt"), "a") as f:
+    f.write(" ".join(a) + "\n")
+if a == ["--version"]:
+    print("codex-cli 0.156.1"); sys.exit(0)
+if a[:2] == ["login", "status"]:
+    print("Not logged in"); sys.exit(1)
+print("fake codex: unexpected " + " ".join(a)); sys.exit(9)
+'''.replace("PYTHON", sys.executable)
 # Only the system folders on PATH: no real claude, codex or grok of the developer's is ever run (the fake is added in front)
 BARE = os.pathsep.join(d for d in ("/usr/bin", "/bin", "/usr/sbin", "/sbin") if os.path.isdir(d))
 
@@ -507,6 +520,9 @@ def setup_install(prefix, fake=True, config=None):
     (tmp / "bin").mkdir()
     if fake:
         (tmp / "bin" / "claude").write_text(FAKE7, encoding="utf-8")
+        (tmp / "bin" / "codex").write_text(FAKE7_CODEX, encoding="utf-8")
+    # the browser: only writes down what it was asked to open. It never fails: Python's webbrowser would then go on to
+    # the real default browser, so a failed browser step is faked on the page side instead (FAKE in setup_js).
     (tmp / "bin" / "browser").write_text(f"#!/bin/sh\necho \"$1\" >> '{tmp / 'opened.txt'}'\n", encoding="utf-8")
     for f in (tmp / "bin").iterdir():
         os.chmod(f, 0o755)
@@ -552,7 +568,10 @@ def setup_js(port, scenario, tmp):
         grab("async function openClaude("),
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),
         """const CALLS=[];const realFetch=global.fetch;
-global.fetch=(u,o)=>{if(o&&o.method==='POST')CALLS.push(u+' '+(o.body||''));return realFetch(BASE+u,o)};
+const FAKE={};   // url -> [answer to a POST, answer to a GET]: a setup step the app itself never runs (no browser opens)
+global.fetch=(u,o)=>{const post=!!(o&&o.method==='POST');if(post)CALLS.push(u+' '+(o.body||''));
+ if(FAKE[u])return Promise.resolve({ok:true,status:200,json:async()=>FAKE[u][post?0:1],text:async()=>JSON.stringify(FAKE[u][post?0:1])});
+ return realFetch(BASE+u,o)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(f,ms=60000){const end=Date.now()+ms;while(!f()){if(Date.now()>end)throw new Error('timed out');await sleep(100)}}
 const jobCalls=()=>CALLS.filter(c=>/^\\/api\\/(people|voice|refresh) /.test(c));
@@ -594,7 +613,7 @@ if NODE:
         check(v["ai"]["state"] == "Needs you" and ">Install Claude</button>" in v["ai"]["rows"] and "Show the exact command" in v["ai"]["rows"]
               and v["ai"]["act"] == "", f"'Your AI' needs you, with Install Claude (its command one click away) as its one button ({v['ai']['state']})")
         check(v["pick"].count('role="radio"') == 3 and 'aria-checked="true" onclick="chooseAI(\'claude\')"' in v["pick"]
-              and all(x in v["pick"] for x in ("ChatGPT (Codex)", "Miro isn&#39;t available", "Google Cloud set-up", "paid Claude plan")),
+              and all(x in v["pick"] for x in ("ChatGPT (Codex)", "Miro only if you added a Miro server", "Free gets Gmail and Slack isn&#39;t confirmed", "Google Cloud set-up", "paid Claude plan")),
               "three choices, Claude picked, each saying what it needs and what it can't do")
         check(v["src"]["state"] == "Not started" and messages.say("needs_install", ai="Claude") in v["src"]["rows"]
               and "<button" not in v["src"]["rows"] and v["src"]["act"] == "",
@@ -692,6 +711,27 @@ if NODE:
               "AI and a source ready: the view stays, and its last step is the first-scan box, waiting for the press")
         check(e["jobs"] == [] and out["seen"] == ["slack-id"], f"nothing started by itself: no job, the AI asked only for the Slack id ({out['seen']})")
         check(out["embed"] == {"start": "#su_start", "connect": "#su_all_body"}, "setupEmbed puts the first-scan box in the schedule card")
+    finally:
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7g. Codex: a Connect page that would not open, and a Check again that finds the row still red, are said in the pop-up
+    tmp = setup_install("openloops-setup-codexfail-", config={"agent": "codex"})
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ FAKE['/api/connect/gmail']=[{started:true},{running:false,rc:1,url:'https://chatgpt.com/apps',opened:true,last:'',step:'gmail'}];   // the page did not open
+ await boot();await tick();const p=connectStep('gmail');out.opened={open:$('#allow_dlg').open,title:$('#allow_title').textContent};
+ await until(()=>$('#allow_msg').textContent!==''&&$('#allow_link').innerHTML.includes('chatgpt.com'),15000);
+ out.fail={msg:$('#allow_msg').textContent,link:$('#allow_link').innerHTML,check:$('#allow_check').style.display};await p;
+ await allowCheck();out.checked={msg:$('#allow_msg').textContent,open:$('#allow_dlg').open};""", tmp)
+        check(out["opened"] == {"open": True, "title": "Connect Gmail on the ChatGPT page that just opened, then come back"},
+              "Codex: Connect Gmail opens the pop-up for ChatGPT's apps page")
+        check(out["fail"]["msg"] == messages.say("codex_browser_failed", service="Gmail") and "chatgpt.com" in out["fail"]["link"]
+              and out["fail"]["check"] == "", f"...the page would not open: the pop-up says so, with the link and Check again ({out['fail']['msg']!r})")
+        check(out["checked"] == {"msg": messages.say("needs_signin", ai="ChatGPT"), "open": True},
+              f"...Check again that finds Gmail still red says the row's own sentence in the pop-up ({out['checked']['msg']!r})")
+        check(not (tmp / "opened.txt").exists(), "...and no browser was asked to open anything")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)

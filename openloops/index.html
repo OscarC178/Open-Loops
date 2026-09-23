@@ -622,7 +622,7 @@ async function connectStep(step){
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
   if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
    CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
-    :msg('codex_browser_failed',{service:n})};repaint();return}
+    :msg('codex_browser_failed',{service:n})};CONN[step].opened=s.rc===0;repaint();return}
   const ai=aiName(CONN[step].agent||row.agent);
   CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
    :step==='slack_install'?msg('slack_install_failed'):msg('connect_failed',{party:PARTY(step)})};
@@ -660,7 +660,7 @@ paintConnect=function(){paintConnectBase();const rows=$('#setup_steps').children
 // Set-up any time after (SETUP_OPEN), so a broken connection is fixed from the same place.
 const AI_CHOICES=[   // what each needs and costs, and what it cannot do (#26, INSTALL.md "More than one account")
  ['claude','Claude','Needs a paid Claude plan. Slack, Gmail and Miro each connect by clicking Allow in your browser; one Slack and one Gmail per Claude account.'],
- ['codex','ChatGPT (Codex)','Needs a paid ChatGPT plan, and every scan uses some of its Codex allowance. Gmail and Slack are the ones your ChatGPT account connected; Miro isn\'t available.'],
+ ['codex','ChatGPT (Codex)','Needs a ChatGPT account: Codex comes with Free and paid plans, but whether Free gets Gmail and Slack isn\'t confirmed. Every scan uses some of its Codex allowance. Gmail and Slack are the ones your ChatGPT account connected; Miro only if you added a Miro server to Codex yourself.'],
  ['grok','Grok','Needs a Grok account. Gmail needs a one-off Google Cloud set-up of your own (INSTALL.md says how); Slack is off unless you turn it on.']];
 const SU_STATE={todo:'Not started',progress:'In progress',done:'Done',needs:'Needs you'};
 const SU_AI=['claude','login'],SU_SRC=['slack','gmail','miro','self'],SU_SRC_STEPS=['slack_install','slack','gmail','miro'];
@@ -698,9 +698,9 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
  suPill('#su_ai_state',suState('ai',st));
  // 2. your sources: one row each, one Connect each; one is enough
- $('#su_src_help').textContent=a==='grok'?'Gmail alone is enough. Each row says the one-off step it needs.'
-  :a==='codex'?'Connect the ones you use; one is enough. Gmail and Slack are connected in your ChatGPT account: Connect opens ChatGPT\'s apps page.'
-  :'Connect the ones you use; one is enough. Each Connect opens your browser, where you click Allow.';
+ $('#su_src_help').textContent=a==='grok'?'Gmail alone is enough (Slack only if you turn it on). Each row says the one-off step it needs.'
+  :(a==='codex'?'Slack or Gmail is needed; one of them is enough. Miro is optional, for the Roadmap card. Gmail and Slack are connected in your ChatGPT account: Connect opens ChatGPT\'s apps page.'
+  :'Slack or Gmail is needed; one of them is enough. Miro is optional, for the Roadmap card. Each Connect opens your browser, where you click Allow.');
  const src=stale?[]:suRows(SU_SRC),srcFirst=srcReady()?'':(src.find(s=>!s.ok&&s.connect)||{}).connect;   // once one is connected, the rest are extras, not the next step
  setHTML($('#su_src_rows'),src.map(s=>checkRow(s,s.connect===srcFirst)).join(''));
  setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
@@ -741,14 +741,20 @@ function allowOpen(step){ALLOW={step,url:''};clearInterval(allowT);allowT=setInt
  allowPaint();const d=$('#allow_dlg');if(!d.open)d.showModal();clog('set-up: waiting for Allow: '+step)}
 function allowPaint(){if(!ALLOW)return;const c=CONN[ALLOW.step]||{},u=ALLOW.url||c.url||'',page=pageStep(ALLOW.step);
  $('#allow_link').innerHTML=u?`Nothing opened? <a href="${esc(u)}" target="_blank" rel="noopener">${page?'Open ChatGPT\'s apps page':'Open the sign-in page'}</a>.`:c.busy?'<span class="spin"></span>Opening your browser…':'';
- $('#allow_msg').textContent=!c.busy&&c.msg&&!page?c.msg:'';   // it stopped without a tick: what the row now says
+ // what went wrong, in the app's words: the step's own failure (a Codex page that would not open included), or what the row
+ // said after a Check again pressed here. A Codex page that did open needs no second sentence: the title says what to do.
+ $('#allow_msg').textContent=ALLOW.said||(!c.busy&&c.msg&&!c.opened?c.msg:'');
  $('#allow_check').style.display=page||(!c.busy&&c.msg)?'':'none'}
 async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
  if(row&&row.ok){allowClose();toast(row.title.replace(/ \(optional.*\)$/,'')+'.');return}
  if(!a.url){try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&s.url)a.url=s.url}catch(e){}}   // the fallback link, from the run's own status
  allowPaint()}
 function allowClose(){ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close()}
-async function allowCheck(){const b=$('#allow_check');b.disabled=true;try{await doctor(true)}finally{b.disabled=false}await allowPoll()}
+async function allowCheck(){const a=ALLOW,b=$('#allow_check');if(!a)return;b.disabled=true;a.said='';$('#allow_msg').textContent='Checking…';
+ try{await doctor(true)}finally{b.disabled=false}
+ const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
+ if(ALLOW===a&&!(row&&row.ok))a.said=DOC&&DOC.error?msg('check_failed'):(row&&row.fix)||'';   // still not ticked: the row's own sentence, here
+ await allowPoll()}
 // every button that starts a browser step opens the pop-up (the Set-up cards' and the checklist's alike)
 const connectStepBase=connectStep;
 connectStep=function(step){const p=connectStepBase(step);if(ALLOW_ROW[step]&&CONN[step]&&CONN[step].busy)allowOpen(step);return p};
