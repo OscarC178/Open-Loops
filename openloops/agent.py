@@ -102,6 +102,8 @@ def cli():
                  Path("/Applications/Codex.app/Contents/Resources/codex")]  # the desktop app alone ships one too
         if WIN and os.environ.get("LOCALAPPDATA"):
             spots.insert(0, Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
+        if os.environ.get("OPENLOOPS_NO_FALLBACK_PATHS") == "1":  # tests: PATH only, so a developer's own Codex is never run
+            spots = []
         return shutil.which("codex") or next((str(p) for p in spots if _exists(p)), "codex")
     return "claude"
 
