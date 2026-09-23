@@ -95,21 +95,31 @@ memories and AGENTS.md are not loaded (measured on 2026-09-23: about 190k input 
 40k here). The first run for an account is a short warm-up with every connector off, so Codex can load its list of
 ChatGPT connector tools.
 
-**Only the tools a job lists can be called.** Each run's `config.toml` switches every ChatGPT connector off
+**Only the tools a job lists are switched on; anything else is switched off from the list Codex last fetched, and a
+tool added by OpenAI since then is refused after the call.** Each run's `config.toml` switches every ChatGPT connector off
 (`[apps._default] enabled = false`), switches on only the connectors the job needs (`[apps.<connector id>] enabled =
 true`) and switches off each of their tools the job did not list (`[apps.<id>.tools.<tool>] enabled = false`). Those
 tools are then not there to call: tested on 2026-09-23 with real runs, a run allowed only `gmail.get_profile` and told
 to create a draft could not find a draft tool. So with both *Send* boxes off, `gmail.send_email` and
 `slack.slack_send_message` are switched off, and chases are drafts (`gmail.create_draft`, `slack.slack_send_message_draft`);
-with a *Send* box ticked, the chase gets the send tool and replies in the thread. As a second line, a run that calls any
-tool off its list fails and saves nothing ("Codex used a tool this job did not allow, so nothing was saved"). Two things
+with a *Send* box ticked, the chase gets the send tool and replies in the thread. The switches are made from one copy of
+Codex's connector list taken into the run's own folder, and the run uses that same copy. If the copy lacks a tool the job
+lists, the job does not run: one warm-up refreshes the list, and if it is still missing the job stops with "Codex is
+still getting ready". A list older than 24 hours is refreshed by a warm-up before the next job, so a tool OpenAI adds
+later is off the switch list for at most a day. In that window a call to it is not prevented, only caught: the run fails
+and saves nothing ("Codex used a tool this job did not allow, so nothing was saved"). A warm-up that fails (sign-in run
+out, allowance used up, too slow) stops the job with that reason, within the job's own time limit.
+Now and then a Codex session starts without one connector's tools (seen in real runs). A run that called no tool of a
+connector its job lists is therefore retried once; if it happens again the job fails and saves nothing ("Codex couldn't
+reach its Gmail or Slack tools this time"), so a refresh never moves past mail or messages it did not read. Two things
 did **not** work and are not used: `default_tools_approval_mode` / `approval_mode = "approve"` (ignored by `codex exec`:
 drafts were still created) and the app name `gmail` in place of the connector id.
 
 **The checklist asks Codex once.** Whether Gmail and Slack answer can only be found out by asking Codex, which is a run
 against your allowance. Every attempt is kept in `state/codex-probe.json`: a day while at least one source works,
 15 minutes while none does, 5 minutes after a failed attempt. **Check again** asks afresh, but never more often than
-every 30 seconds. A source ticks only when Codex's own call to it succeeded, not just because the answer says so. The
+every 30 seconds. While Codex is still loading the connection list the rows say "still getting ready"; from the third
+such attempt for an account they offer **Connect** instead and keep doing so until a check gets an answer. A source ticks only when Codex's own call to it succeeded, not just because the answer says so. The
 same run reads your Slack user id, which replaces a stored one that differs.
 
 **Windows is not verified yet.** The Codex route was built and tested on a Mac. On Windows, the sign-in link falls
