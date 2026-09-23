@@ -187,7 +187,9 @@ r = job("openloops.people")
 check(r.returncode == 0 and people.exists(), "...the same block in a normal answer is (so the check above can fail)")
 
 src = (TMP / "openloops" / "doctor.py").read_text(encoding="utf-8")
-check('re.search(r"\\bU[0-9A-Z]{8,}\\b", p.stdout or "")' in src, "doctor's Slack-id lookup reads p.stdout with this pattern")
+check('re.search(r"SLACK_ID:\\s*(U[0-9A-Z]{8,})\\b", p.stdout or "") or re.search(r"\\b(U[0-9A-Z]{8,})\\b", p.stdout or "")' in src
+      and "slack_name_of(p.stdout)" in src,
+      "doctor's Slack-id lookup (id and, #50, display name) reads p.stdout with these patterns")
 fake(result("Slack said: unauthorised for U12345678", is_error=True), rc=1)
 p = agent.run("Reply with ONLY the current logged-in user's Slack user id", ["slack.search_users"])
 check(not re.search(r"\bU[0-9A-Z]{8,}\b", p.stdout or "") and "U12345678" in p.error_text,

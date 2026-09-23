@@ -160,7 +160,7 @@ try:
         r = subprocess.run([sys.executable, "-c", "from openloops import agent; print(' '.join(agent.claude_args(['slack.read_channel'])))"],
                            cwd=tmp, env=env, capture_output=True, text=True)
         return r.stdout.strip()
-    check("--model sonnet" in claude_cmd() and "--effort xhigh" in claude_cmd(), "fresh install runs the jobs on sonnet at xhigh (template default)")
+    check("--model sonnet" in claude_cmd() and "--effort high" in claude_cmd(), "fresh install runs the jobs on sonnet at high (template default, #50)")
     api("/api/config", {"model": "opus", "effort": "medium"})
     check(claude_cmd().endswith("--model opus --effort medium"), "model + effort from Settings reach the claude command line")
     api("/api/config", {"effort": ""})

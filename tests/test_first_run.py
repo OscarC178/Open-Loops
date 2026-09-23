@@ -84,8 +84,10 @@ if a[:1] == ["-p"]:
             "slack-id" if "Slack user id" in prompt else "other")
     with open(os.path.join(here, "prompts.txt"), "a") as f:
         f.write(kind + "\n")
+    with open(os.path.join(here, "efforts.txt"), "a") as f:   # #50: which effort each kind of run was given
+        f.write(kind + ":" + (a[a.index("--effort") + 1] if "--effort" in a else "-") + "\n")
     if kind == "slack-id":
-        print("U0TEST12345")
+        print("SLACK_ID: U0TEST12345\nSLACK_NAME: Test Person")
     elif kind == "people":
         print('<<<PEOPLE>>>{"people": [{"name": "Sam Lee", "email": null, "channel": "slack", "count": 9, "guess": "peer", "example": "can you send the deck?"}]}<<<END>>>')
     elif kind == "voice":
@@ -139,7 +141,7 @@ def page_js(port, session, scenario, tmp):
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
-        cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("),
+        cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="),
         grab("const running="), grab("const havePeople="), grab("const haveVoice="),
         cut("function stage(){", "\nasync function tick(){"), cut("async function tick(){", "\nfunction paintConnect("),
         cut("let peopleRendered=''", "async function findPeople("),
@@ -190,6 +192,7 @@ if NODE:
     try:
         out = page_js(port, {}, """
  await boot();await tick();await tick();await tick();out.before=snap();out.seen=seen();out.doc=DOC.steps.map(x=>x.id+':'+x.ok);out.all_ok=DOC.all_ok;
+ const me=DOC.steps.find(x=>x.id==='self');out.self={title:me.title,detail:me.detail};
  startScan();await until(()=>jobCalls().length>0);await waitJob('people');await loadCfg();await tick();out.people=snap();out.P=P&&P.people.length;
  await api('/api/config',{people:{'Sam Lee':{level:'peer',aliases:['Sam'],email:null}},voice_sample_people:['Sam Lee']});
  await loadCfg();await tick();out.voice=snap();await waitJob('voice');await loadCfg();
@@ -212,6 +215,8 @@ if NODE:
         check(out["scan"]["uslack_label"] == "Updating…" and out["scan"]["uslack_disabled"] is True,
               "...and while the first scan (a refresh) runs it is disabled and says Updating…")
         check(out["seen"] == ["slack-id"], f"...and the fake claude was asked nothing but the Slack id before the press ({out['seen']})")
+        check(out["self"] == {"title": "Knows who you are on Slack (Test Person)", "detail": "U0TEST12345"},
+              f"the Slack row names you by your display name; the id is only in its detail (#50) ({out['self']})")
         check(out["people"]["stage"] == "people" and out["people"]["shown"] == ["people"] and out["P"] == 1,
               "after Start the first scan: who's who ran and its picks are on show")
         check(out["voice"]["jobs"][-1].startswith("/api/voice "), "saving who's who starts Learn my tone by itself (the press covers the chain)")
@@ -227,6 +232,9 @@ if NODE:
               f"setup finished: the lists appear with the Slack loop, no full refresh needed ({e}, {out['state']})")
         check(out["meta"].startswith("slack ") and "never" not in out["meta"], f"the header says when Slack was read, not 'never' ({out['meta']!r})")
         check(out["persisted"] is True, "reaching ready saves setup_done in state.json")
+        eff = (tmp / "bin" / "efforts.txt").read_text().split()
+        check("slack-id:low" in eff and "people:low" in eff and "voice:high" in eff and "refresh-slack-only:high" in eff,
+              f"#50: the Slack lookup and who's who run at low effort, the other jobs at the template's high ({eff})")
         check(json.loads((tmp / "config.json").read_text(encoding="utf-8")).get("first_scan") == "go",
               "Start the first scan saved first_scan \"go\" in config.json")
         check(out["withGmail"] == {"stage": "ready", "lists": "", "later": "", "sources": "Slack and Gmail"},
@@ -358,8 +366,11 @@ else:
      fs.writeFileSync(PF.replace('prompts.txt','signed_out'),'');
      const t0=Date.now();await refresh();await until(()=>TOASTS.length>0,3000);out.ms=Date.now()-t0;
      out.toasts=TOASTS.slice();out.said=J.refresh.said;out.con=CON.filter(l=>/refresh/.test(l));
-     await until(()=>DOC&&DOC.steps.some(x=>x.id==='login'&&!x.ok),10000);await tick();
+     await until(()=>DOC&&DOC.steps.some(x=>x.id==='login'&&!x.ok),10000);await until(()=>S&&S.setup_done,5000);await tick();
      out.after={stage:stage(),rows:Object.fromEntries(DOC.steps.map(x=>[x.id,{ok:x.ok,fix:x.fix,connect:x.connect||''}]))};
+     const h=$('#st_connect h3');h.dataset={};h.textContent="1 · Let's get you connected";
+     out.bar=$('#steps').innerHTML;paintSetupDone();out.head=h.textContent;
+     S.setup_done=false;paintSetupDone();out.headFresh=h.textContent;await tick();out.barFresh=$('#steps').innerHTML;S.setup_done=true;
      out.watch=Object.keys(WATCH);""", tmp)
             check(out["idle"]["stage"] == "ready" and out["idle"]["seen"] == 2, "page: set up and idle, earlier job ends noted but not announced")
             check(out["ms"] < 3000 and out["toasts"] and out["toasts"][0] == out["said"] and out["said"],
@@ -371,6 +382,11 @@ else:
                   "page: the re-check brings the checklist back with its Sign in button")
             check(not rows["self"]["ok"] and rows["self"]["fix"] == signin, f"'Knows who you are on Slack' is not ticked while signed out ({rows['self']})")
             check(not rows["channel"]["ok"] and rows["channel"]["fix"] == signin, f"'At least one source' says sign in first ({rows['channel']['fix']!r})")
+            check(out["bar"] == "" and out["head"] == messages.say("setup_done_signin", ai="Claude"),
+                  f"#50: set up once, a sign-out shows the checklist under one line, not the numbered setup again ({out['head']!r}, {out['bar'][:60]!r})")
+            check(out["head"] == "Setup is done; Claude just needs signing in again. Press Sign in below."
+                  and out["headFresh"] == "1 · Let's get you connected" and "1 · Connect" in out["barFresh"],
+                  "...while a setup that never finished still shows '1 · Let's get you connected' and the numbered steps")
             check(out["watch"] == [], "page: back to the slow poll once the job's end was seen")
             out = page_js(port, {}, """
  const realST=global.setTimeout;const delays=[];global.setTimeout=(f,ms)=>{if(f===loop)delays.push(ms);return realST(f,ms)};

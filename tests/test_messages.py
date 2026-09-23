@@ -44,10 +44,10 @@ US = ("color", "authoriz", "cancele", "recogniz", "organiz", "behavior", "center
 BUTTONS = set(agent.CONNECT_STEPS) | {agent.INSTALL_STEP}
 check(len(FAILURES) >= 40, f"the inventory is there ({len(FAILURES)} entries)")
 for fid, m in FAILURES.items():
-    check(set(m) <= {"what", "fix", "fix_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
+    check(set(m) <= {"what", "fix", "fix_win", "fix_test", "fix_test_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
           f"{fid}: has a non-empty what and fix")
     check(m.get("button") is None or m["button"] in BUTTONS, f"{fid}: button is a real checklist step or none")
-    for part in ("what", "fix", "fix_win"):
+    for part in ("what", "fix", "fix_win", "fix_test", "fix_test_win"):
         text = m.get(part)
         if not text:
             continue
@@ -131,7 +131,7 @@ import string as _string  # noqa: E402
 
 def holes_of(fid):
     m = FAILURES[fid]
-    return {f for part_ in ("what", "fix", "fix_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
+    return {f for part_ in ("what", "fix", "fix_win", "fix_test", "fix_test_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
 
 
 def short_calls(cs):
@@ -169,6 +169,17 @@ check(say("install_timeout", ai="Claude", limit="10 minutes") ==
 check(say("install_timeout", ai="Claude").startswith("The install took longer than {limit}"), "an unfilled placeholder stays as it is")
 check(say("server_offline", win=False).endswith("on your Desktop or in Applications.")
       and say("server_offline", win=True).endswith("on your Desktop or in the Start menu."), "server_offline: Mac and Windows wording")
+# #50: a test copy (no Desktop or Applications icon) is told the command that starts it, per platform
+check(messages.part("server_offline", "fix", win=False, test=True) == "Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder."
+      and messages.part("server_offline", "fix", win=True, test=True) == "Start it again by typing python -m openloops.app in PowerShell, in this copy's folder."
+      and messages.part("server_error", "fix", win=False, test=True) == messages.part("server_error", "fix", win=False),
+      "server_offline on a test copy names the command (Mac: python3 in Terminal; Windows: python in PowerShell); other entries unchanged")
+tp = messages.for_page(win=False, test=True)
+check(tp["server_offline"]["fix"].startswith("Start it again by typing python3") and "icon" not in tp["server_offline"]["fix"]
+      and {k: v for k, v in tp.items() if k != "server_offline"} == {k: v for k, v in messages.for_page(win=False).items() if k != "server_offline"},
+      "for_page(test=True): only the 'not running' fix changes")
+check(say("setup_done_signin", ai="Claude") == "Setup is done; Claude just needs signing in again. Press Sign in below.",
+      "after setup, a sign-out says setup is done and what to press (#50)")
 page = messages.for_page(win=True)
 check(page["server_offline"]["fix"].endswith("Start menu.") and set(page) == set(FAILURES)
       and all(set(v) == {"what", "fix", "button", "recheck"} for v in page.values()), "for_page(): the whole table, fix chosen for the platform")
@@ -385,6 +396,19 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 m = re.search(r"^const MSG=(.*);$", html, re.M)
 check(m and "/*OL_MESSAGES*/" not in html, "the app fills in the page's failure table as it serves it")
+# #50: the table is per install: a test copy's page names the command that starts it, not the icon it does not have
+for how, conf, extra in (("test_copy", {"test_copy": True}, {}), ("isolated (env)", {}, {"OPENLOOPS_ISOLATED": "1"})):
+    tc = fresh_install("openloops-messages-tc-", conf)
+    srv_tc = None
+    try:
+        srv_tc, port_tc = start_app(tc, isolated_env(tc, BROWSER="true", **extra))
+        with urllib.request.urlopen(f"http://127.0.0.1:{port_tc}/", timeout=10) as r:
+            tc_msg = json.loads(re.search(r"^const MSG=(.*);$", r.read().decode("utf-8"), re.M).group(1))
+    finally:
+        stop(srv_tc)
+        shutil.rmtree(tc, ignore_errors=True)
+    check(tc_msg == messages.for_page(sys.platform == "win32", test=True) and "openloops.app" in tc_msg["server_offline"]["fix"],
+          f"{how}: the served table says to start it with python -m openloops.app in its folder")
 served = json.loads(m.group(1))
 check(cache == "no-store", "the page is served with Cache-Control: no-store, so a cached copy never keeps old wording")
 check(served == messages.for_page(sys.platform == "win32"), "...with exactly messages.for_page() for this platform")
@@ -411,6 +435,19 @@ check("'▫️'" not in html and "'⬜'" not in html and "!s.optional||s.connect
 check("02-Research" not in html and "C:\\\\Users\\\\you\\\\Documents\\\\to-do.md" in html and "/Users/you/Documents/to-do.md" in html,
       "the to-do file example is per platform and names no developer folder")
 check("black window" not in html.split("id=\"agent_help\"")[1].split("</div>")[0], "Home copy no longer promises a black window with /mcp")
+# #50 wording round 2
+check(html.count("<b>Open Claude (advanced)</b>") == 2 and html.count('<span class="agent_btn_help"> <b>Open Claude (advanced)</b>') == 2
+      and '<span class="agent_btn_help"> <b>Open Codex (advanced)</b>' in html and html.count('<span class="agent_btn_help"><b>Open Grok</b>') == 2
+      and "#st_connect.no_agent_btn .agent_btn_help{display:none}" in html
+      and "$('#st_connect').classList.toggle('no_agent_btn',noBtn)" in html,
+      "the help paragraph's 'Open <AI>' sentence is hidden whenever that button is (the AI not installed)")
+check("${CON.length} lines" not in html and "${CON.length} line${CON.length===1?'':'s'}" in html, "Console: '1 line', not '1 lines'")
+check(re.search(r'<header>.*<div id="toasts" aria-live="polite"></div></header>', html, re.S)
+      and "#toasts{position:absolute;top:calc(100% + 8px)" in html and "bottom:20px" not in html.split("#toasts{")[1].split("}")[0],
+      "toasts hang just below the sticky header, not over the bottom of the page and its checklist rows")
+check("<b>${esc(s.title)}</b>" in html, "a checklist row's title is escaped (it can hold a Slack display name)")
+check("st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
+      "after setup, a sign-out brings back no numbered setup bar and no second 'All set' toast")
 
 # the table goes into an inline <script>: a sentence holding </script>, quotes, backslashes or U+2028 must survive
 from html.parser import HTMLParser  # noqa: E402
@@ -488,6 +525,17 @@ check(out["offline"] == {"display": "block", "text": want},
 check(out["error"]["display"] == "block" and out["error"]["text"] == say("server_error") and out["status"] == 500
       and out["body"] == {"error": "boom"}, "app answered with an error: a different sentence, and the error carries status and body")
 check(out["cleared"] == "none", "banner('') hides it again")
+tc_line = "const MSG=" + messages.page_json(False, test=True) + ";"
+r4 = subprocess.run([node, "-e", JS.replace(grab("const MSG="), tc_line)], capture_output=True, text=True, timeout=30)
+tc_out = json.loads(r4.stdout.strip().splitlines()[-1])
+check(tc_out["offline"] == {"display": "block", "text": "Open Loops isn't running on this computer. Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder."},
+      f"on a test copy the banner says how to start it again, in its folder (#50) ({tc_out['offline']})")
+CP = "\n".join([grab("function conPaint("), next(lines[i + 1] for i, l in enumerate(lines) if l.startswith("function conPaint("))])
+for n, want_ in ((1, "1 line · last"), (2, "2 lines · last")):
+    js = ("const els={};const $=s=>els[s]||(els[s]={textContent:'',scrollTop:0,scrollHeight:0});let CON=" +
+          json.dumps(["2026-09-23 10:00:0%d  x" % i for i in range(n)]) + ";\n" + CP + "\nconPaint();console.log($('#con_meta').textContent)")
+    r5 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    check(r5.returncode == 0 and r5.stdout.strip().startswith(want_), f"Console header with {n} line(s): {r5.stdout.strip()!r} {r5.stderr.strip()[-150:]}")
 PS = grab("window.addEventListener('pageshow'")
 for ok_, want_ in ((True, "reload"), (False, "loop")):
     js = ("let did=[];const location={reload:()=>did.push('reload')};const loop=()=>did.push('loop');let stopped=false;const H={};"

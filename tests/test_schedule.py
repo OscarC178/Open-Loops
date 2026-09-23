@@ -229,5 +229,5 @@ check("setInterval(checkSchedule" in html and "/api/schedule/status" in html, ".
 check("if(seq!==schedSeq)return;SCHED=" in html, "... and an older, slower poll cannot overwrite a newer answer")
 check("paintConnect=function(){paintConnectBase()" in html and "s.link" in body, "... the checklist row gets the download button too")
 check("||s.test_copy){w.style.display='none';return}" in body, "... but a test copy's row never raises the red banner")
-check("st==='ready'&&!schedBad())toast(" in html, "... no 'refreshes itself every morning' toast while the row is red")
+check("st==='ready'&&!schedBad()&&!setupDone())toast(" in html, "... no 'refreshes itself every morning' toast while the row is red")
 say("PASS - the morning refresh failure is detected, worded plainly, and in /api/diag")

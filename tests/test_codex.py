@@ -85,10 +85,14 @@ check(agent.connect_steps() == ("login", "gmail", "slack") and agent.connect_url
       and agent.connect_url("login") is None, "Gmail / Slack buttons open ChatGPT's apps page; no Miro or plugin step")
 check(agent.install_cmd("codex")["cli"] == "codex", "the Install button knows Codex (from #32)")
 check(doctor.parse_probe("GMAIL: CONNECTED\nSLACK: NOT-CONNECTED\nSLACK_ID: NONE") ==
-      {"gmail": True, "slack": False, "miro": None, "slack_id": ""}, "the probe's answer is read line by line")
+      {"gmail": True, "slack": False, "miro": None, "slack_id": "", "slack_name": ""}, "the probe's answer is read line by line")
 check(doctor.parse_probe("**GMAIL:** CONNECTED\n- SLACK: CONNECTED\nSLACK_ID: U01ABCDEF9")["slack_id"] == "U01ABCDEF9",
       "...with markdown around it, and the Slack id")
-check(doctor.parse_probe("I could not tell.") == {"gmail": None, "slack": None, "miro": None, "slack_id": ""},
+check(doctor.parse_probe("SLACK: CONNECTED\nSLACK_ID: U01ABCDEF9\nSLACK_NAME: Sam O'Brien <b>")["slack_name"] == "Sam O'Brien b"
+      and doctor.parse_probe("SLACK: CONNECTED\nSLACK_ID: NONE\nSLACK_NAME: Sam")["slack_name"] == ""
+      and doctor.parse_probe("SLACK: CONNECTED\nSLACK_ID: U01ABCDEF9\nSLACK_NAME: NONE")["slack_name"] == "",
+      "the Slack display name (#50): read with the id only, cleaned of markup, NONE is no name")
+check(doctor.parse_probe("I could not tell.") == {"gmail": None, "slack": None, "miro": None, "slack_id": "", "slack_name": ""},
       "an answer without the lines is unknown, not 'not connected'")
 cfg["agent"] = "grok"
 check(agent.connect_steps() == () and agent.login_cmd("login") is None, "Grok still has no setup buttons")
@@ -197,7 +201,7 @@ if a[:1] == ["exec"]:
                     call(t) if good else bad(t)  # in the list = connected in ChatGPT; it may still fail
             sid = open(os.path.join(here, "slack_id")).read().strip() if flag("slack_id") else "U0TESTSELF1"
             text = ("GMAIL: " + ("CONNECTED" if g else "NOT-CONNECTED") + "\nSLACK: " + ("CONNECTED" if s else "NOT-CONNECTED")
-                    + "\nSLACK_ID: " + (sid if s else "NONE"))
+                    + "\nSLACK_ID: " + (sid if s else "NONE") + "\nSLACK_NAME: " + ("Test Self" if s else "NONE"))
             if "MIRO: CONNECTED or NOT-CONNECTED" in data:
                 ev(type="item.completed", item={"type": "mcp_tool_call", "server": "miro", "tool": "list_boards", "status": "completed"})
                 text += "\nMIRO: CONNECTED"
@@ -769,9 +773,12 @@ cj = json.loads((ROOT / "config.json").read_text())
 (ROOT / "config.json").write_text(json.dumps(dict(cj, slack_self_id="UOLD000001")))
 res = main_doctor()
 st = {s["id"]: s for s in res["steps"]}
-check(res["all_ok"] and st["self"]["ok"] and "U0TESTSELF1" in st["self"]["title"]
+check(res["all_ok"] and st["self"]["ok"] and st["self"]["detail"] == "U0TESTSELF1"
       and json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "U0TESTSELF1",
       "the probe's Slack id replaces an older stored one")
+check(st["self"]["title"] == "Knows who you are on Slack (Test Self)" and "U0TESTSELF1" not in st["self"]["title"]
+      and json.loads((ROOT / "config.json").read_text())["slack_self_name"] == "Test Self",
+      "the row names you by your Slack display name, never the raw id (#50); the id is in its detail")
 (BIN / "slack_id").write_text("UNEW000002"); age(60)
 main_doctor()
 check(json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "UNEW000002", "...and a changed one again")
@@ -779,7 +786,8 @@ check(json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "UNEW00
 auth("chatgpt", account="acct-D")
 flag("slack_ok", False)
 main_doctor()
-check(json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "", "another account with no Slack clears the stored id")
+check(json.loads((ROOT / "config.json").read_text())["slack_self_id"] == ""
+      and json.loads((ROOT / "config.json").read_text())["slack_self_name"] == "", "another account with no Slack clears the stored id and name")
 check(not st["miro"]["ok"] and st["miro"]["fix"].startswith("Miro isn't available with Codex"), "Miro: not available with Codex")
 
 auth("chatgpt")
