@@ -24,6 +24,7 @@ slack@claude-plugins-official`, `claude mcp login <server>`), your browser opens
 `claude mcp list`, not from a trial prompt. What each command printed is in `state/connect-<step>.log`. If a button
 doesn't do it, *Open Claude (advanced)* opens a terminal running `claude`, where `/mcp` lists every connection.
 Open Loops stores no tokens for this: the sign-ins stay wherever the Claude CLI keeps them.
+A second Claude account needs its own Claude settings folder; for a second Slack workspace or Gmail inbox, see [More than one account](#8-more-than-one-account-work--personal).
 
 **Installing the AI CLI: one button.** Apart from Python, nothing needs installing first. When the selected
 AI's CLI is missing (or is there but won't start), the checklist's first row shows **Install Claude** (or Grok) with
@@ -54,6 +55,7 @@ each job's tool list to the agent's own naming and flags; the prompts are identi
 (`doctor.py`) checks whichever agent is selected. With Grok, Slack is **opt-in** (`"use_slack"`): off, jobs are
 Gmail-only and the Slack plugin is not started or probed. Vercel is never loaded. Headless Grok jobs pass
 `--effort low` because the CLI defaults to `xhigh`.
+Codex is not supported yet ([#12](https://github.com/OscarC178/Open-Loops/issues/12)); what it and the other two allow for a second account is in [More than one account](#8-more-than-one-account-work--personal).
 
 ### Gmail with Grok (one-off, ~5 minutes)
 
@@ -73,6 +75,8 @@ Google sign-in itself (`gmail_auth.py`) and ships its own tiny Gmail MCP server 
 
 Note: the bundled Gmail server deliberately has **no send tool** (drafts only), so with Grok, email chases are
 always drafts even if *Send* is ticked; Slack sending still works.
+
+A second Gmail inbox with Grok is a second install with its own Gmail sign-in (Mac); see [More than one account](#8-more-than-one-account-work--personal).
 
 ## 2. Install (10 minutes)
 
@@ -295,3 +299,100 @@ state/logs/       one log per run
    the fix, and *Copy all* in the Console includes the tail of that log. The same limit applies to anything the
    morning refresh reads: keep your own to-do file outside those three folders too, or the morning refresh cannot
    read it.
+
+## 8. More than one account (work + personal)
+
+One install of Open Loops reads one set of accounts: one AI sign-in, one Slack workspace, one Gmail inbox. This
+section says what each AI allows if you want a second account for the same source, what that costs you, and what
+works now. Checked on 23 September 2026 against Claude Code 2.1.280, Codex CLI 0.156.1 and Grok 1.0.30; the
+numbers in brackets point at the sources at the end of this section. *Unverified* means the documentation
+suggests it but nobody has tried it yet.
+
+| AI | Signing in to the AI | Second Slack workspace | Second Gmail inbox | Cost | Status |
+|---|---|---|---|---|---|
+| **Claude Code** | One account per settings folder (`CLAUDE_CONFIG_DIR`) [1][2] | Probably a second settings folder (*unverified*, note a) | Probably a second claude.ai account (*unverified*, note b) | Slack: probably none. Gmail: probably a second Claude plan (*unverified*) | Needs Profiles |
+| **Codex** | One account per `CODEX_HOME` with file-based storage [5][6] | Probably a second ChatGPT account (*unverified*, note c) | Probably a second ChatGPT account (*unverified*, note c) | A second ChatGPT account [7] | Not supported by Open Loops yet |
+| **Grok** | One sign-in per `GROK_HOME` [9] | Probably a second Grok folder (*unverified*, note d) | A second install with its own Gmail sign-in (note e) | No extra subscription; usage comes from the same accounts | Gmail: works today on a Mac. Slack: needs Profiles |
+
+Calendar is not in the table because Open Loops does not read calendars.
+
+**a. Claude and Slack.** With the Slack plugin, each settings folder has its own plugins [1], so a second workspace
+probably means a second folder with its own `claude mcp login`. That the Slack sign-in is kept per folder, and that
+the same Claude plan can be signed in to both folders, are *unverified*. With the claude.ai Slack connector, the
+connection belongs to the claude.ai account [3]; whether one connector can hold two workspaces is *unverified*.
+
+**b. Claude and Gmail.** The claude.ai Gmail connector reads "the Google account you've connected" [4]. A second
+inbox therefore probably needs a second claude.ai account, signed in from a second settings folder, and Claude Code
+needs a paid plan on that account [2]; both are *unverified*.
+
+**c. Codex.** In testing ([#18](https://github.com/OscarC178/Open-Loops/issues/18)) ChatGPT's Gmail and Slack
+connectors followed the ChatGPT account, not the `CODEX_HOME` folder, so a second inbox or workspace probably needs a
+second ChatGPT account in a second folder. OpenAI does not document this. Folders are kept apart only with
+file-based sign-in storage; with `keyring` storage, separation is *unverified* [6]. Slack's own MCP server is not
+documented as supported for Codex [8]. Codex is included with Free and paid ChatGPT plans [7]; whether a Free account
+gets Gmail and Slack in Codex is *unverified*.
+
+**d. Grok and Slack.** Grok keeps its Slack sign-in in `mcp_credentials.json` in its folder [9], so a second workspace
+probably means a second folder reusing the same Grok sign-in (*unverified*).
+
+**e. Grok and Gmail.** Separate installs keep their Gmail sign-ins separately (`state/google_oauth.json` in each).
+Follow [Gmail with Grok](#gmail-with-grok-one-off-5-minutes) in each install and select a different inbox; the
+same Google Cloud project can serve both if the second address is added as a test user [10].
+
+### Examples
+
+**Work Claude + personal Grok.** On a Mac this works today as two installs, one for each AI. Keep your normal
+install on Claude, then add a second copy with `bash install.sh --dest ~/OpenLoops-personal --no-app --no-task
+--port 8790 --name "<your name>"`, choose Grok in its ⚙ Settings, and follow
+[Gmail with Grok](#gmail-with-grok-one-off-5-minutes). The installer registers one scheduled refresh for the
+current user, so keep `--no-task` on the second install and press Refresh there yourself (see
+[Testing a fresh install](#testing-a-fresh-install)); start it with
+`cd ~/OpenLoops-personal && python3 -m openloops.app`. Windows is *unverified*: the Grok Gmail server is set up with
+`python3`, which Windows may not have ([ROADMAP](ROADMAP.md)).
+
+**Two Gmail accounts on Codex.** Codex is not supported by Open Loops yet
+([#12](https://github.com/OscarC178/Open-Loops/issues/12)). Use Claude or Grok for now; for two inboxes, use two Grok
+installs as above, each signed in with `python3 -m openloops.gmail_auth connect` to a different inbox.
+
+**Two Slack workspaces on Claude.** Open Loops cannot keep two Claude Slack workspaces apart yet. Connect the
+workspace you need most, and use separate installs once Profiles is available. The app passes its own environment to
+its jobs and, on Windows, to *Open Claude (advanced)*, so a copy started with `CLAUDE_CONFIG_DIR` set should use that
+folder; on a Mac, *Open Claude (advanced)* opens Terminal, which does not get that setting. Neither is tested
+(*unverified*).
+
+### What Profiles will do
+
+Profiles are planned to keep work and personal settings separate; use separate installs until Profiles is
+available. The [ROADMAP design sketch](ROADMAP.md#profiles-work--personal--all) gives each profile its own
+settings under `profiles/<name>/`. The proposal in [#26](https://github.com/OscarC178/Open-Loops/issues/26) adds
+each profile's own AI folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME`) and Gmail token file, so that its
+jobs, checklist and **Connect** buttons use that profile's accounts and switching profile does not sign the other
+out. These are proposals, not built behaviour.
+
+### Sources
+
+1. Claude Code environment variables, `CLAUDE_CONFIG_DIR`: "Useful for running multiple accounts side by side" and
+   "All settings, session history, and plugins are stored under this path" — https://code.claude.com/docs/en/env-vars
+2. Claude Code authentication, credential management: with `CLAUDE_CONFIG_DIR` set, the macOS Keychain entry is
+   keyed to that folder, "so a session with a different `CLAUDE_CONFIG_DIR` reads a different entry"; account types
+   Pro/Max, Team/Enterprise, Console — https://code.claude.com/docs/en/authentication. `claude auth login --help`
+   offers only `--claudeai`, `--console`, `--email`, `--sso` (no folder option).
+3. Claude Code MCP, "Use MCP servers from claude.ai": connectors are fetched only for a claude.ai subscription
+   login — https://code.claude.com/docs/en/mcp. `claude mcp login --help`: "Authenticate with an MCP server (HTTP,
+   SSE, or claude.ai connector)".
+4. Claude Help Centre, Google Workspace connectors: "Claude can only access the Gmail, Calendar, and Drive data for
+   the Google account you've connected" — https://support.claude.com/en/articles/10166901-use-google-workspace-connectors
+5. Codex environment variables, `CODEX_HOME`: "Sets the root for Codex state, including config, auth, logs,
+   sessions, skills" — https://learn.chatgpt.com/codex/config-file/environment-variables
+6. Codex authentication: "file stores credentials in auth.json under CODEX_HOME"; `keyring` uses the system store
+   instead — https://learn.chatgpt.com/docs/auth. `codex login --help` has no folder option.
+7. Codex pricing: "ChatGPT Work and Codex are included in your ChatGPT Free, Go, Plus, Pro, Business, Edu, or
+   Enterprise plan" — https://learn.chatgpt.com/docs/pricing
+8. Slack MCP server: clients listed are Claude.ai, Claude Code, Perplexity, Cursor; "We do not support SSE-based
+   connections or Dynamic Client Registration at this time" — https://docs.slack.dev/ai/slack-mcp-server/
+9. Grok 1.0.30 built-in docs (`strings ~/.grok/bin/grok`): "`GROK_HOME` | Override config directory (default:
+   `~/.grok`)"; tokens in `~/.grok/auth.json` and "MCP OAuth tokens in `~/.grok/mcp_credentials.json`". `grok --help`
+   itself does not mention `GROK_HOME`; `grok login --help` has no folder option. Open Loops sets it in
+   `agent.grok_job_env()`.
+10. Google Cloud, Manage App Audience: an app in Testing can list up to 100 test users —
+    https://support.google.com/cloud/answer/15549945
