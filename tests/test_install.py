@@ -159,6 +159,8 @@ try:
     code, doc = api("/api/doctor", {"force": True})
     check(code == 200 and not row(doc)["ok"] and row(doc).get("connect") == "install", "the checklist says Claude is missing, offers Install")
     check(row(doc).get("command") == LINES["claude"][0], f"...and shows the exact command first (got {row(doc).get('command')!r})")
+    login = next(x for x in doc["steps"] if x["id"] == "login")
+    check("connect" not in login and login["fix"].startswith("Install Claude first"), "the sign-in row points at Install, offers no button yet")
     code, s = api("/api/connect/install")
     check(code == 200 and s["running"] is False and s["rc"] is None and s["command"] == LINES["claude"][0],
           "GET /api/connect/install: idle, with the command it would run")

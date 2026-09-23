@@ -102,7 +102,8 @@ def claude_steps(steps):
             except Exception:
                 pass
     login = {"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email else ''}",
-             "fix": "Press Sign in: your browser opens the Claude sign-in page. Use your work Google account." if not logged else ""}
+             "fix": "" if logged else "Install Claude first (the row above)." if not have else
+                    "Press Sign in: your browser opens the Claude sign-in page. Use your work Google account."}
     if have and not logged:
         login["connect"] = "login"
     steps.append(login)
