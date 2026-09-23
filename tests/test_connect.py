@@ -182,6 +182,29 @@ if which == "rollback":  # setup fails after the step is claimed: the claim must
     ok, why = app.run_connect("gmail")
     assert ok, "still wedged after a failed start: " + why
     assert settle("gmail")
+if which == "quit":
+    # Quit lands while a worker is still getting ready: the worker must not start its command afterwards
+    ready = threading.Event()
+    agent.login_cmd = lambda step: (ready.wait(5), [["sleep", "30"]])[1]
+    ok, why = app.run_connect("miro")
+    assert ok, why
+    app.quit_requested = True
+    app.stop_connects()
+    ready.set()
+    assert settle("miro"), "the worker started its command after Quit"
+    assert not app.connect_procs, app.connect_procs
+    ok, why = app.run_connect("slack")
+    assert not ok and "closing" in why, (ok, why)
+    app.quit_requested = False
+    # a child that closed its terminal but lives on stays visible to Quit until it has been waited for
+    agent.login_cmd = lambda step: [["sh", "-c", "exec >/dev/null 2>&1 </dev/null; sleep 30"]]
+    ok, why = app.run_connect("miro")
+    assert ok, why
+    time.sleep(1.5)
+    assert "miro" in app.connect_procs, "a live child dropped out of connect_procs once its terminal closed"
+    t = time.time()
+    app.stop_connects()
+    assert settle("miro", 10) and time.time() - t < 3, "Quit did not stop the child"
 print("HARNESS OK " + which)
 '''
 
@@ -229,6 +252,8 @@ env = dict(os.environ, OPENLOOPS_PORT=str(PORT), PATH=str(tmp / "bin") + os.path
            BROWSER=str(tmp / "bin" / "browser"))
 out = harness("rollback")
 check(out.endswith("HARNESS OK rollback"), f"a setup step whose start fails is not left 'already running' ({out[-300:]})")
+out = harness("quit")
+check(out.endswith("HARNESS OK quit"), f"Quit owns every setup-step process, however late it starts or ends ({out[-300:]})")
 srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:

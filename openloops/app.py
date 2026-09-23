@@ -149,9 +149,35 @@ connect_procs = {}  # step -> Popen of the command running now, so quitting the 
 
 
 def stop_connects():
-    """Quit or exit: stop every setup step still waiting (Windows: its console window too)."""
-    for p in list(connect_procs.values()):
+    """Quit or exit: stop every setup step still waiting (Windows: its console window too). quit_requested is set
+    first, and _launch checks it under the same lock, so a step about to start either is in this list or never starts."""
+    with connect_lock:
+        running = list(connect_procs.values())
+    for p in running:
         kill_tree(p)
+
+
+def _launch(step, *args, **kw):
+    """Popen for a setup step, registered for stop_connects() in the same breath -> Popen, or None once quitting."""
+    with connect_lock:
+        if quit_requested:
+            return None
+        p = connect_procs[step] = subprocess.Popen(*args, **kw)
+        return p
+
+
+def _reap(step, p, secs):
+    """Wait for a setup step's process (killing it if it outstays secs) -> exit code, then stop tracking it.
+    Tracked until here, so a child that closed its terminal but lives on can still be stopped by Quit."""
+    try:
+        return p.wait(max(1, secs))
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+        return -1
+    finally:
+        with connect_lock:
+            if connect_procs.get(step) is p:
+                connect_procs.pop(step)
 
 
 def connect_log(step):
@@ -167,24 +193,21 @@ def _connect_one(step, argv, log, deadline):
     if WIN:
         with open(log, "a", encoding="utf-8") as f:
             f.write(f"$ {subprocess.list2cmdline(argv)}\n(running in its own window)\n")
-        p = subprocess.Popen(subprocess.list2cmdline(argv), cwd=ROOT, shell=True,
-                             creationflags=subprocess.CREATE_NEW_CONSOLE)
-        connect_procs[step] = p
-        try:
-            return p.wait(max(1, deadline - time.time()))
-        except subprocess.TimeoutExpired:
-            kill_tree(p)
-            return -1
-        finally:
-            connect_procs.pop(step, None)
+        p = _launch(step, subprocess.list2cmdline(argv), cwd=ROOT, shell=True,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE)
+        return -1 if p is None else _reap(step, p, deadline - time.time())
     import os, pty, select
     m, s = pty.openpty()
-    p = subprocess.Popen(argv, cwd=ROOT, stdin=s, stdout=s, stderr=s, start_new_session=True, close_fds=True)
-    os.close(s)
-    connect_procs[step] = p
-    before = log.read_text(encoding="utf-8") + "$ " + " ".join(shlex.quote(a) for a in argv) + "\n"
-    raw, tail = b"", ""
     try:
+        p = _launch(step, argv, cwd=ROOT, stdin=s, stdout=s, stderr=s, start_new_session=True, close_fds=True)
+    finally:
+        os.close(s)
+    if p is None:  # Open Loops is closing
+        os.close(m)
+        return -1
+    raw, tail, rc = b"", "", -1
+    try:
+        before = log.read_text(encoding="utf-8") + "$ " + " ".join(shlex.quote(a) for a in argv) + "\n"
         while True:
             if time.time() > deadline:
                 kill_tree(p)
@@ -208,17 +231,13 @@ def _connect_one(step, argv, log, deadline):
                         webbrowser.open(u.group(0))
             elif p.poll() is not None:
                 break
-    finally:
+    finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
         os.close(m)
-        connect_procs.pop(step, None)
+        rc = _reap(step, p, 5)
     if tail:
         with open(log, "a", encoding="utf-8") as f:
             f.write(tail)
-    try:
-        return p.wait(5)
-    except subprocess.TimeoutExpired:
-        kill_tree(p)
-        return -1
+    return rc
 
 
 def run_connect(step):
@@ -227,6 +246,8 @@ def run_connect(step):
     if agent.name() != "claude" or step not in agent.CONNECT_STEPS:
         return False, "no such setup step for " + agent.display_name()
     with connect_lock:  # check and claim in one go
+        if quit_requested:
+            return False, "Open Loops is closing"
         if (connects.get(step) or {}).get("running"):
             return False, "already running"
         connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
