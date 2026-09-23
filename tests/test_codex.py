@@ -422,7 +422,21 @@ with contextlib.redirect_stderr(io.StringIO()):
     agent.run("hello", [])
 agent.codex_sweep = real_sweep
 check(len(swept) == 2 and not dead2.exists(), "the sweep runs before and after each run")
-shutil.rmtree(fresh_); shutil.rmtree(live_); shutil.rmtree(ancient_)
+# the boundary: never through a link
+outside = Path(os.environ["HOME"]) / "outside"
+(outside / "run-old").mkdir(parents=True)
+os.utime(outside / "run-old", (time.time() - 7200,) * 2)
+(JOBS / "acct-link").symlink_to(outside)
+check(agent.codex_sweep() == 0 and (outside / "run-old").exists(), "an account folder that is a link is not swept")
+(JOBS / "acct-link").unlink()
+stale3 = leftover("run-oldnopid3", hours=2)
+JOBS.rename(JOBS.with_name("codex-home-real"))
+JOBS.symlink_to(JOBS.with_name("codex-home-real"))
+check(agent.codex_sweep() == 0 and stale3.exists(), "nothing is swept when state/codex-home itself is a link")
+JOBS.unlink()
+JOBS.with_name("codex-home-real").rename(JOBS)
+shutil.rmtree(stale3)
+shutil.rmtree(fresh_); shutil.rmtree(live_); shutil.rmtree(ancient_); shutil.rmtree(outside)
 
 
 # (A) a tool off the job's list fails the job: nothing to apply

@@ -459,9 +459,14 @@ def codex_sweep(now=None):
     Quit or a test skips its own clean-up, and the folder keeps its link to the user's auth.json (#42). A folder goes
     when the job that made it has ended (its openloops.pid names no live process), or when it names none and is more
     than CODEX_RUN_STALE_S old. A folder whose job is alive is never removed, however old. Runs at app start and before
-    and after every Codex run; says on stderr how many it removed. -> that number. Links are removed, never followed."""
+    and after every Codex run; says on stderr how many it removed. -> that number. Links are removed, never followed.
+    Boundary: nothing is swept when state/codex-home is a link, an account folder that is a link is skipped, and every
+    folder removed must resolve to a place inside state/codex-home."""
     import time
     now = time.time() if now is None else now
+    if _CODEX_JOBS.is_symlink():
+        return 0
+    base = os.path.realpath(_CODEX_JOBS) + os.sep
     try:
         runs = [r for a in _CODEX_JOBS.iterdir() if a.is_dir() and not a.is_symlink()
                 for r in a.glob("run-*") if r.is_dir() and not r.is_symlink()]
@@ -469,6 +474,8 @@ def codex_sweep(now=None):
         return 0
     gone = 0
     for r in runs:
+        if not os.path.realpath(r).startswith(base) or r.parent.is_symlink():
+            continue  # not where it should be (the tree changed under us): leave it
         try:
             age = now - r.stat().st_mtime
         except OSError:
