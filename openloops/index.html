@@ -394,7 +394,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <details class="cfg danger" id="cs_app" ontoggle="cfgRemember(this)"><summary><b>App</b><span class="sub">quit · start over</span></summary><div class="body">
  <div class="box">
   <h3>Quit</h3>
-  <div class="sub">Closing this tab stops the app by itself a few seconds later (after any running job). This button does the same without closing the tab. To start again, double-click the Open Loops icon.</div>
+  <div class="sub">Closing this tab stops the app by itself a few seconds later (after any running job). This button does the same without closing the tab. <span id="quit_again">To start again, double-click the Open Loops icon.</span></div>
   <button id="quitbtn" onclick="quitApp()" style="margin-top:6px">Quit Open Loops</button>
  </div>
  <div class="box">
@@ -1167,7 +1167,10 @@ window.addEventListener('pagehide',()=>{if(stopped)return;const b=new Blob([JSON
 window.addEventListener('pageshow',e=>{if(e.persisted&&!stopped)fetch('/',{cache:'no-store'}).then(r=>{if(r.ok)location.reload();else loop()},()=>loop())});   // back/forward cache restore: say hello again before the grace runs out
 async function quitApp(){const b=$('#quitbtn');b.disabled=true;try{const r=await api('/api/quit',{});stopped=true;clearTimeout(loopT);
   const after=r.after_jobs&&r.after_jobs.length?' once the running '+r.after_jobs.join(', ')+' job finishes':'';
-  banner('Open Loops is stopping'+after+'. You can close this tab; double-click the Open Loops icon to start it again.')}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
+  banner('Open Loops is stopping'+after+'. You can close this tab. '+restartSaid())}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
+// How to start it again, as the offline banner says it: the icon on an install, the command on a test copy (#50)
+function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)||'To start again, double-click the Open Loops icon.'}
+$('#quit_again').textContent=restartSaid();
 setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a)allowFocus(a.step)});
 cfgRestore();
 // the to-do file example, as a path on this computer looks; and a name for the AI picker, which has no <label> of its own

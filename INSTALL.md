@@ -268,7 +268,8 @@ its Settings is read, and written back when you press *done*.
   `config.json`;
 - no to-do file is read or written back, whatever `standing_file` / `vault_path` say;
 - the page never starts *Who's who*, *Learn my tone* or the first scan by itself, not even after a reload: each
-  page load waits for **Start the first scan** (the button still works, and so do **Refresh** / **Update Slack**);
+  page load waits for **Start the first scan** (the button still works, and so does **Update Slack** once Slack is
+  connected; **Refresh** only appears after the first scan);
 - the header shows a grey **Test copy: no automatic scans** pill;
 - the weekday refresh and auto-chase skip on it even if a scheduled job points at it, and `--isolated` removes that
   copy's own weekday job if it has one (a job for another copy is left alone);
@@ -286,8 +287,9 @@ bash install.sh --dest ~/OpenLoops-test --isolated --no-launch --port 8790 --nam
 cd ~/OpenLoops-test && python3 -m openloops.app --no-browser &   # answers on 8790
 ```
 
-Opening its page then runs only the connection checklist; nothing is scanned until you press **Start the first
-scan**, **Refresh** or **Update Slack**. Stop it with `python3 -m openloops.app --stop --port 8790`.
+Opening its page then runs only the connection checklist, which with Slack connected makes one quick call to find
+your Slack id; nothing is scanned until you press **Start the first scan** or **Update Slack** (**Refresh** appears
+once the first scan has run). Stop it with `python3 -m openloops.app --stop --port 8790`.
 
 The other flags:
 

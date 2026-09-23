@@ -177,6 +177,8 @@ def run_job(name, extra=None):
         jobs[name] = {"running": True, "log": ""}
         starting.add(name)
     args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
+    # what the failure sentence calls this run: the button pressed (Update Slack is "The Slack update", #50)
+    said_as = "refresh_slack" if name == "refresh" and "--slack-only" in (extra or []) else name
     ai = _ai_now()  # the AI this run uses, for its sentence if it fails; the job gets the same name (OPENLOOPS_AI)
     try:  # started here, not in the thread: a job the page sees as running always has a process /api/quit can stop
         run_id = uuid.uuid4().hex  # the job writes its failure record under this id, and only that file is read back
@@ -186,7 +188,7 @@ def run_job(name, extra=None):
     except Exception as e:  # no interpreter, no permission: say so in the job log rather than hang as "running"
         with jobs_lock:
             starting.discard(name)
-            jobs[name] = _ended(name, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
+            jobs[name] = _ended(said_as, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
         return False
     with jobs_lock:  # registered under the lock the quit takes: a "Quit now" is either before this (cut_jobs) or sees p
         procs[name] = p
@@ -199,9 +201,9 @@ def run_job(name, extra=None):
         try:
             out, err = p.communicate()
             failure, note = _run_failure(name, run_id, p.returncode)  # never read from the job's output
-            jobs[name] = _ended(name, p.returncode, ((out + err)[-4000:] + note), ai, failure)
+            jobs[name] = _ended(said_as, p.returncode, ((out + err)[-4000:] + note), ai, failure)
         except Exception as e:
-            jobs[name] = _ended(name, -1, f"{name} broke off: {type(e).__name__}: {e}", ai)
+            jobs[name] = _ended(said_as, -1, f"{name} broke off: {type(e).__name__}: {e}", ai)
         finally:
             procs.pop(name, None)
 

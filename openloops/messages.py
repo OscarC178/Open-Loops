@@ -382,7 +382,7 @@ FAILURES = {
         "button": None},
     "first_scan_ask": {
         "what": "Open Loops is ready to read your own messages, read-only, to see who you talk to, how you write and what is still open.",
-        "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do.",
+        "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do, apart from a quick check of who you are on Slack.",
         "button": None},
     "scheduled_isolated": {
         "what": "This copy is an isolated test copy, so the scheduled refresh did not read anything.",
@@ -397,7 +397,7 @@ FAILURES = {
         "fix": "Press Retry.",
         "button": None},
     "first_scan_later": {
-        "what": "Not started.",
+        "what": "Not started; Open Loops remembers that, so nothing reads your messages until you choose.",
         "fix": "Press Start the first scan when you're ready.",
         "button": None},
 
@@ -417,7 +417,8 @@ FAILURES = {
 }
 
 # What each job is called in a sentence (the page's toasts and app.py's job_failure()).
-JOBS = {"refresh": "The refresh", "chase": "The chase", "people": "Looking at who you talk to",
+# "refresh_slack": the refresh started by Update Slack (--slack-only), named as the button the person pressed (#50).
+JOBS = {"refresh": "The refresh", "refresh_slack": "The Slack update", "chase": "The chase", "people": "Looking at who you talk to",
         "voice": "Learning your tone", "daylog": "The day log", "roadmap": "The roadmap step",
         "standing": "Closing the to-do item"}
 

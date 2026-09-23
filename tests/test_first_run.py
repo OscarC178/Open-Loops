@@ -257,12 +257,12 @@ if NODE:
         check(out["before"]["shown"] == ["start"] and out["before"]["jobs"] == [] and out["after"]["jobs"] == []
               and not any(j["running"] or "rc" in j for j in st["jobs"].values()) and "people" not in prompts(tmp),
               "five ticks and Not now: no job started, by the page or on the server")
-        check(out["after"]["later"] == "Not started. Press Start the first scan when you're ready." and out["SS"] == {"ol.firstscan": "later"},
+        check(out["after"]["later"] == "Not started; Open Loops remembers that, so nothing reads your messages until you choose. Press Start the first scan when you're ready." and out["SS"] == {"ol.firstscan": "later"},
               f"Not now says so and is remembered for the tab ({out['after']['later']!r}, {out['SS']})")
         check(json.loads((tmp / "config.json").read_text(encoding="utf-8")).get("first_scan") == "later",
               "...and saved as first_scan \"later\" in config.json, for the weekday task")
         out = page_js(port, {"ol.firstscan": "later"}, "await boot();await tick();await tick();out.reload=snap();", tmp)
-        check(out["reload"]["shown"] == ["start"] and out["reload"]["jobs"] == [] and out["reload"]["later"].startswith("Not started."),
+        check(out["reload"]["shown"] == ["start"] and out["reload"]["jobs"] == [] and out["reload"]["later"] == messages.say("first_scan_later"),
               "a reload after Not now still waits, and still says so")
         out = page_js(port, {"ol.firstscan": "go"}, "await boot();await tick();out.reload=snap();await waitJob('people');", tmp)
         check(json.loads((tmp / "config.json").read_text(encoding="utf-8")).get("first_scan") == "later",
@@ -360,6 +360,13 @@ else:
         while time.time() - t1 < 5 and api(port, "/api/state")["jobs"]["refresh"].get("seq") != 2:
             time.sleep(0.1)
         check(api(port, "/api/state")["jobs"]["refresh"].get("seq") == 2, "app: the next end of any job takes the next seq")
+        api(port, "/api/refresh", {"slack_only": True})   # #50: Update Slack, signed out
+        t1 = time.time()
+        while time.time() - t1 < 5 and api(port, "/api/state")["jobs"]["refresh"].get("seq") != 3:
+            time.sleep(0.1)
+        j = api(port, "/api/state")["jobs"]["refresh"]
+        check(j.get("said") == messages.say("job_signed_out", job="The Slack update", ai="Claude"),
+              f"app: a failed Update Slack is named as the button pressed ({j.get('said')!r})")
         (tmp / "bin" / "signed_out").unlink()
         if NODE:
             out = page_js(port, {}, """
@@ -373,7 +380,7 @@ else:
      out.bar=$('#steps').innerHTML;paintSetupDone();out.head=h.textContent;
      S.setup_done=false;paintSetupDone();out.headFresh=h.textContent;await tick();out.barFresh=$('#steps').innerHTML;S.setup_done=true;
      out.watch=Object.keys(WATCH);""", tmp)
-            check(out["idle"]["stage"] == "ready" and out["idle"]["seen"] == 2, "page: set up and idle, earlier job ends noted but not announced")
+            check(out["idle"]["stage"] == "ready" and out["idle"]["seen"] == 3, "page: set up and idle, earlier job ends noted but not announced")
             check(out["ms"] < 3000 and out["toasts"] and out["toasts"][0] == out["said"] and out["said"],
                   f"page: the sentence is shown within 3 s of pressing Refresh ({out['ms']} ms: {out['toasts'][:1]})")
             check(any(l.startswith("refresh finished rc=1") for l in out["con"]), f"page: a Console line says the refresh ended ({out['con']})")

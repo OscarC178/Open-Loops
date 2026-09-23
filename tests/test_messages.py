@@ -107,6 +107,7 @@ for m in re.finditer(r"""\bmsg\('([a-z_]+)'(?:,\{([^}]*)\})?\)""", page_src):
     line_no = page_src.count("\n", 0, m.start()) + 1
     calls.append(({m.group(1)}, set(re.findall(r"(\w+)\s*(?::|,|$)", m.group(2) or "")), f"index.html:{line_no}"))
 from openloops import app  # noqa: E402  (importing app writes config/state into the throwaway install only)
+src_app_ = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
 # ids reached through tables rather than a literal call, and what their callers fill in
 TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entries below say what these are filled with
           **{i: {"ai", "limit", "vendor"} for i in app.INSTALL_WHY.values()},
@@ -183,6 +184,10 @@ check(tp["server_offline"]["fix"].startswith("Start it again by typing python3")
       "for_page(test=True): only the 'not running' fix changes")
 check(say("setup_done_signin", ai="Claude", button="Sign in") == "Setup is done; Claude just needs signing in again. Press Sign in below.",
       "after setup, a sign-out says setup is done and what to press (#50)")
+# #50, from the #48 fresh-install test
+check(say("first_scan_ask").endswith("nothing runs until you do, apart from a quick check of who you are on Slack."),
+      "the first-scan box owns up to the one Slack-id lookup that runs before the press")
+check(say("first_scan_later").startswith("Not started; Open Loops remembers that"), "after Not now the box says the choice is remembered")
 page = messages.for_page(win=True)
 check(page["server_offline"]["fix"].endswith("Start menu.") and set(page) == set(FAILURES)
       and all({"what", "fix", "button", "recheck"} <= set(v) <= {"what", "fix", "button", "recheck", "fix_follow"} for v in page.values())
@@ -269,6 +274,10 @@ check(agent.CODEX_REFUSE["unlisted"] == say("codex_unlisted") and "{store}" in a
 check("OPENLOOPS_FAILURE" not in "".join(SOURCES[f] for f in SOURCES if f.endswith(".py")) + "".join(
       (REPO / "openloops" / f).read_text(encoding="utf-8") for f in ("people.py", "voice.py")), "no stdout failure protocol is left")
 
+check(app._ended("refresh_slack", 1, "x", ai="Claude", failure={"failure": "job_signed_out"})["said"].startswith("The Slack update stopped because Claude")
+      and app._ended("refresh_slack", 1, "x")["said"].startswith("The Slack update didn't finish.")
+      and 'said_as = "refresh_slack" if name == "refresh" and "--slack-only" in (extra or []) else name' in src_app_,
+      "a failed Update Slack is named as the button pressed: 'The Slack update stopped…', not 'The refresh…' (#50)")
 e = app._ended("refresh", 1, "x", ai="Claude", failure={"failure": "job_signed_out", "ai": "Claude"})
 check(e["failure"] == "job_signed_out" and e["said"].startswith("The refresh stopped because Claude") and e["rc"] == 1,
       "app: a failed job carries its failure id and sentence for the page")
@@ -450,6 +459,9 @@ check(re.search(r'<header>.*<div id="toasts" aria-live="polite"></div></header>'
       and "#toasts{flex-basis:100%" in html and "position:" not in html.split("#toasts{")[1].split("}")[0]
       and "while(box.children.length>=TOAST_MAX)box.firstElementChild.remove()" in html and "const TOAST_MAX=3;" in html,
       "toasts are a full-width line of the sticky header (in the flow, not over the page), at most 3 at once")
+check("double-click the Open Loops icon to start it again" not in html and "$('#quit_again').textContent=restartSaid();" in html
+      and "You can close this tab. '+restartSaid())" in html and "function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)" in html,
+      "Settings > Quit says how to start again as the offline banner does (the command on a test copy, #50)")
 check("<b>${esc(s.title)}</b>" in html, "a checklist row's title is escaped (it can hold a Slack display name)")
 check("st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
       "after setup, a sign-out brings back no numbered setup bar and no second 'All set' toast")
