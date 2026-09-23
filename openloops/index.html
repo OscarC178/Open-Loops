@@ -475,9 +475,9 @@ function paintSchedule(st){const w=$('#sched_warn'),s=schedBad()?schedStep():nul
  w.style.display='block';w.textContent='';const t=document.createElement('b'),f=document.createElement('div');t.textContent=s.title;f.textContent=s.fix;w.append(t,f);
  if(s.link){const b=document.createElement('button');b.textContent='Open the download page';b.onclick=()=>window.open(s.link,'_blank','noopener');w.append(b)}
  if(s.detail!==schedSaid){schedSaid=s.detail;clog('morning refresh did not start: '+(s.detail||s.kind))}}   // the developer detail goes to the Console only
-// Once set up, the connection check no longer runs every minute, so re-read the schedule's logs on their own
+// Past the connection step the connection check no longer runs every minute, so re-read the schedule's logs on their own
 // (file reads on the server, no CLI): a morning failure shows, and a recovery clears, without a reload.
-async function checkSchedule(){if(stage()!=='ready')return;try{SCHED=(await api('/api/schedule/status')).step||null;paintSchedule('ready')}catch(e){}}
+async function checkSchedule(){const st=stage();if(['connect','checking','checkfail'].includes(st))return;try{SCHED=(await api('/api/schedule/status')).step||null;paintSchedule(stage())}catch(e){}}
 setInterval(checkSchedule,60000);
 // The download button in the setup checklist too. Wraps paintConnect instead of editing it (#21 rewrites that
 // function); rows are painted in DOC.steps order, so row i is step i.

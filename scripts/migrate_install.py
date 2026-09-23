@@ -29,6 +29,7 @@ LABEL = "com.openloops.refresh"
 FILES = ["config.json", "voice.json", "people_suggested.json", "google_oauth_client.json"]   # state.json last
 DIRS = ["state", ".grok", "profiles", "private"]
 LOG = Path.home() / "Library" / "Logs" / "OpenLoops" / "install.log"   # tracebacks go here, never on screen
+PAUSED = []   # the plist whose job unload_job() paused: put back as it was if we then stop (the old copy stays in use)
 
 
 class Stop(Exception):
@@ -79,7 +80,8 @@ def unload_job(old):
         log(f"launchctl bootout {target} -> {r.returncode}: {r.stdout}{r.stderr}")
         raise Stop("Open Loops couldn't pause the old copy's morning refresh.",
                    "Restart your Mac, then run the installer again.")
-    say("Paused the old copy's morning refresh (it is set up again for the new copy in a moment).")
+    PAUSED.append(plist)
+    say("Paused the old copy's morning refresh while copying.")
 
 
 def diag(port):
@@ -221,14 +223,24 @@ def main():
     return 0
 
 
+def resume():
+    """Stopping after the pause: the old copy is still the one in use, so its job goes back exactly as it was."""
+    for plist in PAUSED:
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], capture_output=True, text=True)
+        if r.returncode != 0:
+            log(f"launchctl bootstrap {plist} -> {r.returncode}: {r.stdout}{r.stderr}")
+
+
 if __name__ == "__main__":
     try:
         sys.exit(main())
     except Stop as e:
+        resume()
         print(f"  {e.what}", file=sys.stderr)
         print(f"  {e.todo}", file=sys.stderr)
         sys.exit(1)
     except Exception:
+        resume()
         log(traceback.format_exc())
         print("  Open Loops couldn't copy your list and settings from the old copy.", file=sys.stderr)
         print(f"  Run the installer again; if it happens again, send {LOG} to whoever set Open Loops up.", file=sys.stderr)

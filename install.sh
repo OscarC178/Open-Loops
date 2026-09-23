@@ -43,6 +43,11 @@ while [[ $# -gt 0 ]]; do
         *) shift ;;
     esac
 done
+# --at too: register-task.sh would reject a bad time only after config.json had already saved it
+if [ "$AT_SET" -eq 1 ] && ! [[ "$AT" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+    echo "  --at must be HH:MM, 24-hour (00:00 to 23:59), for example 09:15." >&2
+    exit 1
+fi
 # checked before anything is written: a bad port saved in config.json would stop the app from starting
 if [ -n "$PORT" ] && { ! [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || [ "$((10#$PORT))" -lt 1024 ] || [ "$((10#$PORT))" -gt 65535 ]; }; then
     echo "  --port must be a number from 1024 to 65535, for example 8790." >&2

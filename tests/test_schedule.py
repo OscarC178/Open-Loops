@@ -22,7 +22,14 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from openloops import doctor
 
-PORT = 8791
+def free_port():
+    """A port nobody is using right now, so the test does not depend on a fixed one being free."""
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        return sk.getsockname()[1]
+
+
+PORT = free_port()
 t0 = time.time()
 
 

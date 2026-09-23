@@ -180,6 +180,11 @@ try:
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
     check(r.returncode == 0 and cfg.get("port") == PORT + 100 and cfg.get("owner_name") == "Test",
           "re-run with a new --port: port updated, the rest of config.json kept")
+    for bad_at in ("9:15", "24:00", "09:60", "noon"):
+        before = (dest / "config.json").read_bytes()
+        r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--at", bad_at)
+        check(r.returncode != 0 and "--at must be HH:MM" in r.stderr and (dest / "config.json").read_bytes() == before,
+              f"--at {bad_at} refused before config.json is touched")
     for bad in ("80a", "80", "1023", "65536", "99999"):
         before = (dest / "config.json").read_bytes()
         r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", bad)
@@ -291,6 +296,17 @@ try:
         check(r.returncode == 1 and "can't check whether the old copy is still in use" in r.stderr
               and "Quit Open Loops and try again." in r.stderr, f"lsof {label}: refused in plain words")
         check(not (home / "Library" / "Application Support" / "OpenLoops" / "state.json").exists(), "... nothing copied")
+
+    say("4e2. stopping after the old job was paused puts the job back as it was")
+    home = tmp / "home-resume"
+    old = old_install(home, "Resume")
+    plist = job_for(home, old)
+    launchctl_log.unlink(missing_ok=True)
+    r = install(home, "--no-app", "--no-launch", extra_env={"PATH": f"{tmp / 'badlsof'}:{fakebin}:{os.environ['PATH']}"})
+    calls = launchctl_log.read_text().splitlines()
+    check(r.returncode == 1 and [c.split()[0] for c in calls] == ["print", "bootout", "bootstrap"]
+          and calls[-1].endswith(str(plist)), "paused, then lsof failed: the old job's own plist bootstrapped again")
+    check("while copying" in r.stdout and "set up again" not in r.stdout, "... and no promise that it is set up again")
 
     say("4f. only a server that says it is Open Loops AND runs the old folder is asked to quit")
     home = tmp / "home4"
