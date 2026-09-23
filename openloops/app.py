@@ -522,9 +522,17 @@ def connect_status(step):
     return c
 
 
+def test_copy():
+    """Whether this install is a test copy: config.json "test_copy" (install.sh --dest --no-app --no-task) or an isolated
+    one (#36). Such a copy has no Desktop or Applications icon, so the page's "not running" banner names the command."""
+    from . import doctor
+    return doctor.is_test_copy() or isolated()
+
+
 def index_bytes(table=None):
-    """index.html with the page's copy of messages.py filled in, for this platform (escaped for an inline <script>)."""
-    return INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table).encode("utf-8"), 1)
+    """index.html with the page's copy of messages.py filled in, for this platform and this install (a test copy gets
+    its own "not running" fix, #50), escaped for an inline <script>."""
+    return INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
 
 
 class H(BaseHTTPRequestHandler):

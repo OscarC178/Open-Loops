@@ -16,7 +16,8 @@ input,select,textarea{min-height:36px}textarea{min-height:0}
 .chip{display:inline-flex;align-items:center;font-size:11px;padding:0 0 0 8px;border-radius:10px;border:1px solid var(--line);color:var(--b);text-decoration:none;margin:3px 4px 0 0;max-width:260px;overflow:hidden;white-space:nowrap;vertical-align:bottom}.chip span{overflow:hidden;text-overflow:ellipsis}
 .chip button{min-height:0;height:22px;width:26px;padding:0;border:0;background:none;color:var(--mut);font-size:14px;line-height:1}.chip button:hover{color:var(--r)}
 /* toasts: every action is acknowledged, undo where it is cheap */
-#toasts{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:30;max-width:min(560px,calc(100vw - 32px))}
+/* hung just below the sticky header (#50): never over the checklist rows or the save bar at the bottom, never shifting the page */
+#toasts{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px;z-index:30;width:max-content;max-width:min(560px,calc(100vw - 32px))}
 .toast{background:var(--ink);color:var(--bg);border-radius:8px;padding:10px 14px;font-size:13px;display:flex;gap:12px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .toast.err{background:#7f1d1d;color:#fff}.toast button{min-height:28px;padding:2px 10px;background:transparent;color:inherit;border-color:currentColor;font-size:12px}
 /* one dialog for every "type something" moment: snooze, note, link, closing a vault item */
@@ -74,6 +75,7 @@ details.cfg.danger{border-color:var(--r)}details.cfg>.body>.card:last-child,deta
 select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink)}select.pri.high{color:var(--r);font-weight:600}
 #con{max-height:260px;margin:0 0 12px;user-select:text}
 @media(max-width:720px){.person{grid-template-columns:1fr auto}.person .sum{grid-column:1/-1}.blocks{max-width:none}}
+#st_connect.no_agent_btn .agent_btn_help{display:none}   /* the help never names a button the page has hidden (#50) */
 #savebar{position:sticky;bottom:0;background:var(--card);border-top:1px solid var(--line);margin:8px -24px 0;padding:10px 24px;display:flex;gap:10px;align-items:center;z-index:2}
 /* Set-up (#28): three cards, each with its state and one action; the AI picker is three big targets (Fitts) */
 .su-head{display:flex;align-items:center;gap:12px;margin:0 0 4px}.su-head h3{margin:0;flex:1;font-size:16px}
@@ -95,7 +97,8 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 <button id="uslack" onclick="refresh(true)" title="quick pass: Slack only, skips email" style="display:none">Update Slack</button>
 <span class="pill" id="gmail" style="display:none"></span>
 <span class="pill" id="isolated_pill" style="display:none" title="An isolated test copy: it reads no to-do file and starts no scan by itself">Test copy: no automatic scans</span>
-<span class="meta" id="meta"></span></header>
+<span class="meta" id="meta"></span>
+<div id="toasts" aria-live="polite"></div></header>
 <main>
 <div id="banner"></div>
 <div id="sched_warn" role="alert"></div>
@@ -143,7 +146,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <button onclick="doctor(true)">Check again</button>
    <span class="sub" id="setup_msg"></span>
   </div>
-  <div class="sub" style="margin-top:10px" id="agent_help">Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens. <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can't do.</div>
+  <div class="sub" style="margin-top:10px" id="agent_help">Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can't do.</span></div>
  </div>
 
  <!-- stage: people -->
@@ -260,7 +263,6 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <button type="button" onclick="dlgClose()">Cancel</button>
   </div>
 </form></dialog>
-<div id="toasts" aria-live="polite"></div>
 <!-- the one step the app cannot do for you: clicking Allow in the browser. Closes by itself once that row goes green (#28) -->
 <dialog id="allow_dlg" aria-labelledby="allow_title"><div class="box" style="padding:16px 18px;margin:0;border:0">
   <h3 id="allow_title"></h3>
@@ -449,7 +451,7 @@ const stamp=(d=new Date())=>{const p=n=>String(n).padStart(2,'0');return `${d.ge
 function clog(msg){const line=stamp()+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);if(CON.length>CON_MAX)CON=CON.slice(-CON_MAX);
  try{localStorage.setItem(CON_KEY,JSON.stringify(CON))}catch(e){}conPaint()}
 function conPaint(){const p=$('#con');if(!p)return;p.textContent=CON.join('\n')||'(nothing yet)';p.scrollTop=p.scrollHeight;
- $('#con_meta').textContent=CON.length?`${CON.length} lines · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
+ $('#con_meta').textContent=CON.length?`${CON.length} line${CON.length===1?'':'s'} · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
 function conClear(){CON=[];try{localStorage.removeItem(CON_KEY)}catch(e){}conPaint();conSay('cleared')}
 function conSay(m){$('#con_msg').textContent=m;setTimeout(()=>{if($('#con_msg').textContent===m)$('#con_msg').textContent=''},4000)}
 function conShow(){const d=cfgShow('console_wrap');if(d)d.scrollIntoView({behavior:'smooth',block:'start'});return false}
@@ -504,11 +506,11 @@ function agentUI(){if(!$('#agent_btn'))return;
  if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=grok?'':'none';
  $('#agent_help').innerHTML=grok
   ?((C&&C.use_slack)
-    ?'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.'
-    :'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.')
+    ?'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.</span>'
+    :'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.</span>')
   :(C&&C.agent)==='codex'
-  ?'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens. <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.'
-  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens. <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can\'t do.';}
+  ?'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.</span>'
+  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can\'t do.</span>';}
 // Model and effort per AI. Claude keeps "model" / "effort", Codex has "codex_model" / "codex_effort" (agent.py), so
 // switching AI never hands one CLI the other's model. Grok takes neither.
 const MODELS={
@@ -574,14 +576,22 @@ function paintStart(){$('#st_start').style.display='';$('#start_said').textConte
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
 const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone'],['scan','First scan'],['ready','Ready']];
+// Setup finished once (setup_done) and the checklist is back (a sign-out, a source that stopped answering): not setup
+// starting over, so no "1 · Connect, 2 · Who's who…" bar, and one line on top of the checklist says so (#50).
+const setupDone=()=>!!(S&&S.setup_done);
+function paintSetupDone(){const h=$('#st_connect h3');if(!h)return;if(h.dataset.first===undefined)h.dataset.first=h.textContent;
+ const intro=h.nextElementSibling,done=setupDone(),row=id=>(DOC&&DOC.steps||[]).find(x=>x.id===id);
+ const inst=row('claude'),login=row('login'),ai=(C&&C.agent)==='codex'?'ChatGPT':agentLabel();
+ h.textContent=!done?h.dataset.first:inst&&!inst.ok?msg('setup_done_install',{ai:agentLabel()}):login&&!login.ok?msg('setup_done_signin',{ai}):msg('setup_done_other');
+ if(intro&&intro.id!=='setup_steps')intro.style.display=done?'none':''}
 async function tick(){
  const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step
- $('#steps').innerHTML=st==='ready'?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
+ $('#steps').innerHTML=st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
  for(const k of ['connect','checkfail','people','auto','start'])$('#st_'+k).style.display='none';
  if(st!==lastStage)clog('stage: '+st);
  // Hick / Prägnanz: while setting up, the page is the setup - the lists, Day log and Roadmap wait until "ready"
  $('#lists').style.display=st==='ready'?'':'none';
- if(lastStage&&!['ready','checking','checkfail'].includes(lastStage)&&st==='ready'&&!schedBad())toast(`All set. Open Loops now refreshes itself every weekday morning at ${(C&&C.refresh_time)||'09:15'}; press Refresh any time for a fresh pass.`,{ms:10000});
+ if(lastStage&&!['ready','checking','checkfail'].includes(lastStage)&&st==='ready'&&!schedBad()&&!setupDone())toast(`All set. Open Loops now refreshes itself every weekday morning at ${(C&&C.refresh_time)||'09:15'}; press Refresh any time for a fresh pass.`,{ms:10000});
  lastStage=st;
  if(st==='connect')paintConnect();
  else if(st==='checkfail'){$('#st_checkfail').style.display='';$('#checkfail_said').textContent=msg('check_failed');$('#checkfail_msg').textContent=docFails>1?`tried ${docFails} times`:''}
@@ -664,7 +674,9 @@ setInterval(checkSchedule,60000);
 // function); rows are painted in DOC.steps order, so row i is step i.
 const paintConnectBase=paintConnect;
 paintConnect=function(){paintConnectBase();const rows=$('#setup_steps').children;
- const inst=DOC.steps.find(x=>x.id==='claude');$('#agent_btn').style.display=inst&&!inst.ok?'none':'';   // it would only say "command not found"
+ const inst=DOC.steps.find(x=>x.id==='claude'),noBtn=!!(inst&&!inst.ok);$('#agent_btn').style.display=noBtn?'none':'';   // it would only say "command not found"
+ $('#st_connect').classList.toggle('no_agent_btn',noBtn);   // ...and the help paragraph's sentence about it goes too (#50)
+ paintSetupDone();
  DOC.steps.forEach((s,i)=>{if(s.ok||!s.link||!rows[i])return;const b=document.createElement('button');b.textContent='Open the download page';b.style.marginTop='6px';
   b.onclick=()=>window.open(s.link,'_blank','noopener');(rows[i].lastElementChild||rows[i]).append(b)})};
 
