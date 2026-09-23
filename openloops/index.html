@@ -635,7 +635,8 @@ async function tick(){
  else if(st==='people'){$('#st_people').style.display='';await stagePeople()}
  else if(st==='voice'||st==='scan'){$('#st_auto').style.display='';await stageAuto(st)}
  // the steps bar last, so a job this tick started is already lit (stepsBar lights a part only once its job runs)
- $('#steps').innerHTML=st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':stepsBar(st);
+ // no bar once the first scan is done: Who's who reopened from Settings is not another "3 · First scan" (review of #59)
+ $('#steps').innerHTML=st==='ready'||scanned()||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':stepsBar(st);
  keepSetupDone(st);paintGmailLater(st);renderLists();paintVoice();paintButtons(st);paintSchedule(st);paintSetup(st)}
 
 function paintConnect(){$('#st_connect').style.display='';

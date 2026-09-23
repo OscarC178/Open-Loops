@@ -397,7 +397,8 @@ else:
      out.after={stage:stage(),rows:Object.fromEntries(DOC.steps.map(x=>[x.id,{ok:x.ok,fix:x.fix,connect:x.connect||''}]))};
      const h=$('#st_connect_h');h.dataset={};h.textContent="1 · Let's get you connected";
      out.bar=$('#steps').innerHTML;paintSetupDone();out.head=h.textContent;
-     S.setup_done=false;paintSetupDone();out.headFresh=h.textContent;await tick();out.barFresh=$('#steps').innerHTML;S.setup_done=true;
+     S.setup_done=false;const lr_=[S.last_refresh,S.last_slack_refresh];S.last_refresh=S.last_slack_refresh=null;   // never finished: no first scan either
+     paintSetupDone();out.headFresh=h.textContent;await tick();out.barFresh=$('#steps').innerHTML;S.setup_done=true;S.last_refresh=lr_[0];S.last_slack_refresh=lr_[1];
      out.watch=Object.keys(WATCH);""", tmp)
             check(out["idle"]["stage"] == "ready" and out["idle"]["seen"] == 3, "page: set up and idle, earlier job ends noted but not announced")
             check(out["ms"] < 3000 and out["toasts"] and out["toasts"][0] == out["said"] and out["said"],
@@ -1141,7 +1142,8 @@ if NODE:
     try:
         out = setup_js(port, """
  await boot();await tick();out.ready=view();await openSetup();out.open=view();out.home=$('#page_home').style.display;
- await closeSetup();out.closed=view();PAGE_WIN=true;await openSetup();out.win={state:$('#su_sched_state').textContent,time:$('#su_time').innerHTML};""", tmp)
+ await closeSetup();out.closed=view();
+ kicked.people=true;const s0_=stage;stage=()=>'people';await tick();out.reopen=$('#steps').innerHTML;stage=s0_;await tick();PAGE_WIN=true;await openSetup();out.win={state:$('#su_sched_state').textContent,time:$('#su_time').innerHTML};""", tmp)
         r, o, c = out["ready"], out["open"], out["closed"]
         check(r["stage"] == "ready" and r["setup"] == "none" and r["lists"] == "", "set up: the loops are the page, Set-up is out of the way")
         check(o["setup"] == "" and o["lists"] == "none" and o["back"] == "" and out["home"] == ""
@@ -1149,6 +1151,7 @@ if NODE:
               f"⚙ → Set-up opens the view on Home, every card done, with Back to your loops ({[o[k]['state'] for k in ('ai', 'src', 'sched')]})")
         check(o["every"] == "" and "Signed in to Claude" in o["steps"], "...and Every check is filled in there too")
         check(c["setup"] == "none" and c["lists"] == "" and c["jobs"] == [], "Back to your loops closes it again; nothing started")
+        check(out["reopen"] == "", f"Who's who reopened after the first scan shows no '3 · First scan' bar (review of #59) ({out['reopen']!r})")
         check(out["win"]["state"] == "Not checked" and "can&#39;t yet see from here whether Windows started it" not in out["win"]["time"]
               and "can't yet see from here whether Windows started it" in out["win"]["time"],
               "on Windows, with no morning-refresh row to go by, the schedule card says Not checked, never Done")

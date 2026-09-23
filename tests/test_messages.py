@@ -466,7 +466,7 @@ check("double-click the Open Loops icon to start it again" not in html and "$('#
       and "You can close this tab. '+restartSaid())" in html and "function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)" in html,
       "Settings > Quit says how to start again as the offline banner does (the command on a test copy, #50)")
 check("<b>${esc(s.title)}</b>" in html, "a checklist row's title is escaped (it can hold a Slack display name)")
-check("st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
+check("st==='ready'||scanned()||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
       "after setup, a sign-out brings back no numbered setup bar and no second 'All set' toast")
 
 # #52 review: toasts never lie over a checklist row, at 400 px and at 1280 px, even with more arriving than the cap.
