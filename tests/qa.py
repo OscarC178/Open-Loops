@@ -7,11 +7,13 @@ state, nothing else), starts the app on a spare port, and drives the onboarding 
 the page does - asserting at every stage the fact the page uses to decide it is done. Nothing touches your
 real install. Exit code 0 = a brand-new user would get all the way to a populated list.
 """
-import json, os, shutil, subprocess, sys, tempfile, time, urllib.request
+import json, os, shutil, tempfile, time, urllib.request
 from pathlib import Path
 
+from _helpers import start_app
+
 REPO = Path(__file__).resolve().parent.parent
-PORT = 8799
+PORT = 0  # set by start_app(): the port the app says it bound
 t0 = time.time()
 
 
@@ -54,10 +56,10 @@ tpl["refresh_time"] = "09:15"
 (tmp / "config.json").write_text(json.dumps(tpl, indent=2), encoding="utf-8")
 (tmp / "state.json").write_text(json.dumps({"cursor": "2026-01-01T00:00", "last_refresh": None, "loops": []}), encoding="utf-8")
 
-env = dict(os.environ, OPENLOOPS_PORT=str(PORT))
-srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+# the real HOME on purpose: this walkthrough drives the signed-in Claude Code and its Slack connection
+env = dict(os.environ)
+srv, PORT = start_app(tmp, env)
 try:
-    time.sleep(2)
     cfg = api("/api/config")
     check(cfg["config"].get("owner_name") == "Testuser", "config readable, name set by installer")
     check(not cfg["config"].get("people"), "stage: no people yet (new user)")

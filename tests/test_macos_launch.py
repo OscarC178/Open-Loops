@@ -7,7 +7,9 @@ Guards the two bugs that broke Desktop double-click and the launchd weekday refr
      doctor/refresh/chase/voice/people must use shell=WIN.
   2. launchd (and a thin Finder shell) hand children PATH=/usr/bin:/bin:/usr/sbin:/sbin, where
      claude never lives - the three shell entry points must export the fixed PATH before python3.
-Builds everything in a temp folder, stubs launchctl so nothing real is registered, and cleans up.
+Builds everything in a temp folder, stubs launchctl so nothing real is registered, and cleans up. Ports come
+from the OS, so it runs next to the installed copy and other suites. Without Claude Code installed (CI), the
+last live check (doctor finds claude on the fixed PATH) is skipped with a note instead of failing.
 Exit code 0 = both fixes still hold.
 """
 import json, os, re, shutil, socket, stat, subprocess, sys, tempfile, time, urllib.request
@@ -20,10 +22,11 @@ if sys.platform != "darwin":
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from openloops import doctor
+from _helpers import start_app, stop
 
 MINIMAL = "/usr/bin:/bin:/usr/sbin:/sbin"  # what launchd gives its children
 FIXED = f"{os.environ['HOME']}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{MINIMAL}"
-PORT_INSTALL, PORT_LIVE = 8797, 8798
+PORT_LIVE = 0  # set by start_app(): the port the app says it bound
 SHELL_FILES = ["openloops/doctor.py", "openloops/agent.py"]
 LABEL = "com.openloops.refresh"
 t0 = time.time()
@@ -46,19 +49,20 @@ def api(path, body=None):
         return json.loads(r.read())
 
 
-def wait_up(limit=20):
-    t = time.time()
-    while time.time() - t < limit:
-        try:
-            return api("/api/state")
-        except Exception:
-            time.sleep(0.3)
-    raise SystemExit("FAIL: app.py did not come up")
-
-
-def port_free(p):
-    with socket.socket() as sk:
-        return sk.connect_ex(("127.0.0.1", p)) != 0
+def kill_apps_under(folder):
+    """Kill every process whose working folder is inside `folder`: the app install.sh starts with nohup from
+    the throwaway install. Found by folder, not by port, so nothing outside this test is ever touched."""
+    root = str(Path(folder).resolve())
+    r = subprocess.run(["lsof", "-d", "cwd", "-F", "pn"], capture_output=True, text=True)
+    pid = None
+    for ln in r.stdout.splitlines():
+        if ln.startswith("p"):
+            pid = int(ln[1:])
+        elif ln.startswith("n") and pid and pid != os.getpid() and (ln[1:] == root or ln[1:].startswith(root + "/")):
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
 
 
 def refresh_job_registered():
@@ -86,8 +90,6 @@ job_was_registered = refresh_job_registered()
 
 srv = hold = None
 try:
-    check(port_free(PORT_INSTALL) and port_free(PORT_LIVE), f"spare ports {PORT_INSTALL}/{PORT_LIVE} free")
-
     say("1. shell=WIN regression - list args must all survive on POSIX")
     for name in SHELL_FILES:
         code = "\n".join(ln.split("#")[0] for ln in (REPO / name).read_text().splitlines())
@@ -116,9 +118,12 @@ try:
 
     # throwaway install to get the Desktop launcher install.sh writes; launchctl is stubbed and the
     # held port makes the installer's nohup'd app.py exit by itself (port-busy branch)
+    # (the app skips a port that answers but is not Open Loops and starts on the next one; kill_apps_under()
+    # stops it wherever it went)
     hold = socket.socket()
-    hold.bind(("127.0.0.1", PORT_INSTALL))
+    hold.bind(("127.0.0.1", 0))
     hold.listen(1)
+    PORT_INSTALL = hold.getsockname()[1]
     inst_env = dict(os.environ, HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}",
                     OPENLOOPS_PORT=str(PORT_INSTALL), BROWSER="/usr/bin/true")
     r = subprocess.run(["bash", str(REPO / "install.sh"), "--name", "Testuser", "--at", "09:15"],
@@ -133,6 +138,7 @@ try:
     path_export_works(launcher, "Desktop Open Loops.app launcher")
     hold.close()
     hold = None
+    kill_apps_under(home)
 
     say("3. live end-to-end - /api/doctor login row under broken then fixed PATH")
     app = tmp / "app"
@@ -146,36 +152,33 @@ try:
     (app / "state.json").write_text(json.dumps({"cursor": "2026-01-01T00:00", "last_refresh": None, "loops": []}), encoding="utf-8")
     # launchd supplies HOME/USER but only the minimal PATH - that is the exact bug environment
     base = {"HOME": os.environ["HOME"], "USER": os.environ.get("USER", ""), "LOGNAME": os.environ.get("LOGNAME", ""),
-            "OPENLOOPS_PORT": str(PORT_LIVE), "BROWSER": "/usr/bin/true"}
+            "BROWSER": "/usr/bin/true"}
 
-    srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=app, env=dict(base, PATH=MINIMAL),
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    wait_up()
+    srv, PORT_LIVE = start_app(app, dict(base, PATH=MINIMAL))
     steps = {s["id"]: s for s in api("/api/doctor", {"force": True})["steps"]}
     check(not steps["claude"]["ok"], "broken PATH: doctor cannot find claude (bug reproduced)")
     check(not steps["login"]["ok"], "broken PATH: 'Signed in to Claude' row is red (bug reproduced)")
-    srv.kill()
-    srv.wait()
+    stop(srv)
 
     env_fixed = dict(base, PATH=FIXED)
-    r = subprocess.run(["claude", "auth", "status"], env=env_fixed, capture_output=True, text=True, timeout=60)
-    truth = bool(re.search(r'"loggedIn"\s*:\s*true', r.stdout + r.stderr))
-    check(truth, "claude auth status reports signed in (this live check needs a signed-in machine)")
-    srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=app, env=env_fixed,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    wait_up()
-    steps = {s["id"]: s for s in api("/api/doctor", {"force": True})["steps"]}
-    check(steps["claude"]["ok"], "fixed PATH: doctor finds claude")
-    check(steps["login"]["ok"], "fixed PATH: login row ok: true, matching claude auth status")
+    if not shutil.which("claude", path=FIXED):
+        say("SKIP fixed-PATH half: Claude Code is not installed on this machine (e.g. CI), nothing to find")
+    else:
+        r = subprocess.run(["claude", "auth", "status"], env=env_fixed, capture_output=True, text=True, timeout=60)
+        truth = bool(re.search(r'"loggedIn"\s*:\s*true', r.stdout + r.stderr))
+        srv, PORT_LIVE = start_app(app, env_fixed)
+        steps = {s["id"]: s for s in api("/api/doctor", {"force": True})["steps"]}
+        check(steps["claude"]["ok"], "fixed PATH: doctor finds claude")
+        if truth:
+            check(steps["login"]["ok"], "fixed PATH: login row ok: true, matching claude auth status")
+        else:
+            say("SKIP login row: claude auth status says this machine is not signed in (the check needs one that is)")
 
     check(refresh_job_registered() == job_was_registered, "real launchd registration state unchanged")
     say("PASS - non-interactive macOS launch keeps full claude args and a working PATH")
 finally:
-    if srv and srv.poll() is None:
-        srv.kill()
-        srv.wait()
+    stop(srv)
     if hold:
         hold.close()
-    for port in (PORT_INSTALL, PORT_LIVE):
-        subprocess.run(["/bin/bash", "-c", f"lsof -ti tcp:{port} | xargs kill 2>/dev/null"], capture_output=True)
+    kill_apps_under(tmp)  # the installer's nohup'd app, if an early failure skipped the kill above
     shutil.rmtree(tmp, ignore_errors=True)

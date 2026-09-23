@@ -7,20 +7,15 @@ link it was given, so nothing signs in to anything and no browser window opens. 
 `mcp login` when stdin is not a terminal, as the real CLI (2.1.280) does, so a pass also proves the app
 runs it on a pseudo-terminal. That half is skipped on Windows, where the app gives the CLI a console window.
 """
-import json, os, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
+import json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-PORT = 0  # set by start_server(): the port our own server says it bound, never just one that looked free
-
-
-def free_port():
-    with socket.socket() as sk:
-        sk.bind(("127.0.0.1", 0))
-        return sk.getsockname()[1]
+PORT = 0  # set by start_app(): the port our own server says it bound, never just one that looked free
 t0 = time.time()
 sys.path.insert(0, str(REPO))
 from openloops import agent, doctor  # noqa: E402
+from _helpers import isolated_env, start_app  # noqa: E402
 
 
 def say(msg):
@@ -307,35 +302,16 @@ tpl.update(agent="claude", miro_source="server", slack_source="plugin")
 for f in ("claude", "browser"):
     os.chmod(tmp / "bin" / f, 0o755)
 calls = lambda: (tmp / "bin" / "calls.txt").read_text().splitlines() if (tmp / "bin" / "calls.txt").exists() else []
-env = dict(os.environ, PATH=str(tmp / "bin") + os.pathsep + os.environ.get("PATH", ""),
-           BROWSER=str(tmp / "bin" / "browser"))
+(tmp / "home").mkdir()  # HOME for the app and the harness: nothing is read from the developer's own ~
+env = isolated_env(tmp, PATH=str(tmp / "bin") + os.pathsep + os.environ.get("PATH", ""),
+                   BROWSER=str(tmp / "bin" / "browser"))
 out = harness("rollback")
 check(out.endswith("HARNESS OK rollback"), f"a setup step whose start fails is not left 'already running' ({out[-300:]})")
 out = harness("quit")
 check(out.endswith("HARNESS OK quit"), f"Quit owns every setup-step process, however late it starts or ends ({out[-300:]})")
 
 
-def start_server():
-    """Start the app on a port that was free a moment ago and read which port it says it bound: it prints
-    "Open Loops -> http://localhost:N" only after binding, and moves to the next free port by itself if the
-    first was taken meanwhile. If another Open Loops got there first it says "already running" and exits:
-    try again on a new port. -> (Popen, port)"""
-    import re, select
-    for _ in range(5):
-        p = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp,
-                             env=dict(env, OPENLOOPS_PORT=str(free_port()), PYTHONUNBUFFERED="1"),
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        line = p.stdout.readline() if select.select([p.stdout], [], [], 15)[0] else ""
-        m = re.match(r"Open Loops -> http://localhost:(\d+)", line)
-        if m:
-            return p, int(m.group(1))
-        p.kill()
-        p.wait()
-        say(f"server did not come up as ours ({line.strip()!r}); trying another port")
-    raise SystemExit("FAIL: openloops.app did not come up on a port of its own")
-
-
-srv, PORT = start_server()
+srv, PORT = start_app(tmp, env)
 try:
 
     code, _ = api("/api/connect/bogus")
