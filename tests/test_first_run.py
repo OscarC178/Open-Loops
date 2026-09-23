@@ -977,7 +977,11 @@ if NODE:
  aiSwitching='codex';HOLD['/api/connect/login'].release();out.gated={ok:await sw,...quiet()};aiSwitching='';
  HOLD['/api/connect/login']={body:run};sw=real();await until(()=>HOLD['/api/connect/login'].release,5000);
  C.agent='codex';HOLD['/api/connect/login'].release();out.changed={ok:await sw,...quiet()};C.agent='claude';
- aiSwitching='codex';out.during=await real();aiSwitching='';""", tmp)
+ aiSwitching='codex';out.during=await real();aiSwitching='';
+ // review of #58: one step's status fails and another never answers; the rest still restore, and the sweep ends in time
+ FAIL_GET.add('/api/connect/install');HANG.add('/api/connect/slack_install');REATTACH_MS=1500;
+ FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/authorize?state=miro',started:'2026-09-24T10:01:00',step:'miro'}];
+ const t2=Date.now();out.sweep={ok:await real(),ms:Date.now()-t2,miro:!!(CONN.miro&&CONN.miro.busy),url:CONN.miro&&CONN.miro.url};REATTACH_MS=15000;""", tmp)
         check(out["before"] == {"slack": None, "open": False}, "a fresh page knows nothing of the sign-in the app is running")
         a = out["after"]
         check(a["n"] == 1 and a["busy"] is True and a["url"] == "https://example.invalid/authorize?state=abc"
@@ -997,6 +1001,9 @@ if NODE:
         check(out["gated"] == {"ok": False, "busy": False, "open": False} and out["changed"] == {"ok": False, "busy": False, "open": False}
               and out["during"] is False,
               f"a reattach answer arriving during an AI change, or after one, restores no busy row and no pop-up, and is asked again later ({out['gated']}, {out['changed']})")
+        sw = out["sweep"]
+        check(sw["ok"] is False and sw["miro"] and sw["url"] == "https://example.invalid/authorize?state=miro" and 1400 <= sw["ms"] < 5000,
+              f"one step's status failing and another's never answering stop neither the rest (Miro restored) nor the sweep's deadline ({sw})")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
