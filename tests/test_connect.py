@@ -156,6 +156,42 @@ print("fake claude: unexpected " + " ".join(a)); sys.exit(9)
 '''.replace("PYTHON", sys.executable)
 
 
+# In-process checks of openloops.app, run in the temp install (importing app writes config/state next to it).
+# Each races or breaks something on purpose that is hard to reach over HTTP.
+HARNESS = r'''
+import os, sys, threading, time
+sys.path.insert(0, os.getcwd())
+from openloops import agent, app
+which = sys.argv[1]
+
+def settle(step, secs=10):
+    end = time.time() + secs
+    while app.connects[step]["running"] and time.time() < end:
+        time.sleep(0.1)
+    return not app.connects[step]["running"]
+
+if which == "rollback":  # setup fails after the step is claimed: the claim must be let go
+    log = app.connect_log("gmail")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.mkdir()  # a log that cannot be written
+    ok, why = app.run_connect("gmail")
+    assert not ok and why.startswith("could not start gmail"), (ok, why)
+    assert app.connects["gmail"]["running"] is False, app.connects
+    log.rmdir()
+    agent.login_cmd = lambda step: [["true"]]
+    ok, why = app.run_connect("gmail")
+    assert ok, "still wedged after a failed start: " + why
+    assert settle("gmail")
+print("HARNESS OK " + which)
+'''
+
+
+def harness(which):
+    r = subprocess.run([sys.executable, "-c", HARNESS, which], cwd=tmp, capture_output=True, text=True, timeout=60,
+                       env=dict(env, OPENLOOPS_PORT="1"))
+    return (r.stdout + r.stderr).strip()
+
+
 def api(path, body=None, origin=None):
     headers = {"Content-Type": "application/json", **({"Origin": origin} if origin else {})}
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", data=json.dumps(body).encode() if body is not None else None,
@@ -191,6 +227,8 @@ for f in ("claude", "browser"):
 calls = lambda: (tmp / "bin" / "calls.txt").read_text().splitlines() if (tmp / "bin" / "calls.txt").exists() else []
 env = dict(os.environ, OPENLOOPS_PORT=str(PORT), PATH=str(tmp / "bin") + os.pathsep + os.environ.get("PATH", ""),
            BROWSER=str(tmp / "bin" / "browser"))
+out = harness("rollback")
+check(out.endswith("HARNESS OK rollback"), f"a setup step whose start fails is not left 'already running' ({out[-300:]})")
 srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:

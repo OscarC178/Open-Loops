@@ -231,8 +231,6 @@ def run_connect(step):
             return False, "already running"
         connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
     log = connect_log(step)
-    log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text("", encoding="utf-8")
 
     def go():
         rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
@@ -249,14 +247,23 @@ def run_connect(step):
             doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
             connects[step].update(running=False, rc=rc)
 
-    threading.Thread(target=go, daemon=True).start()
+    try:  # anything failing between the claim and the worker would leave the step "already running" for good
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
+        threading.Thread(target=go, daemon=True).start()
+    except Exception as e:
+        connects[step].update(running=False, rc=-1)
+        return False, f"could not start {step}: {type(e).__name__}: {e}"
     return True, ""
 
 
 def connect_status(step):
     c = dict(connects.get(step) or {"running": False, "rc": None, "url": "", "started": None})
     log = connect_log(step)
-    lines = [x.strip() for x in (log.read_text(encoding="utf-8", errors="replace") if log.exists() else "").splitlines()]
+    try:
+        lines = [x.strip() for x in log.read_text(encoding="utf-8", errors="replace").splitlines()]
+    except OSError:  # not written yet, or not writable at all
+        lines = []
     c["last"] = next((x for x in reversed(lines) if x), "")[:300]
     c["step"] = step
     return c
