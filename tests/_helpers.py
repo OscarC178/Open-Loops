@@ -7,7 +7,7 @@ config.template.json, HOME points at an empty folder inside it (so nothing is re
 port comes from the OS and is read back from what the app announces ("Open Loops -> http://localhost:N"), so
 any number of suites can run side by side, next to the installed copy on 8765.
 """
-import json, os, queue, re, shutil, socket, subprocess, sys, tempfile, threading, time
+import atexit, json, os, queue, re, shutil, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -43,6 +43,19 @@ def fresh_install(prefix, config=None):
     cfg.update(config or {})
     (tmp / "config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     (tmp / "home").mkdir()
+    return tmp
+
+
+def isolate_this_process(prefix):
+    """For a test that imports openloops in its own process: call before the first `from openloops import ...`.
+    The package is then imported from a throwaway install, so the config.json, state.json and state/ that importing
+    app.py creates land there and not in the checkout, and this process's HOME (USERPROFILE) is an empty folder in
+    it, so nothing the modules read under ~ is the developer's. -> Path of the copy (removed at exit)."""
+    tmp = fresh_install(prefix)
+    home = str(tmp / "home")
+    os.environ["HOME"] = os.environ["USERPROFILE"] = home
+    sys.path.insert(0, str(tmp))
+    atexit.register(shutil.rmtree, tmp, True)
     return tmp
 
 

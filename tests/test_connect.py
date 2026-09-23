@@ -13,9 +13,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PORT = 0  # set by start_app(): the port our own server says it bound, never just one that looked free
 t0 = time.time()
-sys.path.insert(0, str(REPO))
+from _helpers import isolate_this_process, isolated_env, start_app  # noqa: E402
+isolate_this_process("openloops-connect-parent-")  # doctor reads ~/.claude.json in-process: a throwaway one
 from openloops import agent, doctor  # noqa: E402
-from _helpers import isolated_env, start_app  # noqa: E402
 
 
 def say(msg):

@@ -16,9 +16,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PORT = 0  # set by start_app(): the port the app says it bound
 t0 = time.time()
-sys.path.insert(0, str(REPO))
+from _helpers import isolate_this_process, start_app  # noqa: E402
+isolate_this_process("openloops-install-parent-")  # the in-process checks below import app: never from the checkout
 from openloops import agent, doctor  # noqa: E402
-from _helpers import start_app  # noqa: E402
 
 
 def say(msg):
