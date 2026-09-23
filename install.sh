@@ -60,8 +60,10 @@ bad_option() {
 }
 # A value-taking flag needs a value that is not itself a flag: `--dest --isolated` must not install into a folder
 # called "--isolated", and `--dest` given last must not fall back to the default place.
+# An explicitly empty value is refused too (an unset variable in `--dest "$X"` must not mean "the copy you use"),
+# except for --name, where `--name ""` has always meant "ask for the name" (the prompt further down).
 need_value() {   # need_value <flag> <number of arguments left> <the next argument>
-    if [ "$2" -lt 2 ] || [ -z "$3" ] || [[ "$3" == -* ]]; then
+    if [ "$2" -lt 2 ] || { [ -z "$3" ] && [ "$1" != "--name" ]; } || [[ "$3" == -* ]]; then
         local example
         case "$1" in
             --at) example="--at 09:15" ;;

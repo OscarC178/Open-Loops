@@ -12,6 +12,8 @@ are stubs that only log that they were called. Checks:
   3. a value-taking option with no value (--dest last, --dest --isolated, --port last, --at ""): exit 1 the same way,
      and no folder named "--isolated" appears where it was run.
   4. setup.ps1 (static, PowerShell cannot run here): takes -Help, and it exits before the banner and any check.
+  5. accepted: --name "" (it means "ask for the name"), values with spaces; refused: --dest "" (an empty
+     --dest must never mean the copy you use), --, --at 25:00.
 """
 import os, shutil, stat, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -108,6 +110,20 @@ try:
               and "Checking Python" not in r.stdout, f"{' '.join(repr(a) if not a else a for a in args)}: exit 1, says {flag} needs a value")
         untouched(" ".join(args))
     check(not (cwd / "--isolated").exists(), "--dest --isolated did not make a folder called --isolated")
+
+    say("5. values the parser must accept, and ones it must still refuse")
+    # --help after a value proves the value got through the parser (a refused value exits 1 before --help is read)
+    for args in (["--name", "", "--help"], ["--name", "Mary Ann", "--dest", str(tmp / "a b"), "--help"]):
+        r = run(*args)
+        check(r.returncode == 0 and r.stdout.startswith("usage: bash install.sh"),
+              f"{args!r}: accepted by the parser")
+        untouched(repr(args))
+    for args, said in ((["--dest", ""], "--dest needs a value"), (["--"], "unknown option: --"),
+                       (["--at", "25:00"], "--at must be HH:MM")):
+        r = run(*args)
+        check(r.returncode == 1 and said in r.stderr and "Checking Python" not in r.stdout,
+              f"{args!r}: exit 1, '{said}'")
+        untouched(repr(args))
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
