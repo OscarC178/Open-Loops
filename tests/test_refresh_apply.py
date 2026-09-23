@@ -266,6 +266,36 @@ check("ro-q" not in ids and next(l for l in s["loops"] if l["id"] == "ro-plan")[
 s, ids, n = run([], [inb("ty-a", "Ty", "call me", "DM Ty D0TYDM0001 1757900000.000100")], [{"id": "ty-a", "status": "done"}])
 check(n == (1, 1) and next(l for l in s["loops"] if l["id"] == "ty-a")["status"] == "done", "an update to a Slack ask created in the same run still applies")
 
+# --- evidence, not wording: a missing ts or permalink never proves two messages are the same (Codex narrow check)
+s, ids, _ = run([inb("jo-25", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me", asked_at="2025-09-13T09:00")],
+                [inb("jo-26", "Jo", "send the numbers", f"DM Jo {JO_DM} 1789500000.000100", asked_at="2026-09-15T20:20",
+                     link="https://x.slack.com/archives/D0JODM0001/p1789500000000100")])
+check("jo-26" in ids and "ask_ts" not in next(l for l in s["loops"] if l["id"] == "jo-25"),
+      "an open untimestamped 2025 ask and a separate 2026 message with the same words: two loops")
+s, ids, _ = run([inb("jo-25", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me", asked_at="2025-09-13T09:00")],
+                [inb("jo-26", "Jo", "send the numbers", f"DM Jo {JO_DM}", asked_at="2026-09-15T20:20")])
+check("jo-26" in ids, "same words, no ts or permalink either side, but a different day: two loops")
+s, ids, _ = run([{"id": "sam-deck", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757800000.000500", "status": "waiting"}],
+                [inb("sam-q", "Sam", "which format?", "DM Sam D0SAMDM001 1757950000.000900", link="https://x.slack.com/archives/D0SAMDM001/p1757950000000900")],
+                [{"id": "sam-deck", "status": "needs_me", "reply_snippet": "which format?", "reply_ts": "1757900000.000700",
+                  "reply_link": "https://x.slack.com/archives/D0SAMDM001/p1757900000000700"}])
+check("sam-q" in ids, "a new ask quoting an earlier reply, with its own ts and permalink: kept")
+PQ = "https://x.slack.com/archives/D0SAMDM001/p1757900000000700"
+s, ids, _ = run([{"id": "sam-deck", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757800000.000500", "status": "waiting"}],
+                [inb("sam-q", "Sam", "which format?", "DM Sam D0SAMDM001", link=PQ)],
+                [{"id": "sam-deck", "status": "needs_me", "reply_snippet": "which format?", "reply_link": PQ}])
+check("sam-q" not in ids, "the reply's own permalink on an ask with no ts: the same message, one row")
+s, ids, _ = run([inb("anon-a", "", "please review", "#ops C0OPSCH001", status="needs_me", asked_at="2026-09-15T09:00")],
+                [inb("anon-b", "", "please review", "#ops C0OPSCH001", asked_at="2026-09-15T10:00"),
+                 inb("anon-c", None, "please review", "#ops C0OPSCH001", asked_at="2026-09-15T11:00", owner_id="")])
+check("anon-b" in ids and "anon-c" in ids, "two empty identities (no id, no name) never match: no merge")
+s, ids, _ = run([inb("ida", "Sam", "please review", "#ops C0OPSCH001", status="needs_me", asked_at="2026-09-15T09:00", owner_id="U0SAMJONES")],
+                [inb("idb", "Sam", "please review", "#ops C0OPSCH001", asked_at="2026-09-15T10:00", owner_id="U0SAMLEE01")])
+check("idb" in ids, "same name, same words, different Slack ids: two people, two loops")
+s, ids, _ = run([inb("jo-open", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me", asked_at="2026-09-15T09:00")],
+                [inb("jo-b", "Jo", "send the numbers", f"DM Jo {JO_DM}", asked_at="2026-09-15T09:30", link="https://x.slack.com/archives/D0JODM0001/p1789400000000100")])
+check("jo-b" in ids, "one side has a permalink, the other none: not proof either way, a new loop")
+
 # --- closing: a done update stamps closed_at (re-check window + day log); reopening clears it
 s = base()
 s["loops"].append({"id": "old-done", "owner": "Uma", "ask": "x", "channel": "slack", "status": "done", "closed_at": "2026-09-14T09:00"})
