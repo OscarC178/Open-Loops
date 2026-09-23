@@ -53,6 +53,8 @@ shows into Terminal (Windows: PowerShell). The installers, and where they are do
 
 ### Choosing your AI
 
+**The Set-up page.** On first run the page opens on Set-up: three cards, *Your AI* (Claude, ChatGPT (Codex) or Grok, each with what it needs and what it can't do), *Your sources* (Slack, Gmail, Miro; one is enough) and *Your schedule* (the morning refresh time, whether the Mac's morning refresh started, and last the *Start the first scan* box). Each card says Not started, In progress, Done or Needs you, and has one button taken from the connection checklist. A button that needs the browser opens a pop-up, "Click Allow in the tab that just opened, then come back", with the sign-in link in case no tab opened; it closes itself once that row ticks. The full checklist is under *Every check*. Later, ⚙ Settings → *Open Set-up* brings the same page back to fix a connection.
+
 `config.json` has `"agent": "claude"` (default), `"codex"` or `"grok"` — change it in ⚙ Settings → Preferences → *Your AI*. `agent.py` maps
 each job's tool list to the agent's own naming and flags; the prompts are identical. The connection checklist
 (`doctor.py`) checks whichever agent is selected. With Grok, Slack is **opt-in** (`"use_slack"`): off, jobs are
