@@ -262,12 +262,13 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <div class="box">
   <h3>Your AI</h3>
   <div class="sub">Which AI assistant reads your messages and writes the nudges. It must be installed and signed in on this computer — after switching, the Home tab re-checks the connections.</div>
-  <select id="cfg_agent" style="margin:6px 0 0;font:inherit;padding:4px" onchange="if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=this.value==='grok'?'':'none';$('#cfg_model_wrap').style.display=this.value==='claude'?'':'none'"><option value="claude">Claude (Claude Code)</option><option value="grok">Grok (Grok CLI)</option></select>
+  <select id="cfg_agent" style="margin:6px 0 0;font:inherit;padding:4px" onchange="agentFormUI(this.value)"><option value="claude">Claude (Claude Code)</option><option value="grok">Grok (Grok CLI)</option><option value="codex">Codex (ChatGPT)</option></select>
   <div id="cfg_model_wrap" style="margin-top:10px">
    <label>Model <select id="cfg_model" style="font:inherit;padding:4px"><option value="sonnet">Sonnet (recommended)</option><option value="haiku">Haiku (cheapest)</option><option value="opus">Opus</option><option value="">Claude Code's default</option></select></label>
    <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="xhigh">xhigh (recommended with Sonnet)</option><option value="max">max</option><option value="high">high</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
-   <div class="sub">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
+   <div class="sub" id="cfg_model_note">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
   </div>
+  <div class="sub" id="cfg_codex_note" style="margin-top:8px;display:none"><b>Before you schedule a daily refresh:</b> Codex runs on your ChatGPT plan, which only allows so much Codex use every 5 hours and every week, shared with ChatGPT's other Codex tools. Every scan, refresh and chase uses some of it. If it runs out, Open Loops can't read anything until it comes back. Gmail and Slack are the ones connected in your ChatGPT account (chatgpt.com/apps), and Miro isn't available with Codex.</div>
   <div class="sub" id="cfg_slack_src" style="margin-top:6px"></div>
   <div id="cfg_slack_wrap" style="margin-top:10px">
    <label><input type="checkbox" id="cfg_use_slack"> Use Slack</label>
@@ -404,16 +405,35 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
 // ---------- data ----------
 async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
-const agentLabel=()=>(C&&C.agent)==='grok'?'Grok':'Claude';
+const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;
  const grok=(C&&C.agent)==='grok';
- $('#agent_btn').textContent='Open '+agentLabel()+(grok?'':' (advanced)');$('#agent_btn').classList.toggle('primary',grok);   // Claude: the row buttons are the way in; the terminal is the fallback
+ $('#agent_btn').textContent='Open '+agentLabel()+(grok?'':' (advanced)');$('#agent_btn').classList.toggle('primary',grok);   // Claude, Codex: the row buttons are the way in; the terminal is the fallback
  if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=grok?'':'none';
  $('#agent_help').innerHTML=grok
   ?((C&&C.use_slack)
     ?'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.'
     :'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.')
+  :(C&&C.agent)==='codex'
+  ?'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens. <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.'
   :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens. <b>Open Claude (advanced)</b> is the old way, for anything a button can\'t do: it opens a black window where <code>/mcp</code> lists every connection.';}
+// Model and effort per AI. Claude keeps "model" / "effort", Codex has "codex_model" / "codex_effort" (agent.py), so
+// switching AI never hands one CLI the other's model. Grok takes neither.
+const MODELS={
+ claude:{keys:['model','effort'],def:['sonnet','xhigh'],
+  model:[['sonnet','Sonnet (recommended)'],['haiku','Haiku (cheapest)'],['opus','Opus'],['',"Claude Code's default"]],
+  effort:[['xhigh','xhigh (recommended with Sonnet)'],['max','max'],['high','high'],['medium','medium (recommended with Opus)'],['low','low'],['',"Claude Code's default"]],
+  note:'Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code\'s default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.'},
+ codex:{keys:['codex_model','codex_effort'],def:['gpt-5.6-sol','low'],
+  model:[['gpt-5.6-sol','GPT-5.6 Sol (recommended)'],['gpt-6-astra','GPT-6 Astra'],['',"Codex's default"]],
+  effort:[['low','low (recommended)'],['medium','medium'],['high','high'],['xhigh','xhigh'],['',"Codex's default"]],
+  note:'Codex only. Which OpenAI model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. GPT-5.6 Sol at low does the job and uses the least of your ChatGPT plan\'s Codex allowance; higher effort uses more. "Codex\'s default" is Codex\'s own built-in choice: Open Loops runs Codex with settings of its own, not the ones in your Codex app.'}};
+function modelUI(a){const m=MODELS[a];$('#cfg_model_wrap').style.display=m?'':'none';$('#cfg_codex_note').style.display=a==='codex'?'':'none';if(!m)return;
+ const pick=(i,list)=>{const v=C&&C[m.keys[i]]!==undefined?String(C[m.keys[i]]):m.def[i];   // a hand-typed model id keeps its own option
+  return [list.some(o=>o[0]===v)?list:list.concat([[v,v]]),v]};
+ [['#cfg_model',0,m.model],['#cfg_effort',1,m.effort]].forEach(([id,i,list])=>{const [opts,v]=pick(i,list);$(id).innerHTML=opts.map(([x,t])=>`<option value="${esc(x)}">${esc(t)}</option>`).join('');$(id).value=v});
+ $('#cfg_model_note').innerHTML=m.note}
+function agentFormUI(a){if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=a==='grok'?'':'none';modelUI(a)}
 const running=n=>!!(J&&J[n]&&J[n].running);
 const havePeople=()=>!!(C&&C.people&&Object.keys(C.people).length);
 const haveVoice=()=>!!(V&&V.people&&Object.keys(V.people).length);
@@ -449,6 +469,8 @@ function paintConnect(){$('#st_connect').style.display='';
 const CONNECT_WAIT_MS=5.5*60000;   // app.py CONNECT_TIMEOUT_S (5 min) plus a little: the page stops watching only once the app has stopped the run
 const INSTALL_WAIT_MS=10.5*60000;  // app.py INSTALL_TIMEOUT_S (10 min) plus a little
 const CONNECT_LABEL={install:'Install',login:'Sign in',slack_install:'Install Slack plugin',slack:'Connect Slack',gmail:'Connect Gmail',miro:'Connect Miro'};
+const SRC_NAME={gmail:'Gmail',slack:'Slack'};
+const pageStep=step=>(C&&C.agent)==='codex'&&!!SRC_NAME[step];   // Codex: Gmail / Slack are connected on chatgpt.com/apps, the app only opens it
 const CONN={};   // step -> {busy, url, msg, agent, command}: kept here because the rows are repainted on every tick
 const AI_NAME={claude:'Claude',grok:'Grok',codex:'Codex'},aiName=a=>AI_NAME[a]||String(a||'the AI');   // the install names its AI from the row, never from cached settings
 const repaint=()=>{if(DOC&&stage()==='connect')paintConnect()};   // never bring the checklist back once the page has moved on
@@ -461,12 +483,12 @@ function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!
 async function connectStep(step){
  const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
  const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
- CONN[step]={busy:true,msg:inst?installing(row.agent):step==='slack_install'?'Installing the Slack plugin…':'Waiting for you in the browser: click Allow there.',
+ CONN[step]={busy:true,msg:inst?installing(row.agent):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.',
   ...(inst?{agent:row.agent,command:row.command}:{})};repaint();
  try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});clog('setup: '+step+(r.started?' started':' already running'))}
  catch(e){const changed=inst&&/-> 409/.test(e.message);
   CONN[step]={msg:changed?"The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. Press Check again."
-   :inst?"Couldn't start the install. Try again.":"Couldn't start that. Try again, or use Open Claude (advanced)."};repaint();if(changed)doctor(true);return}
+   :inst?"Couldn't start the install. Try again.":"Couldn't start that. Try again, or use Open "+agentLabel()+" (advanced)."};repaint();if(changed)doctor(true);return}
  const t0=Date.now();
  while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
@@ -475,9 +497,12 @@ async function connectStep(step){
   if(inst&&s.running&&s.last&&s.last!==CONN[step].last){CONN[step].last=s.last;clog('install: '+s.last)}   // raw progress: Console only
   if(s.running)continue;
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
+  if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
+   CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
+    :`Open Loops couldn't open your browser. Go to chatgpt.com/apps yourself, connect ${n} there, then press Check again.`};repaint();return}
   const ai=aiName(CONN[step].agent||row.agent);
   CONN[step]=s.rc===0?{}:{msg:inst?(s.said||`${ai}'s installer stopped with an error. Press Install ${ai} to try again.`)
-   :"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open Claude (advanced).'};
+   :"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open '+agentLabel()+' (advanced).'};
   await doctor(true);return}   // repaints the checklist: the row goes green, or offers its next step
  CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(CONN[step].agent||row.agent)} to try again.`:'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}
 
@@ -680,7 +705,7 @@ const miroOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='miro'&&x.ok));
 function rmRows(){return (RM&&RM.store&&RM.store.rows)||[]}
 async function loadRm(){try{RM=await api('/api/roadmap')}catch(e){RM=null}rmRendered='';paintRm()}
 function paintRm(){if(!RM||!$('#roadmap'))return;
- if(!miroOk()){$('#rm_head').textContent='· connect Miro in Claude to use this (see the connection checklist)';$('#roadmap').style.display='none';return}
+ if(!miroOk()){$('#rm_head').textContent=(C&&C.agent)==='codex'?"· Miro isn't available with Codex (see the connection checklist)":'· connect Miro in Claude to use this (see the connection checklist)';$('#roadmap').style.display='none';return}
  if(!RM.configured.ok){$('#rm_head').innerHTML='· <a href="#" onclick="showTab(&quot;settings&quot;,&quot;cs_connections&quot;);return false" title="opens Settings">set the board and frame in Settings</a>';$('#roadmap').style.display='none';return}
  $('#roadmap').style.display='';const b=RM.store.board||{};
  $('#rm_head').textContent='· '+(b.frame||RM.configured.frame)+(b.read_at?' · read '+fmt(b.read_at):' · board not read yet');
@@ -729,7 +754,7 @@ async function chase(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  J.chase={running:true};toast((willSend(l)?'Sending a chase to ':'Drafting a chase for ')+l.owner+'… about a minute');tick()}
 
 // ---------- settings form: painted only on first open and after Save, never by background ticks ----------
-function paintForm(){if(!C)return;formPainted=true;$('#cfg_name').value=C.owner_name||'';$('#cfg_agent').value=C.agent||'claude';$('#cfg_model').value=C.model===undefined?'sonnet':(C.model||'');$('#cfg_effort').value=C.effort===undefined?'xhigh':(C.effort||'');$('#cfg_model_wrap').style.display=(C.agent||'claude')==='claude'?'':'none';$('#cfg_use_slack').checked=!!C.use_slack;$('#cfg_history').value=String(C.history_days||30);$('#cfg_time').value=C.refresh_time||'09:15';
+function paintForm(){if(!C)return;formPainted=true;$('#cfg_name').value=C.owner_name||'';$('#cfg_agent').value=C.agent||'claude';modelUI(C.agent||'claude');$('#cfg_use_slack').checked=!!C.use_slack;$('#cfg_history').value=String(C.history_days||30);$('#cfg_time').value=C.refresh_time||'09:15';
  $('#cfg_standing').value=C.standing_file||C.vault_path||'';standingStatus();
  $('#cfg_rm_board').value=C.roadmap_board||'';$('#cfg_rm_frame').value=C.roadmap_frame||'';
  $('#cfg_slack_src').textContent=(C.agent||'claude')==='claude'?[C.slack_source?'Slack route detected: '+(C.slack_source==='connector'?'claude.ai connector':'Slack plugin'):'',C.miro_source?'Miro route detected: '+(C.miro_source==='connector'?'claude.ai connector':'Miro plugin'):''].filter(Boolean).join(' · ')+(C.slack_source||C.miro_source?' — jobs use the matching tools automatically.':''):'';
@@ -747,8 +772,9 @@ function paintVoice(){if(V&&haveVoice()){$('#voice_meta').textContent='learned '
 async function saveCfg(){try{const tone={};document.querySelectorAll('[data-tone]').forEach(t=>tone[t.dataset.tone]=t.value);
  // people: radios in the table win; the JSON box is the fallback for adding/removing entries
  let people=JSON.parse($('#cfg_people').value);Object.keys(C.people||{}).forEach((n,i)=>{const v=document.querySelector(`input[name="pp${i}"]:checked`);if(v&&people[n])people[n].level=v.value});
- const body={agent:$('#cfg_agent').value,model:$('#cfg_model').value,effort:$('#cfg_effort').value,use_slack:$('#cfg_use_slack').checked,history_days:+$('#cfg_history').value||30,owner_name:$('#cfg_name').value.trim(),standing_file:$('#cfg_standing').value.trim(),vault_path:'',roadmap_board:$('#cfg_rm_board').value.trim(),roadmap_frame:$('#cfg_rm_frame').value.trim(),chase_external_email:$('#cfg_ext').checked,send_internal:$('#cfg_send_int').checked,send_external:$('#cfg_send_ext').checked,internal_domains:$('#cfg_domains').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),auto_chase:{enabled:$('#cfg_auto').checked,after_workdays:+$('#cfg_auto_days').value||3,max_chases:+$('#cfg_auto_max').value||3},tone,people,
+ const body={agent:$('#cfg_agent').value,use_slack:$('#cfg_use_slack').checked,history_days:+$('#cfg_history').value||30,owner_name:$('#cfg_name').value.trim(),standing_file:$('#cfg_standing').value.trim(),vault_path:'',roadmap_board:$('#cfg_rm_board').value.trim(),roadmap_frame:$('#cfg_rm_frame').value.trim(),chase_external_email:$('#cfg_ext').checked,send_internal:$('#cfg_send_int').checked,send_external:$('#cfg_send_ext').checked,internal_domains:$('#cfg_domains').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),auto_chase:{enabled:$('#cfg_auto').checked,after_workdays:+$('#cfg_auto_days').value||3,max_chases:+$('#cfg_auto_max').value||3},tone,people,
   exclude_people:$('#cfg_excl_people').value.split(',').map(s=>s.trim()).filter(Boolean),exclude_topics:$('#cfg_excl_topics').value.split(',').map(s=>s.trim()).filter(Boolean)};
+ const mk=(MODELS[body.agent]||{}).keys;if(mk){body[mk[0]]=$('#cfg_model').value;body[mk[1]]=$('#cfg_effort').value}   // only the chosen AI's own keys
  const agentChanged=(C.agent||'claude')!==body.agent,slackChanged=!!C.use_slack!==body.use_slack;
  await api('/api/config',body);dirty=false;$('#cfg_save').textContent='Save settings';$('#cfg_msg').textContent='saved '+new Date().toLocaleTimeString()+(agentChanged||slackChanged?' - re-checking connections on Home':'');toast('Settings saved');await loadCfg();paintForm();if(agentChanged||slackChanged)doctor(true);await loadRm();tick()}catch(e){$('#cfg_msg').textContent='not saved: '+e.message;toast('Settings not saved: '+e.message.replace(/^.*-> \d+ /,''),{err:true})}}
 // the to-do file box: say whether the file is there and how many open items it has; offer to create it

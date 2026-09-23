@@ -1,7 +1,11 @@
 {
   "agent": "claude",
+  "agent_note": "Which AI runs the jobs: claude (Claude Code, the default), grok (Grok CLI) or codex (OpenAI's Codex CLI, signed in with a ChatGPT account; Gmail and Slack come from that account's ChatGPT connectors, and Miro is not available). model / effort are Claude's; codex_model / codex_effort are Codex's (blank = Codex's built-in default; Open Loops never uses your own Codex settings), codex_timeout_s how long one Codex run may take. Grok takes neither.",
   "model": "sonnet",
   "effort": "xhigh",
+  "codex_model": "gpt-5.6-sol",
+  "codex_effort": "low",
+  "codex_timeout_s": 900,
   "history_days": 30,
   "owner_name": "",
   "use_slack": false,
