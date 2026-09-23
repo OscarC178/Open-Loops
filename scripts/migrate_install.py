@@ -365,7 +365,8 @@ def main():
     stop_servers(old)
     pids = users_of(old)
     if pids:
-        raise Stop(f"Something is still working in the old Open Loops folder (process {', '.join(map(str, pids[:5]))}).",
+        log(f"still in use by process {', '.join(map(str, pids[:20]))}")   # the numbers are for the log, not the screen (#25)
+        raise Stop("Something is still working in the old Open Loops folder.",
                    "Quit Open Loops and close any Terminal window opened in that folder, then run the installer again.")
     dest.mkdir(parents=True, exist_ok=True)
     check_dest(old, dest, todo)   # again, now that DEST exists: nothing may have appeared in between
@@ -388,11 +389,15 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Stop as e:
-        resume()
+        paused = bool(PAUSED)
+        back = resume()
         if not LOG_OK and LOG_BUFFER:   # the log could not be used: the details go to the screen instead
             print("".join(LOG_BUFFER), file=sys.stderr, end="")
         print(f"  {e.what}", file=sys.stderr)
         print(f"  {e.todo}", file=sys.stderr)
+        if paused:  # "Paused the old copy's morning refresh" was said: say what became of it (#25, from the #31 test)
+            print("  The old copy's morning refresh was put back as it was." if back else
+                  "  The old copy's morning refresh could not be put back; it will be again the next time you log in.")
         sys.exit(1)
     except Exception:
         resume()
