@@ -50,6 +50,9 @@ last_seen = time.time()
 pages = {}
 bye_at = 0.0
 STARTED = datetime.now().isoformat(timespec="seconds")
+# This server's identity, new at every start: job "seq" numbers count from 1 again after a restart, so the page
+# names a job end by (INSTANCE, seq) and forgets what it had seen when this changes (#49 review)
+INSTANCE = uuid.uuid4().hex
 quit_requested = False
 quit_now = False  # `--stop --now`: do not wait for a running job, cut it short
 PAGE_GRACE_S = 4
@@ -563,7 +566,8 @@ class H(BaseHTTPRequestHandler):
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
                         "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
-                        "isolated": isolated()})  # a test copy (#36): the page starts no scan by itself, and says so
+                        "isolated": isolated(),   # a test copy (#36): the page starts no scan by itself, and says so
+                        "instance": INSTANCE})   # which server's seq numbers these are
         elif self.path == "/api/config":
             self._json({"config": cfg(), "voice": read_json(VOICEF), "people_suggested": read_json(PEOPLEF)})
         elif self.path == "/api/diag":  # what the Console's "Copy all" pastes: enough to debug from a screenshot-free report

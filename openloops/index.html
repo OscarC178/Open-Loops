@@ -430,7 +430,7 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
  if(t==='settings'&&!formPainted)paintForm();if(t==='settings'&&sec){const d=cfgShow(sec);if(d)d.scrollIntoView({behavior:'smooth',block:'start'})}}
 
 // ---------- data ----------
-async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today;ISO=!!r.isolated}
+async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||''}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;
@@ -747,7 +747,7 @@ async function refresh(slackOnly){if(running('refresh'))return;before=counts();
 
 // ---------- day log: instant digest from state, prose on demand ----------
 let DL=null;
-async function loadDaylog(){try{DL=await api('/api/daylog')}catch(e){DL=null}paintDaylog()}
+async function loadDaylog(strict){try{DL=await api('/api/daylog')}catch(e){DL=null;if(strict){paintDaylog();throw e}}paintDaylog()}   // strict: a job-end follow-up, retried if this fails
 function paintDaylog(){const d=DL;if(!d||!$('#dl_digest'))return;const g=d.digest||{};
  const line=(k,t)=>(g[k]||[]).length?`<div><b>${t}:</b> ${g[k].map(x=>esc((x.owner?x.owner+' — ':'')+x.ask)).join(' · ')}</div>`:'';
  $('#dl_digest').innerHTML=line('closed','Closed today')+line('opened','Asked today')+line('chased','Chased today')+`<div>${g.waiting||0} waiting on them · ${g.needs_me||0} need you</div>`;
@@ -762,7 +762,7 @@ async function copyDaylog(){try{await navigator.clipboard.writeText((DL&&DL.text
 let RM=null,rmSaveT=null,rmArmT=null,rmArmed=false,rmRendered='';
 const miroOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='miro'&&x.ok));
 function rmRows(){return (RM&&RM.store&&RM.store.rows)||[]}
-async function loadRm(){try{RM=await api('/api/roadmap')}catch(e){RM=null}rmRendered='';paintRm()}
+async function loadRm(strict){try{RM=await api('/api/roadmap')}catch(e){RM=null;if(strict){rmRendered='';paintRm();throw e}}rmRendered='';paintRm()}
 function paintRm(){if(!RM||!$('#roadmap'))return;
  if(!miroOk()){$('#rm_head').textContent=(C&&C.agent)==='codex'?"· Miro isn't available with Codex (see the connection checklist)":'· connect Miro in Claude to use this (see the connection checklist)';$('#roadmap').style.display='none';return}
  if(!RM.configured.ok){$('#rm_head').innerHTML='· <a href="#" onclick="showTab(&quot;settings&quot;,&quot;cs_connections&quot;);return false" title="opens Settings">set the board and frame in Settings</a>';$('#roadmap').style.display='none';return}
@@ -868,15 +868,21 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
 let loopT=null,inLoop=false,offline=false,runSeen=new Set();
 // A job's end is noticed by its "seq" (app.py _ended: one number per job end, always going up), never by seeing it
 // running and then not (#49): a job that fails within a second is over before the next poll, and was never seen
-// running. SEEN holds the last seq handled per job (null until the first poll, which only takes note: nothing that
-// ended before this page opened is announced). WATCH: jobs this page started, polled every 1.5 s until their end.
-let SEEN=null;const WATCH={};
+// running. SEEN holds the last seq handled per job, for the server SEEN_INST (null until the first poll, which only
+// takes note: nothing that ended before this page opened is announced). A new server instance (the app restarted and
+// counts from 1 again) starts SEEN afresh, so its ends are all new. An end is acknowledged (ack) only once it has
+// been handled: a follow-up load that fails leaves it for the next poll. WATCH: jobs this page started, polled every
+// 1.5 s until their end.
+let SEEN=null,SEEN_INST=null,INST='';const WATCH={};
 function jobStarted(k){if(!J)J={};J[k]=Object.assign({},J[k]||{},{running:true});WATCH[k]=Date.now();if(!runSeen.has(k)){runSeen.add(k);clog(k+' started')}pollSoon()}
 function pollSoon(){if(inLoop||stopped)return;clearTimeout(loopT);loopT=setTimeout(loop,1000)}
-function newlyEnded(){const out=[];if(!J)return out;if(SEEN===null){SEEN={};for(const k of Object.keys(J))SEEN[k]=J[k].seq||0;return out}
- for(const k of Object.keys(J)){const j=J[k];if(!j||j.running||!j.seq)continue;if(j.seq!==(SEEN[k]||0)){SEEN[k]=j.seq;out.push(k)}}   // !==, not >: a restarted app counts from 1 again
- for(const k of Object.keys(WATCH))if(out.includes(k)||(Date.now()-WATCH[k]>15000&&!running(k)))delete WATCH[k];   // ended, or never started after all
+function newlyEnded(){const out=[];if(!J)return out;
+ if(SEEN===null){SEEN={};SEEN_INST=INST;for(const k of Object.keys(J))SEEN[k]=J[k].seq||0;return out}
+ if(SEEN_INST!==INST){SEEN={};SEEN_INST=INST}   // another server: its seq numbers are its own
+ for(const k of Object.keys(J)){const j=J[k];if(j&&!j.running&&j.seq&&j.seq!==(SEEN[k]||0))out.push(k)}
+ for(const k of Object.keys(WATCH))if(!out.includes(k)&&Date.now()-WATCH[k]>15000&&!running(k))delete WATCH[k];   // never started after all
  return out}
+function ack(keys,seqs){keys.forEach((k,i)=>{SEEN[k]=seqs[i];delete WATCH[k]})}
 // Peak-End: when a job ends, say what it did and what is next - never just let the spinner vanish
 function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.running||j.rc===undefined)continue;
  const ok=j.rc===0,tail=(j.log||'').trim().split('\n').pop()||'';clog(`${k} finished rc=${j.rc}`+(tail?' · '+tail.slice(0,200):''));
@@ -893,7 +899,8 @@ async function loop(){clearTimeout(loopT);inLoop=true;try{
   await loadState();
   for(const k of Object.keys(J))if(J[k].running&&!runSeen.has(k))clog(k+' started');runSeen=new Set(Object.keys(J).filter(k=>J[k].running));
   const ended=newlyEnded();
-  if(ended.length){await loadCfg();await loadDaylog();await loadRm();finished(ended)}   // a job just ended: pick up new people/voice/config/day log/roadmap, say what happened
+  if(ended.length){const seqs=ended.map(k=>J[k].seq);   // a job just ended: pick up new people/voice/config/day log/roadmap, say what happened
+   await loadCfg();await loadDaylog(true);await loadRm(true);finished(ended);ack(ended,seqs)}   // a load that throws skips the ack: next poll tries again
   const st=stage();
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
   await tick();banner('');offline=false;

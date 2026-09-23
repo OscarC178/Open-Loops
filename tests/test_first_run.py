@@ -143,12 +143,16 @@ def page_js(port, session, scenario, tmp):
         cut("const counts=()=>", "\n// ---------- day log"),
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),   # doctor(), the poll loop, finished() (#49)
         """const CALLS=[];const realFetch=global.fetch;
-let OFF=false;global.fetch=(u,o)=>{if(OFF)return Promise.reject(new TypeError('Failed to fetch'));if(o&&o.method==='POST')CALLS.push(u+' '+(o.body||''));return realFetch(BASE+u,o)};
+let OFF=false;const FAIL_ONCE=new Set();global.fetch=(u,o)=>{if(OFF)return Promise.reject(new TypeError('Failed to fetch'));
+ if(FAIL_ONCE.has(u)){FAIL_ONCE.delete(u);return Promise.resolve({ok:false,status:500,text:async()=>'{"error":"boom"}'})}if(o&&o.method==='POST')CALLS.push(u+' '+(o.body||''));return realFetch(BASE+u,o)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(f,ms=60000){const end=Date.now()+ms;while(!f()){if(Date.now()>end)throw new Error('timed out');await sleep(100)}}
 async function waitJob(n){await sleep(300);const end=Date.now()+90000;while(true){await loadState();if(!running(n))return J[n];if(Date.now()>end)throw new Error(n+' still running');await sleep(200)}}
 const shown=()=>['connect','checkfail','people','auto','start'].filter(k=>$('#st_'+k).style.display==='');
 const jobCalls=()=>CALLS.filter(c=>/^\\/api\\/(people|voice|refresh) /.test(c));
+async function endElsewhere(){const before=(J.refresh&&J.refresh.seq)||0;   // a refresh this page did not start, run to its end
+ await realFetch(BASE+'/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ const end=Date.now()+10000;while(Date.now()<end){const s=await (await realFetch(BASE+'/api/state')).json();if(!s.jobs.refresh.running&&(s.jobs.refresh.seq||0)>before)return;await sleep(100)}throw new Error('refresh did not end')}
 async function boot(){await loadCfg();await loadState();DOC=await api('/api/doctor',{force:true,detect:true})}
 const snap=()=>({stage:stage(),shown:shown(),jobs:jobCalls(),said:$('#start_said').textContent,ask:$('#start_ask').textContent,
   later:$('#start_msg').textContent,uslack:$('#uslack').style.display,uslack_label:$('#uslack').textContent,uslack_disabled:$('#uslack').disabled,pill:$('#isolated_pill').style.display,lists:$('#lists').style.display});
@@ -342,6 +346,22 @@ else:
             check(out["between"] == [] and any(l.startswith("refresh finished rc=0") for l in out["after"])
                   and any(x.startswith("Refresh done") for x in out["toasts"]),
                   f"page: a job that started and ended between two polls is still announced ({out['after']}, {out['toasts']})")
+            out = page_js(port, {}, """
+     await boot();await loop();await endElsewhere();FAIL_ONCE.add('/api/config');const seen0=SEEN.refresh;
+     await loop();out.failed={toasts:TOASTS.length,seen:SEEN.refresh===seen0};await loop();out.retried={toasts:TOASTS.length,seen:SEEN.refresh===J.refresh.seq};
+     await endElsewhere();await loadState();SEEN_INST='a server that has since restarted';SEEN.refresh=J.refresh.seq;   // as if the new server's first end had this seq
+     await loop();out.restart={toasts:TOASTS.length,inst:SEEN_INST===INST};""", tmp)
+            check(out["failed"] == {"toasts": 0, "seen": True} and out["retried"] == {"toasts": 1, "seen": True},
+                  f"page: a follow-up load that fails does not use up the job's end; the next poll announces it ({out})")
+            check(out["restart"] == {"toasts": 2, "inst": True},
+                  f"page: a new server instance starts SEEN afresh, so a seq it had already seen is still announced ({out['restart']})")
+        inst1 = api(port, "/api/state")["instance"]
+    finally:
+        stop(srv)
+    srv, port = start_app(tmp, env_for(tmp))
+    try:
+        inst2 = api(port, "/api/state")["instance"]
+        check(len(inst1) == 32 and len(inst2) == 32 and inst1 != inst2, "app: /api/state names its instance, new at every start")
     finally:
         stop(srv)
     # Claude missing: "At least one source" says install it first (the checker on its own, no claude anywhere on PATH)
