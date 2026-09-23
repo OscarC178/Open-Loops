@@ -37,6 +37,7 @@ from openloops import doctor
 from _helpers import free_port
 
 PORT = free_port()  # the test copy's config.json port: chosen per run so it never meets another server
+PORT2 = free_port()  # a second valid port for the re-install check, chosen on its own (PORT + 100 could pass 65535)
 LABEL = "com.openloops.refresh"
 t0 = time.time()
 
@@ -179,9 +180,9 @@ try:
     check(not (home / "Library" / "Application Support" / "OpenLoops").exists(), "nothing written to the default place")
     check("--no-launch" in r.stdout, "--no-launch: says it did not start")
 
-    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT + 100))
+    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT2))
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
-    check(r.returncode == 0 and cfg.get("port") == PORT + 100 and cfg.get("owner_name") == "Test",
+    check(r.returncode == 0 and cfg.get("port") == PORT2 and cfg.get("owner_name") == "Test",
           "re-run with a new --port: port updated, the rest of config.json kept")
     for bad_at in ("9:15", "24:00", "09:60", "noon"):
         before = (dest / "config.json").read_bytes()

@@ -124,9 +124,12 @@ try:
     hold.bind(("127.0.0.1", 0))
     hold.listen(1)
     PORT_INSTALL = hold.getsockname()[1]
-    inst_env = dict(os.environ, HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}",
+    # OPENLOOPS_DEST from the developer's shell would send the copy (and the app it starts) outside the test
+    # tree, so it is dropped and --dest names a folder under the throwaway HOME
+    inst_env = {k: v for k, v in os.environ.items() if k != "OPENLOOPS_DEST"}
+    inst_env.update(HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}",
                     OPENLOOPS_PORT=str(PORT_INSTALL), BROWSER="/usr/bin/true")
-    r = subprocess.run(["bash", str(REPO / "install.sh"), "--name", "Testuser", "--at", "09:15"],
+    r = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(home / "OpenLoops"), "--name", "Testuser", "--at", "09:15"],
                        env=inst_env, capture_output=True, text=True, timeout=180)
     check(r.returncode == 0, f"install.sh completed in throwaway HOME ({(r.stdout + r.stderr)[-200:].strip() if r.returncode else 'ok'})")
     check((home / "Library" / "LaunchAgents" / f"{LABEL}.plist").exists() and "bootstrap" in launchctl_log.read_text(),
