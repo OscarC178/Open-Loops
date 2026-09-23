@@ -529,7 +529,7 @@ let schedSaid='',SCHED;   // SCHED: the latest /api/schedule/status answer; unti
 const schedStep=()=>SCHED!==undefined?SCHED:(DOC&&DOC.steps&&DOC.steps.find(x=>x.id==='schedule'))||null;
 const schedBad=()=>{const s=schedStep();return !!(s&&!s.ok)};   // also stops the "refreshes itself every morning" toast
 function paintSchedule(st){const w=$('#sched_warn'),s=schedBad()?schedStep():null;
- if(!s||st==='connect'){w.style.display='none';return}   // while connecting, the checklist row says it already
+ if(!s||st==='connect'||s.test_copy){w.style.display='none';return}   // a test copy's schedule is not this person's problem (grey row only)   // while connecting, the checklist row says it already
  w.style.display='block';w.textContent='';const t=document.createElement('b'),f=document.createElement('div');t.textContent=s.title;f.textContent=s.fix;w.append(t,f);
  if(s.link){const b=document.createElement('button');b.textContent='Open the download page';b.onclick=()=>window.open(s.link,'_blank','noopener');w.append(b)}
  if(s.detail!==schedSaid){schedSaid=s.detail;clog('morning refresh did not start: '+(s.detail||s.kind))}}   // the developer detail goes to the Console only

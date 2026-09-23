@@ -464,15 +464,17 @@ STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written b
 TAIL_BYTES = 256 * 1024   # the latest lines are what matter; a years-old log is not read whole every minute
 
 
-def usual_places():
-    """Where a Mac install lives unless the installer was told otherwise: install.sh's DEFAULT_DEST, and ~/Documents
-    where installs before #24 went (the installer is exactly the fix for those). A copy anywhere else is a --dest test
-    copy (or a checkout): the installer would update the copy in the usual place, not it (#25, from the #31 test)."""
-    home = Path.home()
-    return [home / "Library" / "Application Support" / "OpenLoops", home / "Documents" / "OpenLoops"]
+def is_test_copy(root=None):
+    """Whether this copy is a test copy: install.sh --dest with --no-app and --no-task (setup.ps1 -Dest -NoApp -NoTask)
+    writes "test_copy": true into its config.json. Only that record counts, never the folder it is in: a real install
+    in a folder of its own still needs the installer's advice (#25 review)."""
+    try:
+        return json.loads((Path(root or ROOT) / "config.json").read_text(encoding="utf-8-sig")).get("test_copy") is True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
-def schedule_step(logs=None, root=None, usual=None):
+def schedule_step(logs=None, root=None):
     """The weekday morning refresh, as far as launchd.err.log shows. Returns a checklist step or None (no evidence).
 
     That log gets two kinds of line about an install: launchd's own start failures, e.g. #24's
@@ -483,7 +485,8 @@ def schedule_step(logs=None, root=None, usual=None):
     - last is a failure -> red ("blocked" for Operation not permitted, else "failed")
     - last is a start   -> green "started" with its own time. It proves the script ran, not that the refresh
       inside it succeeded, and says only that.
-    A red row for a copy outside the usual place (a test copy) says the installer won't fix it, with no download link."""
+    On a test copy (is_test_copy) a failure is a grey, not-alerting row that says the installer won't fix it, with no
+    download link: the installer would update the copy in the usual place, not this one."""
     logs, root = Path(logs or LOGS), Path(root or ROOT)
     mine = os.path.realpath(root / "scripts" / "run-refresh.sh")  # the plist may name it via a symlink (/var -> /private/var)
     home = os.path.realpath(root)
@@ -514,8 +517,8 @@ def schedule_step(logs=None, root=None, usual=None):
     r = {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
          "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
          "detail": ln[-300:]}  # developer detail for the Console / diag, never shown in the sentence
-    if home not in [os.path.realpath(p) for p in (usual if usual is not None else usual_places())]:  # a test copy
-        r.update(fix=say("schedule_test_copy"), test_copy=True)
+    if is_test_copy(root):
+        r.update(fix=say("schedule_test_copy"), test_copy=True, alert=False)  # grey: nothing for the person to do here
         r.pop("link")
     return r
 

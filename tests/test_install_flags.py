@@ -171,6 +171,7 @@ try:
     check((dest / "openloops" / "app.py").exists() and (dest / "scripts" / "run-refresh.sh").exists(), "code copied to --dest")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
     check(cfg.get("owner_name") == "Test" and cfg.get("port") == PORT, f"fresh config.json has the name and port {PORT}")
+    check(cfg.get("test_copy") is True, "--dest with --no-app and --no-task records the copy as a test copy (#25 review)")
     check(not (home / "Applications" / "Open Loops.app").exists() and not (home / "Desktop" / "Open Loops.app").exists(),
           "--no-app: no Open Loops.app in ~/Applications or on the Desktop")
     check(not (home / "Library" / "LaunchAgents" / f"{LABEL}.plist").exists() and not launchctl_log.exists(),
@@ -195,6 +196,14 @@ try:
         check(r.returncode != 0 and "--port must be a number from 1024 to 65535" in r.stderr
               and (dest / "config.json").read_bytes() == before, f"--port {bad} refused before anything is written")
     r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT))
+    r = install(home, "--dest", str(dest), "--no-app", "--no-launch", "--port", str(PORT))   # --no-task dropped: now a real install
+    check(r.returncode == 0 and "test_copy" not in json.loads((dest / "config.json").read_text(encoding="utf-8")),
+          "re-run on that folder without --no-task: no longer marked as a test copy")
+    for f in (home / "Library" / "LaunchAgents" / f"{LABEL}.plist",):
+        f.unlink(missing_ok=True)   # that run registered the (fake) job; the steps below expect none
+    launchctl_log.unlink(missing_ok=True)
+    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT))
+    check(json.loads((dest / "config.json").read_text(encoding="utf-8")).get("test_copy") is True, "...and marked again with the flags")
 
     say("2. OPENLOOPS_DEST instead of --dest")
     dest2 = tmp / "via env"

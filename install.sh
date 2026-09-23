@@ -101,6 +101,10 @@ DEST="${DEST:-$DEFAULT_DEST}"
 case "$DEST" in /*) ;; *) DEST="$PWD/$DEST" ;; esac   # a relative --dest is relative to where this was run
 DEST="${DEST%/}"
 OLD="$HOME/Documents/OpenLoops"   # where installs before #24 went
+# A test copy is one made with --dest, --no-app and --no-task together (INSTALL.md "Testing a fresh install"). It is
+# recorded as "test_copy": true in its config.json, so the app never tells it to fix the other copy's morning refresh.
+TEST_COPY=0
+if [ "$DEST" != "$DEFAULT_DEST" ] && [ "$NO_APP" -eq 1 ] && [ "$NO_TASK" -eq 1 ]; then TEST_COPY=1; fi
 
 # ---------- 3a. Bring over an older ~/Documents install's list and settings (copy only) ----------
 # Only for the default place: a --dest test install never reads the copy you use. scripts/migrate_install.py
@@ -147,23 +151,25 @@ if [ ! -f "$CFG_FILE" ]; then
     while [ -z "$NAME" ]; do
         read -r -p "  Your first name (used so messages sound like you): " NAME
     done
-    python3 - "$SRC/config.template.json" "$CFG_FILE" "$NAME" "$AT" "$PORT" <<'PYEOF'
+    python3 - "$SRC/config.template.json" "$CFG_FILE" "$NAME" "$AT" "$PORT" "$TEST_COPY" <<'PYEOF'
 import json, sys
-tpl_path, cfg_path, name, at, port = sys.argv[1:6]
+tpl_path, cfg_path, name, at, port, test_copy = sys.argv[1:7]
 cfg = json.load(open(tpl_path, encoding="utf-8-sig"))
 cfg["owner_name"] = name
 cfg["refresh_time"] = at
 if port:
     cfg["port"] = int(port)  # app.py: --port beats OPENLOOPS_PORT beats this beats 8765
+if test_copy == "1":
+    cfg["test_copy"] = True  # doctor.is_test_copy
 json.dump(cfg, open(cfg_path, "w", encoding="utf-8"), indent=2)
 PYEOF
 else
     # Updating (or just moved): the person's own refresh time wins unless --at was given, as in setup.ps1 -
     # otherwise re-registering the job below would quietly put it back to 09:15. An explicit --at or --port is
     # saved; everything else in config.json stays as it is.
-    AT=$(python3 - "$CFG_FILE" "$AT" "$AT_SET" "$PORT" <<'PYEOF'
+    AT=$(python3 - "$CFG_FILE" "$AT" "$AT_SET" "$PORT" "$TEST_COPY" <<'PYEOF'
 import json, re, sys
-cfg_path, at, at_set, port = sys.argv[1:5]
+cfg_path, at, at_set, port, test_copy = sys.argv[1:6]
 try:
     cfg = json.load(open(cfg_path, encoding="utf-8-sig"))
 except (OSError, ValueError):  # unreadable config.json: leave it alone, the app will say so
@@ -172,7 +178,11 @@ except (OSError, ValueError):  # unreadable config.json: leave it alone, the app
 saved = str(cfg.get("refresh_time") or "")
 if at_set == "0" and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", saved):
     at = saved  # a hand-edited bad value falls back to the default rather than breaking the job
-changed = at_set == "1" or bool(port)
+changed = at_set == "1" or bool(port) or (test_copy == "1") != (cfg.get("test_copy") is True)
+if test_copy == "1":
+    cfg["test_copy"] = True   # doctor.is_test_copy; this run says what the copy is
+else:
+    cfg.pop("test_copy", None)
 if at_set == "1":
     cfg["refresh_time"] = at
 if port:

@@ -64,7 +64,7 @@ try:
     check(doctor.schedule_step(logs, root) is None, "blank lines only: no row")
 
     touch(err, blocked * 6)   # six weekday mornings, like the live install
-    s = doctor.schedule_step(logs, root, usual=[root])   # as if this were the install in the usual place
+    s = doctor.schedule_step(logs, root)   # a copy in a folder of its own, not marked as a test copy: a real install
     check(s is not None and s["id"] == "schedule" and s["ok"] is False, "Operation not permitted: red 'schedule' row")
     check(s["kind"] == "blocked" and s["alert"] is True, "... recognised as the privacy block")
     check(s.get("optional") is True, "... optional, so a set-up user is never sent back to the connection steps")
@@ -72,12 +72,15 @@ try:
           "... wording comes from the one SCHEDULE_MSG table")
     check(s["link"].startswith("https://github.com/") and "releases" in s["link"], "... links to the download page")
     check("Operation not permitted" in s["detail"], "... the raw line is kept as developer detail")
-    t = doctor.schedule_step(logs, root)   # the same, for a copy in a folder of its own (install.sh --dest)
+    check(not s.get("test_copy"), "... a folder of its own is not taken for a test copy (only install.sh's record counts)")
+    (root / "config.json").write_text(json.dumps({"test_copy": True}), encoding="utf-8")   # what install.sh --dest --no-app --no-task writes
+    t = doctor.schedule_step(logs, root)
     check(t["kind"] == "blocked" and t.get("test_copy") and "link" not in t and "Download" not in t["fix"]
-          and t["fix"] == messages.say("schedule_test_copy"), "a --dest test copy: no 'download the latest installer', no download link")
-    check([str(p) for p in doctor.usual_places()] == [str(Path.home() / "Library" / "Application Support" / "OpenLoops"),
-                                                      str(Path.home() / "Documents" / "OpenLoops")],
-          "the usual places: install.sh's default, and ~/Documents where installs before #24 went (the installer fixes those)")
+          and t["fix"] == messages.say("schedule_test_copy") and t["alert"] is False and t["optional"] is True,
+          "a recorded test copy: grey (optional, no alert), no 'download the latest installer', no download link")
+    (root / "config.json").write_text(json.dumps({"test_copy": "yes"}), encoding="utf-8")
+    check(doctor.schedule_step(logs, root).get("link"), "only test_copy: true counts")
+    (root / "config.json").unlink()
 
     touch(err, blocked * 3 + started)
     s = doctor.schedule_step(logs, root)
@@ -225,5 +228,6 @@ check("style.display='block'" in body, "... shown with display:block ('' would f
 check("setInterval(checkSchedule" in html and "/api/schedule/status" in html, "... re-checked every minute once set up")
 check("if(seq!==schedSeq)return;SCHED=" in html, "... and an older, slower poll cannot overwrite a newer answer")
 check("paintConnect=function(){paintConnectBase()" in html and "s.link" in body, "... the checklist row gets the download button too")
+check("||s.test_copy){w.style.display='none';return}" in body, "... but a test copy's row never raises the red banner")
 check("st==='ready'&&!schedBad())toast(" in html, "... no 'refreshes itself every morning' toast while the row is red")
 say("PASS - the morning refresh failure is detected, worded plainly, and in /api/diag")
