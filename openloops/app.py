@@ -142,6 +142,13 @@ URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
 connects = {}  # step -> {"running", "rc", "url", "started"}
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
+connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
+
+
+def stop_connects():
+    """Quit or exit: stop every setup step still waiting (Windows: its console window too)."""
+    for p in list(connect_procs.values()):
+        kill_tree(p)
 
 
 def connect_log(step):
@@ -159,15 +166,19 @@ def _connect_one(step, argv, log, deadline):
             f.write(f"$ {subprocess.list2cmdline(argv)}\n(running in its own window)\n")
         p = subprocess.Popen(subprocess.list2cmdline(argv), cwd=ROOT, shell=True,
                              creationflags=subprocess.CREATE_NEW_CONSOLE)
+        connect_procs[step] = p
         try:
             return p.wait(max(1, deadline - time.time()))
         except subprocess.TimeoutExpired:
             kill_tree(p)
             return -1
+        finally:
+            connect_procs.pop(step, None)
     import os, pty, select
     m, s = pty.openpty()
     p = subprocess.Popen(argv, cwd=ROOT, stdin=s, stdout=s, stderr=s, start_new_session=True, close_fds=True)
     os.close(s)
+    connect_procs[step] = p
     before = log.read_text(encoding="utf-8") + "$ " + " ".join(shlex.quote(a) for a in argv) + "\n"
     raw, tail = b"", ""
     try:
@@ -196,6 +207,7 @@ def _connect_one(step, argv, log, deadline):
                 break
     finally:
         os.close(m)
+        connect_procs.pop(step, None)
     if tail:
         with open(log, "a", encoding="utf-8") as f:
             f.write(tail)
@@ -348,6 +360,7 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/quit":  # Settings button or `python -m openloops.app --stop [--now]`
             global quit_requested, quit_now
             quit_requested = True
+            stop_connects()  # a sign-in still waiting in the browser is not worth holding a quit for
             busy = [k for k, j in jobs.items() if j["running"]]
             if body.get("now") and busy:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
                 for k in busy:
@@ -661,6 +674,8 @@ if __name__ == "__main__":
                     pages.pop(pid, None)
             if any(j["running"] for j in jobs.values()) and not quit_now:
                 continue  # never pull the rug from under a refresh/chase; check again once it is done
+            if any(c.get("running") for c in connects.values()) and not quit_requested:
+                continue  # a sign-in outlives its tab: the browser may still send Allow, up to the 5-minute deadline
             no_pages = bye_at and not pages and now - bye_at > PAGE_GRACE_S and now - last_seen > PAGE_GRACE_S
             if quit_requested or no_pages or now - last_seen > IDLE_EXIT_S:
                 srv.shutdown()
@@ -671,3 +686,5 @@ if __name__ == "__main__":
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        stop_connects()
