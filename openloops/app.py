@@ -3,7 +3,7 @@
     python3 -m openloops.app            -> http://localhost:8765
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
-import json, re, shlex, socket, subprocess, sys, threading, time, webbrowser
+import json, re, shlex, shutil, socket, subprocess, sys, threading, time, webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -141,10 +141,13 @@ def run_job(name, extra=None):
     return True
 
 
-# ---- Claude setup buttons: /api/connect/<step> runs agent.login_cmd(step) in the background ----
+# ---- Setup buttons: /api/connect/<step> runs agent.login_cmd(step) (Claude's sign-ins) or, for "install", the
+# selected AI's installer (agent.install_cmd, any agent) in the background ----
 # Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
 # The log (state/connect-<step>.log) holds what the CLI printed, minus the sign-in link's query, for the page and Console.
 CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
+# an install downloads a few hundred MB: longer, but still not for ever (the tests shorten it)
+INSTALL_TIMEOUT_S = int(os.environ.get("OPENLOOPS_INSTALL_TIMEOUT_S") or 10 * 60)
 URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 # On disk a link keeps its address but not its query: that is where an authorisation request's state and
 # challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
@@ -173,13 +176,16 @@ def _launch(step, *args, **kw):
         return p
 
 
-def _reap(step, p, secs):
+def _reap(step, p, secs, on_timeout=None):
     """Wait for a setup step's process (killing it if it outstays secs) -> exit code, then stop tracking it.
-    Tracked until here, so a child that closed its terminal but lives on can still be stopped by Quit."""
+    Tracked until here, so a child that closed its terminal but lives on can still be stopped by Quit.
+    on_timeout, if given, is called once the outstayer has been killed (the install says why it stopped)."""
     try:
         return p.wait(max(1, secs))
     except subprocess.TimeoutExpired:
         kill_tree(p)
+        if on_timeout:
+            on_timeout()
         return -1
     finally:
         with connect_lock:
@@ -189,6 +195,17 @@ def _reap(step, p, secs):
 
 def connect_log(step):
     return ROOT / "state" / f"connect-{step}.log"
+
+
+def add_install_dirs():
+    """Append the folders the CLI installers use (agent.install_dirs) that exist to this process's PATH; the checks and
+    jobs it starts inherit it. Run at start (an app opened from a terminal that predates the install) and after an
+    install (the installer adds the folder to the user's shell profile, which this process never reads)."""
+    from . import agent
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    extra = [str(d) for d in agent.install_dirs() if d.is_dir() and str(d) not in parts]
+    if extra:
+        os.environ["PATH"] = os.pathsep.join(parts + extra)
 
 
 def _connect_one(step, argv, log, deadline):
@@ -285,6 +302,91 @@ def run_connect(step):
     return True, ""
 
 
+def _install_one(step, argv, log, deadline):
+    """Run one command of an install -> (exit code, stopped at the deadline?), its output appended to the log as it comes (Windows too: no console
+    window, so the page and Console see what went wrong). No terminal: stdin is empty, so an installer that stops to ask
+    a question reads end-of-input and fails at once instead of waiting for an answer nobody can type, and in a session
+    of its own it has no terminal to open either. Stopped at the deadline, and the log says why."""
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("$ " + (subprocess.list2cmdline(argv) if WIN else shlex.join(argv)) + "\n")
+        f.flush()
+        how = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if WIN else {}
+        if sys.platform != "win32":  # a process group of its own, which is what kill_tree stops off Windows
+            how["start_new_session"] = True
+        # started and registered through _launch, stopped and untracked through _reap, as the sign-ins are
+        p = _launch(step, argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, **how)
+        if p is None:
+            f.write("\nnot started: Open Loops is closing\n")
+            return -1, False
+        late = []
+        rc = _reap(step, p, deadline - time.time(), on_timeout=lambda: late.append(True))
+        if late:
+            f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S} seconds\n")
+        return rc, bool(late)
+
+
+def run_install(body):
+    """Start the selected AI's installer in the background -> (started, error, HTTP code). Works for any AI; shares the
+    sign-in steps' one-run-at-a-time claim, process tracking and log. Runs only what the page showed: the press sends the
+    "agent" and "command_id" from the checklist row, and if either no longer matches (another tab changed the AI in
+    Settings since) nothing runs. The run keeps its own agent and command, which the status reports while it runs."""
+    from . import agent
+    step, ic = agent.INSTALL_STEP, agent.install_cmd()
+    if not ic:
+        return False, "no installer known for " + agent.display_name(), 400
+    if body.get("agent") != ic["agent"] or body.get("command_id") != ic["id"]:
+        return False, "changed", 409
+    with connect_lock:  # check and claim in one go
+        if quit_requested:
+            return False, "Open Loops is closing", 400
+        if (connects.get(step) or {}).get("running"):
+            return False, "already running", 200
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
+                          "why": "", "agent": ic["agent"], "command": ic["command"], "command_id": ic["id"]}
+    log = connect_log(step)
+
+    def go():
+        rc, deadline, why, kind = -1, time.time() + INSTALL_TIMEOUT_S, "", "download"
+        script = Path(ic["script"])
+        try:
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.unlink(missing_ok=True)  # never run a script left over from an earlier try
+            for kind, argv in ic["steps"]:
+                if kind == "install" and not (script.is_file() and script.stat().st_size):  # Windows has no test -s step
+                    rc, why = 1, "download"
+                    break
+                if kind == "check":  # the installer exited 0: find the new CLI in its folders, PATH untouched for now
+                    look = os.pathsep.join([os.environ.get("PATH", "")] + [str(d) for d in agent.install_dirs()])
+                    argv = [shutil.which(argv[0], path=look) or argv[0]] + argv[1:]
+                rc, late = _install_one(step, argv, log, deadline)
+                if rc != 0:
+                    why = "timeout" if late else kind
+                    break
+            else:  # every step worked, the CLI answered --version: only now its folder goes on this process's PATH
+                add_install_dirs()
+        except Exception as e:  # bash or PowerShell missing, say: in the log and as "start", rather than hang as "running"
+            rc, why = -1, why or ("check" if kind == "check" else "start")  # no CLI to run after the install: "check"
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\ncould not run the installer: {type(e).__name__}: {e}\n")
+        finally:
+            try:
+                script.unlink(missing_ok=True)
+            except OSError:
+                pass
+            doctor_gen["n"] += 1  # a check already running started before this install: do not cache what it says
+            doctor_cache["at"] = 0
+            connects[step].update(running=False, rc=rc, why=why)
+
+    try:  # as run_connect: anything failing between the claim and the worker would leave the install "running" for good
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
+        threading.Thread(target=go, daemon=True).start()
+    except Exception as e:
+        connects[step].update(running=False, rc=-1, why="start")
+        return False, f"could not start the install: {type(e).__name__}: {e}", 500
+    return True, "", 200
+
+
 def connect_status(step):
     c = dict(connects.get(step) or {"running": False, "rc": None, "url": "", "started": None})
     log = connect_log(step)
@@ -294,6 +396,17 @@ def connect_status(step):
         lines = []
     c["last"] = next((x for x in reversed(lines) if x), "")[:300]
     c["step"] = step
+    from . import agent
+    if step == agent.INSTALL_STEP:
+        ran = c.get("agent")  # the AI the last run installed, if there was one
+        if not c.get("running"):  # idle: what the button would run now, so the page can show it before the press.
+            ic = agent.install_cmd() or {}  # A running install keeps reporting its own agent and command instead.
+            c.update(agent=ic.get("agent", ""), command=ic.get("command", ""), command_id=ic.get("id", ""))
+        if c.get("why"):  # the page shows this sentence, never the installer's raw last line ("last", for the Console)
+            n = INSTALL_TIMEOUT_S  # the limit actually in force, in the unit a person would say it
+            limit = f"{n // 60} minutes" if n >= 120 and n % 60 == 0 else "1 minute" if n == 60 else f"{n} seconds"
+            c["said"] = agent.INSTALL_SAID.get(c["why"], agent.INSTALL_SAID["install"]).format(
+                ai=agent.display_name(ran or c["agent"]), limit=limit)
     return c
 
 
@@ -375,7 +488,7 @@ class H(BaseHTTPRequestHandler):
         elif self.path.split("?")[0].startswith("/api/connect/"):
             from . import agent
             step = self.path.split("?")[0].rsplit("/", 1)[1]
-            if step not in agent.CONNECT_STEPS:
+            if step not in agent.CONNECT_STEPS + (agent.INSTALL_STEP,):
                 return self._json({"error": "unknown setup step"}, 404)
             self._json(connect_status(step))
         elif self.path == "/api/roadmap":
@@ -482,6 +595,11 @@ class H(BaseHTTPRequestHandler):
                     doctor_cache = {"at": _t.time(), "result": res}
                 return self._json(res)
             return self._json(doctor_cache["result"])
+        if self.path == "/api/connect/install":  # the Install button: {"agent", "command_id"} as the row showed them
+            from . import agent
+            started, why, code = run_install(body)
+            said = agent.INSTALL_SAID["changed"] if why == "changed" else ""
+            return self._json({"started": started, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
@@ -707,6 +825,7 @@ if __name__ == "__main__":
         if "--no-browser" not in sys.argv:
             open_browser()
         sys.exit(0)
+    add_install_dirs()  # a CLI installed after this terminal (or Finder session) started is still found
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     print("Open Loops ->", url)
     if PORT != PREFERRED:

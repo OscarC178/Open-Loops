@@ -62,13 +62,43 @@ def route(svc, servers):
     return found[0] if found else ("", "", "")
 
 
+def runs(cli):
+    """Whether a CLI that was found actually starts: `<cli> --version` exits 0. A half-installed or broken CLI is on
+    PATH but is not installed as far as the checklist goes."""
+    return run([cli, "--version"], timeout=30)[0] == 0
+
+
+def install_row(label, have, found=None):
+    """The "<AI> is installed" row: "have" = the CLI was found and answers --version, "found" = it was found at all.
+    When it is missing (or found but will not start) the row carries the Install button (connect "install", run by
+    app.py from agent.install_cmd) and the exact commands, which the page shows before anything is pressed. If the
+    installer itself cannot run here, it says so and offers no button."""
+    r = {"id": "claude", "ok": have, "title": f"{label} is installed", "fix": ""}
+    if have:
+        return r
+    broken = found if found is not None else False
+    ic = agent.install_cmd()
+    missing = [t for t in (ic or {}).get("needs", []) if not agent.prereq().get(t)]
+    if not ic:
+        r["fix"] = f"Open Loops couldn't find {label} on this computer. Ask IT to install it, then press Check again."
+    elif missing:
+        r["fix"] = (f"Open Loops couldn't find {label} on this computer, and the installer can't run here because a tool "
+                    f"it needs is missing ({', '.join(missing)}). Ask IT to install {label}, then press Check again.")
+    else:
+        said = (f"{label} is on this computer but won't start. Press Install {label} to install it again: " if broken else
+                f"Open Loops couldn't find {label} on this computer. Press Install {label}: ")
+        r.update(fix=said + f"it downloads {label} from {ic['vendor']} and takes a minute or two.", connect="install", command=ic["command"],
+                 agent=ic["agent"], command_id=ic["id"])  # sent back with the press: app.py runs nothing else
+    return r
+
+
 def claude_steps(steps):
     """Installed / signed in / Slack / Gmail / Miro, read straight from the Claude Code CLI (`claude auth status`,
     `claude mcp list`) - no model call. Each red row names in "connect" the setup step the page's button starts
-    (agent.login_cmd); rows without one need something no button can do."""
-    have = shutil.which("claude") is not None
-    steps.append({"id": "claude", "ok": have, "title": "Claude is installed",
-                  "fix": "Run the installer again, or ask IT to install Claude Code." if not have else ""})
+    (agent.install_cmd / agent.login_cmd); rows without one need something no button can do."""
+    found = shutil.which("claude") is not None
+    have = found and runs("claude")
+    steps.append(install_row("Claude", have, found))
 
     logged, email = False, ""
     if have:
@@ -83,7 +113,8 @@ def claude_steps(steps):
             except Exception:
                 pass
     login = {"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email else ''}",
-             "fix": "Press Sign in: your browser opens the Claude sign-in page. Use your work Google account." if not logged else ""}
+             "fix": "" if logged else "Install Claude first (the row above)." if not have else
+                    "Press Sign in: your browser opens the Claude sign-in page. Use your work Google account."}
     if have and not logged:
         login["connect"] = "login"
     steps.append(login)
@@ -135,9 +166,9 @@ def claude_steps(steps):
 def grok_steps(steps):
     """Installed / signed in / Slack / Gmail via the Grok CLI, its Slack plugin, and gmail_auth.py."""
     cli = agent.cli()
-    have = bool(shutil.which("grok")) or Path(cli).exists()
-    steps.append({"id": "claude", "ok": have, "title": "Grok is installed",
-                  "fix": "Install the Grok CLI (grok.com/cli), then press 'Check again'." if not have else ""})
+    found = bool(shutil.which("grok")) or Path(cli).exists()
+    have = found and runs(cli)
+    steps.append(install_row("Grok", have, found))
 
     logged, email = False, ""
     auth = Path.home() / ".grok" / "auth.json"

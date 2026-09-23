@@ -8,7 +8,7 @@ Grok: Slack is opt-in (config.json "use_slack"). Off, the Slack plugin is not st
 doctor does not probe it. Vercel is never started. Jobs pass --effort low because the Grok
 CLI defaults to xhigh. Gmail is the bundled gmail_mcp.py server (not Claude's connector).
 """
-import json, os, re, shutil, subprocess, sys
+import hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 from .paths import ROOT
@@ -61,8 +61,10 @@ def miro_source():
     return v if v in _CLAUDE_MIRO else "plugin"
 
 
-def display_name():
-    return {"claude": "Claude", "grok": "Grok"}.get(name(), name().capitalize())
+def display_name(agent=None):
+    """"Claude" / "Grok" for the selected agent, or for the one named."""
+    n = (agent or name()).strip().lower()
+    return {"claude": "Claude", "grok": "Grok"}.get(n, n.capitalize())
 
 
 def cli():
@@ -192,6 +194,112 @@ def _route_of(server, svc):
         return exact
     low = server.lower()
     return ("plugin" if low.startswith("plugin:") else "connector" if low.startswith("claude.ai") else None) if svc in low else None
+
+
+# ---- Installing the agent's CLI from the checklist: the "install" setup step (doctor.py offers it on the
+# "<AI> is installed" row when the CLI is missing, app.py runs it like the sign-in steps). Every vendor now ships
+# a standalone installer script, so no route needs Node, npm or Homebrew: the scripts need only curl + bash on a
+# Mac and PowerShell on Windows, which both come with the OS. Checked against the vendors' pages on 2026-09-23:
+#   Claude Code  https://code.claude.com/docs/en/setup  (native install, "Recommended"; lands in ~/.local/bin)
+#   Codex        https://github.com/openai/codex        (install script; lands in ~/.local/bin, Windows
+#                %LOCALAPPDATA%\Programs\OpenAI\Codex\bin). npm i -g @openai/codex and brew install --cask codex
+#                also work but need Node or Homebrew first, so they are the manual fallback in INSTALL.md.
+#   Grok         https://docs.x.ai/build/overview        (install script; lands in ~/.grok/bin)
+# Download first, run second: the script is saved whole to state/install/ and checked non-empty before anything runs,
+# so a download cut off half-way never executes (piping curl into bash would run what had arrived so far). Then the
+# new CLI must answer `<cli> --version` before the step counts as done. The page shows every command, one per line,
+# exactly as they run, so pasting them by hand does the same.
+INSTALL_STEP = "install"
+_INSTALL = {  # agent -> (Mac/Linux script, what runs it, Windows script, the CLI, where it is documented, who makes it)
+    "claude": ("https://claude.ai/install.sh", "bash", "https://claude.ai/install.ps1", "claude",
+               "https://code.claude.com/docs/en/setup", "Anthropic"),
+    "codex":  ("https://chatgpt.com/codex/install.sh", "sh", "https://chatgpt.com/codex/install.ps1", "codex",
+               "https://github.com/openai/codex", "OpenAI"),
+    "grok":   ("https://x.ai/cli/install.sh", "bash", "https://x.ai/cli/install.ps1", "grok",
+               "https://docs.x.ai/build/overview", "xAI"),
+}
+_PS = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+
+
+def prereq(win=None):
+    """What is on this computer that an install route could use -> {tool: bool}. The installer scripts need only
+    curl + bash (Mac/Linux) or PowerShell (Windows); node / npm / brew / winget are reported for the manual routes."""
+    win = WIN if win is None else win
+    tools = ["powershell", "node", "npm", "winget"] if win else ["curl", "bash", "node", "npm", "brew"]
+    return {t: shutil.which(t) is not None for t in tools}
+
+
+def install_cmd(agent=None, win=None):
+    """How to install an agent's CLI (default: the selected one) -> dict, or None for an agent with no known installer:
+      "steps"    [(kind, argv), ...] run in order, each only if the one before exited 0. kind is "download", "install"
+                 or "check"; app.py names a failure by it. "download" saves the script to "script".
+      "command"  what the page shows before the button is pressed, and what to paste by hand: on a Mac every step,
+                 joined by && so each runs only if the last worked; on Windows one PowerShell block with the same gates
+      "needs"    the tools the steps cannot run without (doctor.py says so, and offers no button, when one is missing)
+      "agent", "id"  name exactly what the page showed; app.py refuses a press whose pair no longer matches
+      "cli", "script", "source", "vendor"."""
+    win = WIN if win is None else win
+    who = (agent or name()).strip().lower()
+    got = _INSTALL.get(who)
+    if not got:
+        return None
+    url, shell, ps_url, cli_, src, vendor = got
+    folder = ROOT / "state" / "install"
+    if win:
+        script = str(folder / f"{who}-install.ps1")
+        pq = lambda x: "'" + str(x).replace("'", "''") + "'"  # PowerShell '...' quoting: a quote is doubled
+        # The download fails as a whole (Stop), including an empty file, so a partial or empty script never runs
+        get = ["$ErrorActionPreference = 'Stop'",
+               f"New-Item -ItemType Directory -Force -Path {pq(folder)} | Out-Null",
+               f"Invoke-WebRequest -UseBasicParsing -Uri {pq(ps_url)} -OutFile {pq(script)}",
+               f"if ((Get-Item -LiteralPath {pq(script)}).Length -eq 0) {{ throw 'The download was empty.' }}"]
+        steps = [("download", _PS + ["-Command", "; ".join(get)]),
+                 ("install", _PS + ["-File", script]),
+                 ("check", [cli_, "--version"])]
+        # Shown (and pasted by hand) as one PowerShell block with the same gates: it stops at the first failure,
+        # and throw ends only the block, not the PowerShell window it is pasted into.
+        command = "\n".join(["& {"] + ["  " + g for g in get] + [
+            f"  powershell -NoProfile -ExecutionPolicy Bypass -File {pq(script)}",
+            "  if ($LASTEXITCODE -ne 0) { throw \"The installer stopped with exit code $LASTEXITCODE.\" }",
+            f"  {cli_} --version", "}"])
+        needs = ["powershell"]
+    else:
+        script = str(folder / f"{who}-install.sh")
+        steps = [("download", ["mkdir", "-p", str(folder)]),
+                 ("download", ["curl", "-fsSL", "-o", script, url]),
+                 ("download", ["test", "-s", script]),  # an empty 200 is a failed download too
+                 ("install", [shell, script]),
+                 ("check", [cli_, "--version"])]
+        # pasted as is, each runs only if the last worked
+        command, needs = " &&\n".join(shlex.join(a) for _, a in steps), ["curl", "bash"]
+    return {"steps": steps, "command": command, "needs": needs, "agent": who, "cli": cli_, "script": script,
+            "source": src, "vendor": vendor,
+            "id": hashlib.sha256((who + "\0" + command).encode("utf-8")).hexdigest()[:16]}
+
+
+# What the checklist says when an install ends badly, by what went wrong (app.py records which). Plain words as
+# #25 asks: what happened, then what to do; no exit codes or file paths. The installer's own output stays in
+# state/connect-install.log and the page's Console.
+INSTALL_SAID = {
+    "download": "{ai}'s installer couldn't download. Check your internet connection and press Install {ai} again.",
+    "check":   "{ai} was installed but won't start. Press Install {ai} to try again, or ask IT to install {ai}.",
+    "install": "{ai}'s installer stopped with an error. Press Install {ai} to try again. If it fails again, paste the "
+               "commands below into Terminal (Windows: PowerShell) and press Enter.",
+    "timeout": "The install took longer than {limit}, so Open Loops stopped it. Press Install {ai} to try again.",
+    "start":   "Open Loops couldn't start {ai}'s installer. Press Install {ai} to try again.",
+    "changed": "The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. "
+               "Press Check again.",
+}
+
+
+def install_dirs():
+    """Where the installer scripts put the CLIs. A Finder-launched app, or a terminal opened before the install, does
+    not have them on PATH yet; app.py adds the ones that exist so the re-check and the jobs find the new CLI."""
+    home = Path.home()
+    dirs = [home / ".local" / "bin", home / ".grok" / "bin"]
+    if WIN and os.environ.get("LOCALAPPDATA"):
+        dirs.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OpenAI" / "Codex" / "bin")
+    return dirs
 
 
 def model():
