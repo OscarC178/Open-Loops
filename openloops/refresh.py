@@ -121,16 +121,6 @@ def ask_ts(l):
     return ts[-1] if ts else None
 
 
-def same_asker(a, b):
-    """Slack user ids when both loops have one; otherwise the full names, and only when both have one.
-    Two missing identities are not the same person."""
-    ia, ib = str(a.get("owner_id") or "").strip().upper(), str(b.get("owner_id") or "").strip().upper()
-    if ia and ib:
-        return ia == ib
-    na, nb = words(a.get("owner")), words(b.get("owner"))
-    return bool(na and nb) and na == nb
-
-
 def sent_before_close(ts, iso):
     """Whether Slack ts `ts` is no later than ISO `closed_at` (a naive one is local time). A missing or
     malformed date is not evidence: False."""
@@ -141,7 +131,8 @@ def sent_before_close(ts, iso):
 
 
 def link(l, key="link"):
-    return str(l.get(key) or "").strip()
+    """A permalink for comparison: no query string, fragment or trailing slash (the path keeps the p<ts>)."""
+    return re.split(r"[?#]", str(l.get(key) or "").strip(), 1)[0].rstrip("/")
 
 
 # Principle: a missing ts or permalink is never proof that two messages are the same. With no evidence
@@ -153,9 +144,8 @@ def known_ask(c, loops):
       one); a different ts is a different message, whatever the wording;
     - the same permalink (it embeds the message ts): the same message; a loop with no ts takes c's ts -
       unless it is closed and c was not provably sent before it closed;
-    - neither side has a ts or a permalink: the same asker, the same wording, asked the same day, and
-      the loop still open.
-    Anything else is a new loop."""
+    Anything else - including the same asker and wording with no ts or permalink on either side - is a
+    new loop."""
     conv, ts, lk = slack_conv(c), ask_ts(c), link(c)
     for l in loops:
         if slack_conv(l) != conv:
@@ -172,12 +162,6 @@ def known_ask(c, loops):
                 continue
             if ts:
                 l["ask_ts"] = ts
-            return True
-        if ts or lts or lk or llk:
-            continue   # one side has evidence the other lacks: not proof either way
-        day = str(c.get("asked_at") or "")[:10]
-        if (l.get("status") in ("waiting", "needs_me") and same_asker(c, l) and words(c.get("ask")) == words(l.get("ask"))
-                and len(day) == 10 and day == str(l.get("asked_at") or "")[:10]):
             return True
     return False
 
@@ -319,13 +303,13 @@ def apply(s, out, slack_only, now, slack_on=True):
     slack_in = []
     for nl in out.get("new_loops", []) or []:
         nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
-        if not nl["id"] or nl["id"] in by_id or nl["id"] in {x["id"] for x in slack_in}:
+        if not nl["id"]:
             continue
         if slack_only and nl.get("channel") != "slack":
             continue  # belt and braces: the prompt says no email, the merge enforces it
         if nl.get("inbound") and nl.get("channel") == "slack" and slack_conv(nl):
-            slack_in.append(nl)
-        else:
+            slack_in.append(nl)   # a taken id is settled in step 3, by evidence
+        elif nl["id"] not in by_id:
             add(nl)
     # 2. updates (to loops that exist now; any to a Slack ask added below are applied after it)
     later, replies = [], []
@@ -345,6 +329,10 @@ def apply(s, out, slack_only, now, slack_on=True):
             continue
         if ask_ts(nl):
             nl["ask_ts"] = ask_ts(nl)
+        # not the same message, but the agent reused an id (two asks can slug alike): -2, -3 ...
+        base_id, k = nl["id"][:77], 2
+        while nl["id"] in by_id:
+            nl["id"], k = f"{base_id}-{k}", k + 1
         add(nl)
     for u in later:
         if u.get("id") in by_id:

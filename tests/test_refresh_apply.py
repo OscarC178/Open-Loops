@@ -163,7 +163,7 @@ s["loops"].append({"id": "jo-nums", "owner": "Jo", "ask": "send the numbers", "c
                    "status": "needs_me", "inbound": True, "asked_at": "2026-09-15T09:00"})
 refresh.apply(s, {"new_loops": [{"id": "jo-nums-2", "owner": "Jo", "ask": "send the numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}", "inbound": True, "asked_at": "2026-09-15T11:30"}]},
               slack_only=True, now=NOW)
-check("jo-nums-2" not in [l["id"] for l in s["loops"]], "with no ts or permalink either side, same asker + words + day in the same open DM are the same ask")
+check("jo-nums-2" in [l["id"] for l in s["loops"]], "no ts or permalink either side: same asker + words (09:00 / 11:30) are still two loops")
 
 # REGRESSION: one reply seen by both searches - an update on my loop AND a new inbound ask - is one Needs me row
 s = base()
@@ -235,7 +235,7 @@ check("sam-l" in ids, "two askers with the same first name and wording (no ts) a
 s, ids, _ = run([inb("sam-j", "Sam Jones", "can you review?", "#ops C0OPSCH001", status="needs_me", asked_at="2026-09-15T09:00")],
                 [inb("sam-l", "Sam Lee", "can you review?", "#ops C0OPSCH001", asked_at="2026-09-15T10:00"),
                  inb("sam-j2", "sam  jones", "Can you review?", "#ops C0OPSCH001", asked_at="2026-09-15T10:00")])
-check("sam-l" in ids and "sam-j2" not in ids, "...and without ids the full names tell them apart (and match the same person)")
+check("sam-l" in ids and "sam-j2" in ids, "...and with no ts or permalink, even the same person's same words are kept (a duplicate beats a loss)")
 s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001 1757800000.000100", status="done", closed_at="2026-09-14T09:00")],
                 [inb("kit-b", "Kit", "review the rota pls", "#ops C0OPSCH001 1757800000.000100"),
                  inb("kit-c", "Kit", "review the rota", "#ops C0OPSCH001 1757900000.000200")])
