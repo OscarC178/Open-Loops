@@ -600,7 +600,7 @@ def setup_js(port, scenario, tmp):
         f"const BASE='http://127.0.0.1:{port}';const SS={{}};const BIN={json.dumps(str(tmp / 'bin'))};",
         "const fs=require('fs');const seen=()=>{const f=BIN+'/prompts.txt';return fs.existsSync(f)?fs.readFileSync(f,'utf8').split(/\\s+/).filter(Boolean):[]};",
         "const sessionStorage={getItem:k=>k in SS?SS[k]:null,setItem:(k,v)=>{SS[k]=String(v)},removeItem:k=>{delete SS[k]}};",
-        "const els={};const mk=id=>({id,style:{},textContent:'',innerHTML:'',disabled:false,title:'',open:false,className:'',kids:[],"
+        "const els={};const mk=id=>({id,style:{},dataset:{},textContent:'',innerHTML:'',disabled:false,title:'',open:false,className:'',kids:[],"
         "classList:{toggle(){}},appendChild(c){this.kids.push(c);c.parent=this;return c},showModal(){this.open=true},close(){this.open=false},addEventListener(){}});",
         "const $=s=>els[s]||(els[s]=mk(s));const document={getElementById:id=>$('#'+id),createElement:()=>mk('new')};",
         "const CON=[];function clog(m){CON.push(String(m))}const TOASTS=[];function toast(m){TOASTS.push(String(m))}",
@@ -611,6 +611,7 @@ def setup_js(port, scenario, tmp):
         cut("const api=async", "let lastBanner="),
         cut("let formPainted=false;", "\n\n// ---------- data"),
         cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="),
+        grab("function msgFollow("), grab("function msgBusy("),
         grab("const running="), grab("const havePeople="), grab("const haveVoice="),
         cut("function stage(){", "\nasync function tick(){"), cut("async function tick(){", "\nfunction paintConnect("),
         cut("function paintConnect(", "\n// ---------- Setup buttons"),
@@ -708,6 +709,14 @@ if NODE:
  DOC={agent:'claude',all_ok:false,steps:[row('claude',true),row('login',false,{connect:'login',title:'Signed in to <i>Claude</i>'}),row('slack',false),row('gmail',false),row('channel',false)]};
  await tick();out.e={repair:$('#su_repair').textContent,shown:$('#su_repair').style.display,intro:$('#su_intro').style.display,rows:$('#su_ai_rows').innerHTML};
  S.setup_done=false;paintSetup(stage());out.e.after=$('#su_repair').style.display;
+ // #52 post-rebase review: Set-up reopened from Settings on an all-green install says nothing is wrong (no repair line),
+ // and a line shown while a sign-in was under way goes once the connection is back
+ const green=()=>({agent:'claude',all_ok:true,steps:[row('claude',true),row('login',true),row('slack',true),row('gmail',true),row('channel',true),row('self',true)]});
+ const rep=()=>({repair:$('#su_repair').textContent,shown:$('#su_repair').style.display,head:$('#st_connect_h').textContent});
+ S.setup_done=true;SETUP_OPEN=true;docAt=Date.now();DOC=green();paintSetup('ready');out.green=rep();
+ DOC={agent:'claude',all_ok:false,steps:[row('claude',true),row('login',false,{connect:'login'}),row('slack',true),row('gmail',true),row('channel',true)]};
+ CONN.login={busy:true,msg:'Waiting for you in the browser: click Allow there.'};paintSetup('connect');out.busy=rep();
+ delete CONN.login;DOC=green();paintSetup('ready');out.recovered=rep();SETUP_OPEN=false;
  // keyboard: arrows move along the three choices (wrapping), Home / End, and the one that can be tabbed to follows
  const bs=[0,1,2].map(i=>({i,tabIndex:-1,focus(){document.activeElement=this}}));$('#su_ai_pick').querySelectorAll=()=>bs;bs[0].focus();
  const key=k=>{suPickKey({key:k,preventDefault(){}});return document.activeElement.i+':'+bs.map(b=>b.tabIndex===0?1:0).join('')};
@@ -736,6 +745,11 @@ if NODE:
               "Grok: sign-in is Open Grok, and the Gmail row keeps its own instruction, with no button")
         check(e["repair"] == "Setup is done; Claude just needs signing in again. Press Sign in below." and e["shown"] == "" and e["intro"] == "none"
               and e["after"] == "none", "setup done once and the checklist back: its one-line repair sentence sits above the cards (#52)")
+        check(out["green"] == {"repair": "", "shown": "none", "head": ""},
+              f"all green, Set-up reopened from Settings: no repair line (not 'one connection just needs attention') ({out['green']})")
+        check(out["busy"]["repair"] == "Setup is done; Claude just needs signing in again. Please wait while that finishes." and out["busy"]["shown"] == ""
+              and out["recovered"] == {"repair": "", "shown": "none", "head": ""},
+              f"a sign-in under way says please wait; once it is back the line goes ({out['busy']}, {out['recovered']})")
         check("Signed in to &lt;i&gt;Claude&lt;/i&gt;" in e["rows"], "row titles are escaped (#52 puts a Slack display name in one)")
         check(out["keys"] == ["1:010", "2:001", "0:100", "2:001", "0:100", "2:001", "2:001"],
               f"the AI picker: arrows and Home / End move the focus and the tab stop; other keys are left alone ({out['keys']})")
