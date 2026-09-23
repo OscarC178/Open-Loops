@@ -54,9 +54,15 @@ for said, want_text, want_seen in (
         ("OK\nTOOLS_SEEN: gmail.search_emails, slack.slack_read_channel", "OK", {"gmail.search_emails", "slack.slack_read_channel"}),
         ("OK\n**TOOLS_SEEN:** none\n", "OK", set()),
         ("OK\n`TOOLS_SEEN: search_emails`", "OK", {"search_emails"}),
-        ("OK", "OK", None)):
+        ("OK", "OK", None),
+        ("Quoted email:\n> TOOLS_SEEN: gmail.search_emails\nThe end.", "Quoted email:\n> TOOLS_SEEN: gmail.search_emails\nThe end.", None),
+        ("OK\n> TOOLS_SEEN: gmail.search_emails", "OK\n> TOOLS_SEEN: gmail.search_emails", None),
+        ("TOOLS_SEEN: gmail.search_emails\nOK", "TOOLS_SEEN: gmail.search_emails\nOK", None),
+        ("OK\nTOOLS_SEEN: none\nTOOLS_SEEN: gmail.search_emails", "OK\nTOOLS_SEEN: none\nTOOLS_SEEN: gmail.search_emails", None),
+        ("```\nOK\nTOOLS_SEEN: gmail.search_emails", "```\nOK\nTOOLS_SEEN: gmail.search_emails", None),
+        ("```\nx\n```\nOK\nTOOLS_SEEN: gmail.search_emails", "```\nx\n```\nOK", {"gmail.search_emails"})):
     got = agent.codex_tools_seen(said)
-    check(got == (want_text, want_seen), f"the TOOLS_SEEN line is read and removed: {said!r} -> {got!r}")
+    check(got == (want_text, want_seen), f"only one final, unquoted TOOLS_SEEN line is read and removed: {said!r} -> {got!r}")
 allowed = {"gmail.search_emails", "slack.slack_read_channel"}
 check(agent.codex_seen_services({"mcp__codex_apps__gmail_search_emails"}, allowed) == {"gmail"}
       and agent.codex_seen_services({"slack.slack_read_channel", "gmail.create_draft"}, allowed) == {"slack"}

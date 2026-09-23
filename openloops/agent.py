@@ -201,18 +201,26 @@ CODEX_SEEN_ASK = ("When you have finished, end your reply with one more line: TO
                   "search for each by name first (finding a tool is not calling it), so the line says what this "
                   "session really has. Add the line after everything the instructions ask for, even if they say to "
                   "reply with nothing else: Open Loops removes it before reading your reply.\n")
-_CODEX_SEEN_RE = re.compile(r"^[ \t>*_`-]*TOOLS_SEEN[ \t*_`]*:(.*)$\n?", re.M | re.I)
+_CODEX_SEEN_LINE = re.compile(r"[*_`]*TOOLS_SEEN[*_`]*[ \t]*:(.*)", re.I)  # the whole last line, no quote or bullet
 
 
 def codex_tools_seen(text):
-    """A run's final message -> (the message without its TOOLS_SEEN line, the names on the last such line as a set, or
-    None when there is no such line). "none" (or nothing) after the colon is an empty set: the run saw none."""
-    found = list(_CODEX_SEEN_RE.finditer(text or ""))
-    if not found:
+    """A run's final message -> (the message without its TOOLS_SEEN line, the names on it as a set, or None when there
+    is no usable line). Usable means strict (review of #45): exactly one line in the reply mentions TOOLS_SEEN, it is the
+    last non-empty line, it is not quoted ("> ...") or a list item, and it is not inside an unclosed ``` block. Anything
+    else counts as no line (the refusal path) and the text is returned untouched. "none" (or nothing) after the colon is
+    an empty set: the run saw none."""
+    text = text or ""
+    lines = text.splitlines()
+    if sum("tools_seen" in ln.lower() for ln in lines) != 1:
         return text, None
-    raw = found[-1].group(1).strip().strip("`*_ ")
+    last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
+    m = _CODEX_SEEN_LINE.fullmatch(lines[last].strip()) if last >= 0 else None
+    if not m or sum(ln.lstrip().startswith("```") for ln in lines[:last]) % 2:
+        return text, None
+    raw = m.group(1).strip().strip("`*_ ")
     seen = set() if raw.lower() in ("", "none", "none.") else {t.strip("`*_.;") for t in re.split(r"[,\s]+", raw) if t.strip("`*_.;")}
-    return _CODEX_SEEN_RE.sub("", text).rstrip(), seen
+    return "\n".join(lines[:last]).rstrip(), seen
 
 
 def codex_seen_services(seen, allowed):
@@ -766,7 +774,7 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
                 break
             wrote = [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in CODEX_READ_TOOLS]
             wrote += [u for u in ev["used"] if u in ("command_execution", "file_change", "web_search")]
-            marked = _CODEX_WROTE_RE.search(final or ev["msg"] or "")
+            marked = _CODEX_WROTE_RE.search(codex_tools_seen(final or ev["msg"] or "")[0] or "")
             wrote += [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in allowed]
             blind_note = (f"; no {', '.join(missed)} tool was called in attempt {tries} (it said: "
                           + " ".join((final or ev["msg"]).split())[:200] + ")")
