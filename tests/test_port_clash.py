@@ -14,7 +14,7 @@ the OS says are free, so it never meets the installed copy or another suite. Exi
 """
 import http.server, shutil, socketserver, subprocess, sys, threading, time, urllib.request
 
-from _helpers import fresh_install, free_port, isolated_env, listening, start_app, stop
+from _helpers import fresh_install, isolated_env, listening, reserve, start_app, stop
 
 t0 = time.time()
 
@@ -57,10 +57,12 @@ app = None
 app2 = None
 stray = None
 try:
-    # 1. A foreign server (plain directory listing) squats on the preferred port. PORT and PORT + 1 come from
-    #    free_port(); if some other program takes PORT + 1 in between, start again on a new pair.
+    # 1. A foreign server (plain directory listing) squats on the preferred port. PORT and PORT + 1 are the first
+    #    two of a reserved block (the rest stay guarded); if something takes PORT + 1 in between, use a new block.
     for attempt in range(3):
-        PORT = free_port()
+        block = reserve()
+        PORT = block.port
+        block.free(PORT, PORT + 1)
         stray = Stray(("127.0.0.1", PORT), http.server.SimpleHTTPRequestHandler)
         threading.Thread(target=stray.serve_forever, daemon=True).start()
         check(wait_for(PORT) and not server_header(PORT).startswith("OpenLoops"), f"stray http.server is on port {PORT}")
