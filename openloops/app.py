@@ -469,6 +469,11 @@ def connect_status(step):
     return c
 
 
+def index_bytes(table=None):
+    """index.html with the page's copy of messages.py filled in, for this platform (escaped for an inline <script>)."""
+    return INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table).encode("utf-8"), 1)
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "OpenLoops/1"  # sent as the Server: header - how the launcher recognises itself
 
@@ -491,9 +496,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] in ("/", "/index.html"):
             # the page's copy of messages.py, for this platform: it can still say "not running" once the server is gone
-            b = INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", json.dumps(messages.for_page(WIN), ensure_ascii=False).encode("utf-8"), 1)
+            b = index_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")  # a restored or cached page would keep an older copy of the wording
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             self.wfile.write(b)

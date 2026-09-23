@@ -14,6 +14,7 @@ doctor.py and app.py look their sentences up here with say(); the page gets the 
 index.html as it serves it, for the platform it runs on), so it can still say "Open Loops isn't running" once the
 server has gone. Placeholders ({ai}, {vendor}, ...) are filled by whoever shows the sentence.
 """
+import json
 import string
 import sys
 
@@ -389,6 +390,16 @@ def for_page(win=None):
     placeholders left for the page to fill. "recheck": a failed job with this id re-runs the connection check."""
     return {k: {"what": part(k, "what", win), "fix": part(k, "fix", win), "button": v.get("button"),
                 "recheck": k in RECHECK_AFTER_JOB} for k, v in FAILURES.items()}
+
+
+def page_json(win=None, table=None):
+    """for_page() as JSON that is safe inside an inline <script>: "<", ">" and "&" become \\u escapes (a sentence
+    holding "</script>" or "<!--" cannot end or change the script element), and so do U+2028 / U+2029 (line breaks
+    to older JavaScript). JSON.parse and a JavaScript literal read them back as the same characters."""
+    text = json.dumps(for_page(win) if table is None else table, ensure_ascii=False)
+    for ch, esc in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        text = text.replace(ch, esc)
+    return text
 
 
 # How a job's output says why it stopped, most specific first. Matched case-insensitively against the job's log tail.

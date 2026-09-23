@@ -144,12 +144,14 @@ try:
     srv, port = start_app(tmp, isolated_env(tmp, BROWSER="true"))
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as r:
         html = r.read().decode("utf-8")
+        cache = r.headers.get("Cache-Control")
 finally:
     stop(srv)
     shutil.rmtree(tmp, ignore_errors=True)
 m = re.search(r"^const MSG=(.*);$", html, re.M)
 check(m and "/*OL_MESSAGES*/" not in html, "the app fills in the page's failure table as it serves it")
 served = json.loads(m.group(1))
+check(cache == "no-store", "the page is served with Cache-Control: no-store, so a cached copy never keeps old wording")
 check(served == messages.for_page(sys.platform == "win32"), "...with exactly messages.for_page() for this platform")
 check('<div id="lists" style="display:none">' in html, "before the first check, the lists are hidden (#34)")
 check(re.search(r'<button class="primary" id="refresh"[^>]*style="display:none"', html), "...and so is Refresh")
@@ -172,6 +174,37 @@ check("'▫️'" not in html and "'⬜'" not in html and "!s.optional||s.connect
 check("02-Research" not in html and "C:\\\\Users\\\\you\\\\Documents\\\\to-do.md" in html and "/Users/you/Documents/to-do.md" in html,
       "the to-do file example is per platform and names no developer folder")
 check("black window" not in html.split("id=\"agent_help\"")[1].split("</div>")[0], "Home copy no longer promises a black window with /mcp")
+
+# the table goes into an inline <script>: a sentence holding </script>, quotes, backslashes or U+2028 must survive
+from html.parser import HTMLParser  # noqa: E402
+NASTY = 'He said "</script><script>alert(1)</script>" & \\ it\'s <!-- odd --> \u2028 fine.'
+evil = dict(served, server_offline=dict(served["server_offline"], what=NASTY))
+evil_html = app.index_bytes(evil).decode("utf-8")
+
+
+class Scripts(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.inside, self.found = False, []
+
+    def handle_starttag(self, tag, attrs):
+        self.inside = tag == "script"
+        if self.inside:
+            self.found.append("")
+
+    def handle_endtag(self, tag):
+        self.inside = False if tag == "script" else self.inside
+
+    def handle_data(self, data):
+        if self.inside:
+            self.found[-1] += data
+
+
+sp = Scripts()
+sp.feed(evil_html)
+check(len(sp.found) == 1 and "const MSG=" in sp.found[0] and "</script>" not in sp.found[0].split("const MSG=")[1].split("\n")[0],
+      "a sentence holding </script> does not end the page's script element (HTML parsing sees one script)")
+msg_line = next(l for l in sp.found[0].splitlines() if l.startswith("const MSG="))
 
 # ---------------------------------------------------------------- 6. offline banner, run in node
 show("6. the offline banner, in node")
@@ -202,6 +235,9 @@ JS = "\n".join([
  try{await api('/api/config',{})}catch(e){out.saidOff=errSaid(e)}
  out.console=CON.join(' | ');
  console.log(JSON.stringify(out))})();"""])
+r2 = subprocess.run([node, "-e", msg_line + "\nconsole.log(JSON.stringify(MSG.server_offline.what))"], capture_output=True, text=True, timeout=30)
+check(r2.returncode == 0 and json.loads(r2.stdout) == NASTY,
+      f"...and JavaScript reads it back exactly: quotes, backslashes, <!--, & and U+2028 intact ({r2.stderr.strip()[-200:]})")
 r = subprocess.run([node, "-e", JS], capture_output=True, text=True, timeout=30)
 check(r.returncode == 0, f"node ran the page's own functions ({r.stderr.strip()[-300:]})")
 out = json.loads(r.stdout.strip().splitlines()[-1])
