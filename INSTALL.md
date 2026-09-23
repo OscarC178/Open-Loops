@@ -247,7 +247,9 @@ Manual equivalents, for support: `python -m openloops.doctor`, `python -m openlo
 
 ### Testing a fresh install
 
-To try the installer as a new user would, next to the copy you use every day and without touching it:
+To try the installer as a new user would, next to the copy you use every day and without touching it (8790 is only
+an example: any free port from 1024 to 65535 outside 8765–8784 will do; give each test copy its own and use the same
+number in the commands below):
 
 ```bash
 bash install.sh --dest ~/OpenLoops-test --isolated --port 8790 --name "Test"
@@ -297,9 +299,11 @@ The other flags:
 - `--port N` saves the port in the test copy's `config.json`, so it never competes with the installed copy on 8765.
   `app.py` takes `--port`, then `OPENLOOPS_PORT`, then `config.json` `port`, then 8765.
 - `--dest` together with `--no-app` and `--no-task` marks the copy as a test copy: `"test_copy": true` in its
-  `config.json` (Windows: `setup.ps1 -Dest … -NoApp -NoTask`). A test copy's morning-refresh row is grey and does not
-  tell you to download the installer, because the installer would update your everyday copy, not this one. Running
-  the installer on that folder again without those flags removes the mark.
+  `config.json` (Windows: `setup.ps1 -Dest … -NoApp -NoTask`). A test copy has no weekday refresh of its own, so its
+  checklist shows no morning-refresh row at all; if a scheduled refresh ever did fail for it, the row is grey and does
+  not tell you to download the installer, because the installer would update your everyday copy, not this one. Its
+  "Open Loops isn't running" banner says to start it again with `python3 -m openloops.app` in its folder, as it has no
+  icon. Running the installer on that folder again without those flags removes the mark.
 - `--no-launch` also skips starting it at the end.
 - `--isolated`, above.
 
