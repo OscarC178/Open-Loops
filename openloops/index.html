@@ -442,6 +442,7 @@ function paintConnect(){$('#st_connect').style.display='';
 
 // ---------- Claude setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
 // and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.
+const CONNECT_WAIT_MS=5.5*60000;   // app.py CONNECT_TIMEOUT_S (5 min) plus a little: the page stops watching only once the app has stopped the run
 const CONNECT_LABEL={login:'Sign in',slack_install:'Install Slack plugin',slack:'Connect Slack',gmail:'Connect Gmail',miro:'Connect Miro'};
 const CONN={};   // step -> {busy, url, msg}: kept here because the rows are repainted on every tick
 const repaint=()=>{if(DOC&&stage()==='connect')paintConnect()};   // never bring the checklist back once the page has moved on
@@ -453,14 +454,14 @@ async function connectStep(step){
  try{const r=await api('/api/connect/'+step,{});clog('setup: '+step+(r.started?' started':' already running'))}
  catch(e){CONN[step]={msg:"Couldn't start that. Try again, or use Open Claude (advanced)."};repaint();return}
  const t0=Date.now();
- while(Date.now()-t0<120000){await new Promise(z=>setTimeout(z,3000));   // every 3 s for up to 2 minutes
+ while(Date.now()-t0<CONNECT_WAIT_MS){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
   if(s.url&&!CONN[step].url){CONN[step].url=s.url;repaint()}
   if(s.running)continue;
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
   CONN[step]=s.rc===0?{}:{msg:"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open Claude (advanced).'};
   await doctor(true);return}   // repaints the checklist: the row goes green, or offers its next step
- CONN[step]={msg:'Still waiting for the browser. Finish there and the tick appears within a minute, or press the button to start again.'};repaint()}
+ CONN[step]={msg:'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}
 
 let peopleRendered='';
 async function stagePeople(){
