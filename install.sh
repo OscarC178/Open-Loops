@@ -5,8 +5,9 @@
 #       bash install.sh
 #
 # What it does (all on this computer, nothing sent anywhere):
-#   1. Checks for Python 3 and Claude Code, offering to install via Homebrew / the official
-#      installer if missing.
+#   1. Checks for Python 3, installing it with Homebrew if Homebrew is there (else it says where to get it).
+#      It never installs an AI CLI (Claude, Codex, Grok): the app's checklist offers Install <AI> for the AI
+#      the person picks, downloads the vendor's installer to a file, checks it and runs it (#16, #39).
 #   2. Copies Open Loops to ~/Library/Application Support/OpenLoops (copying the list and settings of
 #      an older ~/Documents/OpenLoops install across first; the old folder is left as it is).
 #   3. Puts Open Loops.app (with the logo) on the Desktop and in ~/Applications.
@@ -77,22 +78,17 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 ok "Python $(python3 --version | sed 's/Python //')"
 
-# ---------- 2. Claude Code ----------
-say "Checking Claude..."
-if ! command -v claude >/dev/null 2>&1; then
-    say "Installing Claude Code (this can take a minute)..."
-    if ! curl -fsSL https://claude.ai/install.sh | bash; then
-        if command -v brew >/dev/null 2>&1; then
-            brew install --cask claude-code || true
-        fi
-    fi
-    export PATH="$HOME/.local/bin:$PATH"
+# ---------- 2. AI ----------
+# Nothing is installed here, and nothing here can fail the install: the app's first screen offers
+# Install <AI> for whichever AI the person chooses (Claude, Codex or Grok). This only says so when none is
+# found. The folders are where the vendors' installers put them (agent.install_dirs), often not yet on PATH.
+AI_FOUND=0
+for cli in claude codex grok; do
+    if PATH="$PATH:$HOME/.local/bin:$HOME/.grok/bin" command -v "$cli" >/dev/null 2>&1; then AI_FOUND=1; fi
+done
+if [ "$AI_FOUND" -eq 0 ]; then
+    say "No AI is installed yet. Open Loops will offer to install one on its first screen."
 fi
-if ! command -v claude >/dev/null 2>&1; then
-    echo "  Couldn't install Claude automatically. Please install it from https://claude.ai/code and run this again." >&2
-    exit 1
-fi
-ok "Claude is installed"
 
 # ---------- 3. Copy files ----------
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

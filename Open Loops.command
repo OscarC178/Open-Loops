@@ -6,8 +6,9 @@
 #   Installed in the old place (~/Documents/OpenLoops)? -> runs the installer, which copies the list and
 #                          settings across and leaves the old folder as it is (#24).
 set -e
-# Non-interactive shells don't read the user's profile, so claude (Homebrew or the official
-# installer) may not be on PATH. Jobs inherit this.
+# Non-interactive shells don't read the user's profile, so an AI CLI that is already installed (Homebrew or a
+# vendor installer) may not be on PATH. Jobs inherit this. None is needed to start: with no AI found, the app's
+# checklist offers Install <AI> (#39).
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 DEST="$HOME/Library/Application Support/OpenLoops"
 APP="$DEST/openloops/app.py"
