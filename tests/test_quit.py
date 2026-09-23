@@ -69,12 +69,13 @@ def stop_cmd(*extra, port=None):
 
 
 def gone(p, secs=EXIT_S):
-    """True once the process has exited (within secs) and its port is free."""
+    """True once the process has exited (within secs) and the port it announced is free (not the global PORT:
+    the --port N server in step 5 is on a port of its own)."""
     try:
         p.wait(secs)
     except subprocess.TimeoutExpired:
         return False
-    return wait_until(lambda: not up(), 5)
+    return wait_until(lambda: not listening(p.port), 5)
 
 
 try:
