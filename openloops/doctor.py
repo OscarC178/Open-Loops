@@ -27,9 +27,10 @@ def run(args, timeout=60, **kw):
 #   plugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ✔ Connected
 #   claude.ai Miro: https://mcp.miro.com - ! Needs authentication
 # The name may itself hold colons, so it ends at the first ": "; the state follows the last " - ".
-# The mark is optional (a Windows console may print another glyph); the words decide.
+# The mark is optional and may be several symbols (a Windows console may print another glyph, an emoji
+# font adds U+FE0F to "✔"); the words decide.
 _ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]")
-_MCP_LINE = re.compile(r"^(.+?): .* - (?:[^\w\s]\s*)?(\S.*)$")
+_MCP_LINE = re.compile(r"^(.+?): .* - (?:[^\w\s]+\s*)?(\S.*)$")
 
 
 def parse_mcp_list(txt):
@@ -89,7 +90,12 @@ def claude_steps(steps):
 
     # "plugin" (plugin:slack:slack) or "connector" (claude.ai Slack): jobs need the right tool prefix. Reported even
     # while it still needs signing in, so the Connect button signs in to the route that is actually there.
-    servers = parse_mcp_list(run(["claude", "mcp", "list"], timeout=90)[1]) if logged else {}
+    servers, unlisted = {}, ""
+    if logged:
+        rc, txt = run(["claude", "mcp", "list"], timeout=90)
+        servers = parse_mcp_list(txt)
+        if rc != 0 and not servers:  # the listing itself failed (timeout, CLI error): not the same as "nothing set up"
+            unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]
     (slack_source, s_st), (_, g_st), (miro_source, m_st) = (route(k, servers) for k in ("slack", "gmail", "miro"))
     slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
     first = "Sign in to Claude first (the row above)."
@@ -99,6 +105,8 @@ def claude_steps(steps):
         if not ok:
             if not logged:
                 r["fix"] = first
+            elif unlisted:  # no button: installing or signing in again would not fix a listing that did not run
+                r["fix"] = f"Couldn't ask Claude which connections it has just now ({unlisted}). Press Check again."
             elif not state:
                 r["fix"], r["connect"] = fix_missing
             else:
