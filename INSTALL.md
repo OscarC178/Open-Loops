@@ -58,7 +58,7 @@ each job's tool list to the agent's own naming and flags; the prompts are identi
 (`doctor.py`) checks whichever agent is selected. With Grok, Slack is **opt-in** (`"use_slack"`): off, jobs are
 Gmail-only and the Slack plugin is not started or probed. Vercel is never loaded. Headless Grok jobs pass
 `--effort low` because the CLI defaults to `xhigh`.
-Codex is not supported yet ([#12](https://github.com/OscarC178/Open-Loops/issues/12)); what it and the other two allow for a second account is in [More than one account](#8-more-than-one-account-work--personal).
+What each of the three allows for a second account is in [More than one account](#8-more-than-one-account-work--personal).
 
 ### Codex (ChatGPT)
 
@@ -365,7 +365,7 @@ suggests it but nobody has tried it yet.
 | AI | Signing in to the AI | Second Slack workspace | Second Gmail inbox | Cost | Status |
 |---|---|---|---|---|---|
 | **Claude Code** | One account per settings folder (`CLAUDE_CONFIG_DIR`) [1][2] | Probably a second settings folder (*unverified*, note a) | Probably a second claude.ai account (*unverified*, note b) | Slack: probably none. Gmail: probably a second Claude plan (*unverified*) | Needs Profiles |
-| **Codex** | One account per `CODEX_HOME` with file-based storage [5][6] | Probably a second ChatGPT account (*unverified*, note c) | Probably a second ChatGPT account (*unverified*, note c) | A second ChatGPT account [7] | Not supported by Open Loops yet |
+| **Codex** | One account per `CODEX_HOME` with file-based storage [5][6] | Probably a second ChatGPT account (*unverified*, note c) | Probably a second ChatGPT account (*unverified*, note c) | A second ChatGPT account [7] | One ChatGPT account per install works ([Codex (ChatGPT)](#codex-chatgpt)); a second needs Profiles |
 | **Grok** | One sign-in per `GROK_HOME` [9] | Probably a second Grok folder (*unverified*, note d) | A second install with its own Gmail sign-in (note e) | No extra subscription; usage comes from the same accounts | Gmail: works today on a Mac. Slack: needs Profiles |
 
 Calendar is not in the table because Open Loops does not read calendars.
@@ -404,9 +404,10 @@ current user, so keep `--no-task` on the second install and press Refresh there 
 `cd ~/OpenLoops-personal && python3 -m openloops.app`. Windows is *unverified*: the Grok Gmail server is set up with
 `python3`, which Windows may not have ([ROADMAP](ROADMAP.md)).
 
-**Two Gmail accounts on Codex.** Codex is not supported by Open Loops yet
-([#12](https://github.com/OscarC178/Open-Loops/issues/12)). Use Claude or Grok for now; for two inboxes, use two Grok
-installs as above, each signed in with `python3 -m openloops.gmail_auth connect` to a different inbox.
+**Two Gmail accounts on Codex.** Open Loops with Codex reads the Gmail of the one ChatGPT account Codex is signed in
+with ([Codex (ChatGPT)](#codex-chatgpt)); a second inbox probably needs a second ChatGPT account (note c) and Profiles.
+For two inboxes today, use two Grok installs as above, each signed in with `python3 -m openloops.gmail_auth connect`
+to a different inbox.
 
 **Two Slack workspaces on Claude.** Open Loops cannot keep two Claude Slack workspaces apart yet. Connect the
 workspace you need most, and use separate installs once Profiles is available. The app passes its own environment to
