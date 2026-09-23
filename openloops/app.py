@@ -561,6 +561,8 @@ class H(BaseHTTPRequestHandler):
                 p = standing.create_starter(body.get("path") or None)
             except FileExistsError as e:
                 return self._json({"ok": False, "error": f"there is already a file at {e}"}, 400)
+            except ValueError as e:  # no path set: standing.py's own sentence says what to do
+                return self._json({"ok": False, "error": str(e)}, 400)
             except OSError as e:
                 return self._json({"ok": False, "error": f"could not write there: {e}"}, 400)
             return self._json({"ok": True, "path": str(p)})

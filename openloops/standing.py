@@ -69,10 +69,11 @@ Format: - [ ] A<number> | project | what to do | added YYYY-MM-DD
 
 
 def create_starter(path=None):
-    """Write an example file at the configured path (or `path`). Never overwrites. Returns the Path."""
+    """Write an example file at the configured path (or `path`). Never overwrites. Returns the Path.
+    ValueError when no path is given and none is set (the message is shown to the person as it is)."""
     p = Path(path).expanduser() if path else standing_path()
     if p is None:
-        raise OSError("no to-do file is set in Settings")
+        raise ValueError("No to-do file is selected. Choose a file in Settings → Connections.")
     if p.exists():
         raise FileExistsError(str(p))
     p.parent.mkdir(parents=True, exist_ok=True)
