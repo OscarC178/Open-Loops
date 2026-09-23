@@ -3,9 +3,11 @@
     python3 tests/test_install_help.py    # macOS/Linux; no network, no real install. Throwaway $HOME.
 
 install.sh used to drop any option it did not know, so `--help` ran a full default install against the live copy.
-Every run here uses a throwaway $HOME (holding a pretend older ~/Documents/OpenLoops, so a default install would have
-something to copy and a morning refresh to pause) and a PATH whose launchctl, curl, rsync, open, osascript and lsof
-are stubs that only log that they were called. Checks:
+Every run here uses a throwaway $HOME holding a pretend older ~/Documents/OpenLoops and its weekday job's plist, so a
+default install would have something to copy and a morning refresh to pause. The harness stays safe even if the parser
+regresses: PATH is only a folder of stubs plus /usr/bin and /bin (never the inherited PATH, so no Homebrew), where
+launchctl, curl, rsync, open, osascript and lsof log the call and succeed, and brew, python3, pip3 and git log the
+call and exit 99 - any reach into a real install fails loudly. Any stub call fails the test. Checks:
   1. --help and -h: exit 0, print the usage line and the flag list; nothing written anywhere, no stub called.
   2. an unknown option (--bogus, a typo --isolatd, a stray word, one after a good option): exit 1, "unknown option:
      <arg>" and the usage line on stderr; nothing written, no stub called, "Paused" never printed.
@@ -15,7 +17,7 @@ are stubs that only log that they were called. Checks:
   5. accepted: --name "" (it means "ask for the name"), values with spaces; refused: --dest "" (an empty
      --dest must never mean the copy you use), --, --at 25:00.
 """
-import os, shutil, stat, subprocess, sys, tempfile, time
+import hashlib, os, plistlib, shutil, stat, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -35,7 +37,7 @@ def check(cond, what):
 # ---------- 4 first: the static setup.ps1 check runs on every platform ----------
 say("4. setup.ps1 -Help (static: PowerShell cannot run here)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
-param_at = ps.index("param(")
+param_at = ps.index("\nparam(")   # the param() line itself, not the comment above it that names it
 help_at = ps.find("if ($Help)")
 check("[switch]$Help" in ps[param_at:ps.index(")\n", param_at) + 1], "setup.ps1's param() takes -Help")
 check(0 < help_at < ps.index("Open Loops - setup\"") and help_at < ps.index("$At -notmatch"),
@@ -53,37 +55,57 @@ try:
     (old / "openloops").mkdir(parents=True)
     (old / "openloops" / "app.py").write_text("# pretend\n")
     (old / "config.json").write_text('{"owner_name": "Real"}\n')
+    (old / "scripts").mkdir()
+    (old / "scripts" / "run-refresh.sh").write_text("#!/bin/bash\n")
+    # the weekday job as an older install left it: migrate_install.py's unload_job() would pause this one
+    agents = home / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.openloops.refresh.plist").write_bytes(plistlib.dumps(
+        {"Label": "com.openloops.refresh", "ProgramArguments": ["/bin/bash", f"{old}/scripts/run-refresh.sh"]}))
     cwd = tmp / "cwd"   # where install.sh is run from: a relative --dest would land here
     cwd.mkdir()
     fakebin = tmp / "bin"
     fakebin.mkdir()
     calls = tmp / "calls.log"   # outside HOME, so the HOME snapshot below is not changed by it
-    for tool in ("launchctl", "curl", "rsync", "open", "osascript", "lsof"):
+    # quiet stubs answer as the real tool would; fail-on-call stubs stop anything that would install for real
+    for tool, rc in [(t, 0) for t in ("launchctl", "curl", "rsync", "open", "osascript", "lsof")] + \
+                    [(t, 99) for t in ("brew", "python3", "pip3", "git")]:
         f = fakebin / tool
-        f.write_text(f'#!/bin/bash\necho "{tool} $*" >> "{calls}"\nexit 0\n')
+        f.write_text(f'#!/bin/bash\necho "{tool} $*" >> "{calls}"\nexit {rc}\n')
         f.chmod(f.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     def tree(root):
-        """Every path under root with its size and mtime: any write, new file or new folder changes this."""
-        out = {}
+        """root itself and every path under it: mode, size, mtime, and a hash of a file's bytes (a link's target).
+        Any write, new or removed entry, permission change, or rewrite that keeps the size changes this."""
+        def entry(p):
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode):
+                body = os.readlink(p)
+            elif stat.S_ISREG(st.st_mode):
+                body = hashlib.sha256(Path(p).read_bytes()).hexdigest()
+            else:
+                body = None
+            return (st.st_mode, st.st_size, st.st_mtime_ns, body)
+        out = {".": entry(root)}
         for dirpath, dirnames, filenames in os.walk(root):
             for n in dirnames + filenames:
                 p = os.path.join(dirpath, n)
-                st = os.lstat(p)
-                out[os.path.relpath(p, root)] = (st.st_size, st.st_mtime_ns)
+                out[os.path.relpath(p, root)] = entry(p)
         return out
 
     def run(*args):
         env = {k: v for k, v in os.environ.items() if k not in ("OPENLOOPS_PORT", "OPENLOOPS_DEST", "OPENLOOPS_ISOLATED")}
-        env.update(HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}", BROWSER="/usr/bin/true")
-        return subprocess.run(["bash", str(REPO / "install.sh"), *args], cwd=cwd, env=env, capture_output=True,
+        # the stubs, then only the system folders bash and its coreutils (sed, mkdir, ...) need: no inherited PATH
+        env.update(HOME=str(home), PATH=f"{fakebin}:/usr/bin:/bin", BROWSER="/usr/bin/true")
+        return subprocess.run(["/bin/bash", str(REPO / "install.sh"), *args], cwd=cwd, env=env, capture_output=True,
                               text=True, timeout=60, stdin=subprocess.DEVNULL)
 
     before_home, before_cwd = tree(home), tree(cwd)
 
     def untouched(what):
         check(tree(home) == before_home and tree(cwd) == before_cwd and not calls.exists(),
-              f"{what}: nothing written under HOME or where it was run, no launchctl/curl/rsync/open called")
+              f"{what}: nothing written under HOME or where it was run, no stub called"
+              + ("" if not calls.exists() else f" (called: {calls.read_text().strip()!r})"))
 
     say("1. --help and -h")
     for flag in ("--help", "-h", "--no-launch --help"):
