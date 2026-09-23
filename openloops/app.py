@@ -131,6 +131,116 @@ def run_job(name, extra=None):
     return True
 
 
+# ---- Claude setup buttons: /api/connect/<step> runs agent.login_cmd(step) in the background ----
+# Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
+# The log (state/connect-<step>.log) holds what the CLI printed, sign-in link included, for the page and Console.
+CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
+URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
+ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
+connects = {}  # step -> {"running", "rc", "url", "started"}
+
+
+def connect_log(step):
+    return ROOT / "state" / f"connect-{step}.log"
+
+
+def _connect_one(step, argv, log, deadline):
+    """Run one command of a setup step -> exit code. Off Windows it runs on a pseudo-terminal (stdlib pty):
+    `claude mcp login` gives up at once when stdin is not a terminal, but on one it waits for the browser's
+    callback. With --no-browser it prints the sign-in link instead of opening it; we open it here, and the
+    page shows it too in case no browser window came up. Windows has no stdlib pty: the command gets a
+    console window of its own (a real terminal) and opens the browser itself; its output stays in that window."""
+    if WIN:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"$ {subprocess.list2cmdline(argv)}\n(running in its own window)\n")
+        p = subprocess.Popen(subprocess.list2cmdline(argv), cwd=ROOT, shell=True,
+                             creationflags=subprocess.CREATE_NEW_CONSOLE)
+        try:
+            return p.wait(max(1, deadline - time.time()))
+        except subprocess.TimeoutExpired:
+            kill_tree(p)
+            return -1
+    import os, pty, select
+    m, s = pty.openpty()
+    p = subprocess.Popen(argv, cwd=ROOT, stdin=s, stdout=s, stderr=s, start_new_session=True, close_fds=True)
+    os.close(s)
+    before = log.read_text(encoding="utf-8") + "$ " + " ".join(shlex.quote(a) for a in argv) + "\n"
+    raw, tail = b"", ""
+    try:
+        while True:
+            if time.time() > deadline:
+                kill_tree(p)
+                tail = "\nstopped: no answer from the browser within 5 minutes\n"
+                break
+            if select.select([m], [], [], 0.5)[0]:
+                try:
+                    chunk = os.read(m, 4096)
+                except OSError:  # the command exited and closed its end (Linux says so with EIO)
+                    chunk = b""
+                if not chunk:
+                    break
+                raw = (raw + chunk)[-64000:]
+                # the whole buffer each time: an escape code or the link can straddle two reads
+                text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
+                log.write_text(before + text, encoding="utf-8")
+                u = URL_RE.search(text)
+                if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
+                    connects[step]["url"] = u.group(0)
+                    if "--no-browser" in argv:
+                        webbrowser.open(u.group(0))
+            elif p.poll() is not None:
+                break
+    finally:
+        os.close(m)
+    if tail:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(tail)
+    try:
+        return p.wait(5)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+        return -1
+
+
+def run_connect(step):
+    """Start a Claude setup step in the background -> (started, error). One run per step at a time."""
+    from . import agent
+    if (connects.get(step) or {}).get("running"):
+        return False, "already running"
+    if agent.name() != "claude" or step not in agent.CONNECT_STEPS:
+        return False, "no such setup step for " + agent.display_name()
+    log = connect_log(step)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("", encoding="utf-8")
+    connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
+
+    def go():
+        rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
+        try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
+            for argv in agent.login_cmd(step) or []:
+                rc = _connect_one(step, argv, log, deadline)
+                if rc != 0:
+                    break
+        except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
+        finally:
+            doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
+            connects[step].update(running=False, rc=rc)
+
+    threading.Thread(target=go, daemon=True).start()
+    return True, ""
+
+
+def connect_status(step):
+    c = dict(connects.get(step) or {"running": False, "rc": None, "url": "", "started": None})
+    log = connect_log(step)
+    lines = [x.strip() for x in (log.read_text(encoding="utf-8", errors="replace") if log.exists() else "").splitlines()]
+    c["last"] = next((x for x in reversed(lines) if x), "")[:300]
+    c["step"] = step
+    return c
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "OpenLoops/1"  # sent as the Server: header - how the launcher recognises itself
 
@@ -200,6 +310,12 @@ class H(BaseHTTPRequestHandler):
         elif self.path.split("?")[0] == "/api/standing":
             from . import standing
             self._json(standing.status(self._query().get("path") or None))
+        elif self.path.split("?")[0].startswith("/api/connect/"):
+            from . import agent
+            step = self.path.split("?")[0].rsplit("/", 1)[1]
+            if step not in agent.CONNECT_STEPS:
+                return self._json({"error": "unknown setup step"}, 404)
+            self._json(connect_status(step))
         elif self.path == "/api/roadmap":
             from . import roadmap
             st, conf = roadmap.load(), roadmap.configured()
@@ -292,7 +408,12 @@ class H(BaseHTTPRequestHandler):
                     # not a connection problem: the checker itself did not answer. The page keeps its last good answer.
                     doctor_cache = {"at": _t.time(), "result": {"all_ok": False, "error": why, "steps": [], "rc": rc}}
             return self._json(doctor_cache["result"])
-        if self.path == "/api/open-claude":
+        if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
+            step = self.path.rsplit("/", 1)[1]
+            started, why = run_connect(step)
+            return self._json({"started": started, **({"error": why} if why else {})},
+                              200 if started or why == "already running" else 400)
+        if self.path == "/api/open-claude":  # the fallback: a terminal running the agent, for anything the buttons can't do
             # opens a terminal running the configured agent so the user can sign in / connect
             from . import agent
             cli, title = agent.cli(), agent.display_name()
