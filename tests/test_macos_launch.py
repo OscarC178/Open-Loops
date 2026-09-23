@@ -8,8 +8,9 @@ Guards the two bugs that broke Desktop double-click and the launchd weekday refr
   2. launchd (and a thin Finder shell) hand children PATH=/usr/bin:/bin:/usr/sbin:/sbin, where
      claude never lives - the three shell entry points must export the fixed PATH before python3.
 Builds everything in a temp folder, stubs launchctl so nothing real is registered, and cleans up. Ports come
-from the OS, so it runs next to the installed copy and other suites. Without Claude Code installed (CI), the
-last live check (doctor finds claude on the fixed PATH) is skipped with a note instead of failing.
+from the OS, so it runs next to the installed copy and other suites. The live doctor checks use throwaway HOMEs
+and a fake claude, so they give the same answer on any Mac; OPENLOOPS_TEST_REAL_CLAUDE=1 adds one against this
+machine's real claude and HOME.
 Exit code 0 = both fixes still hold.
 """
 import json, os, re, shutil, socket, stat, subprocess, sys, tempfile, time, urllib.request
@@ -153,29 +154,47 @@ try:
     tpl["owner_name"] = "Testuser"
     (app / "config.json").write_text(json.dumps(tpl, indent=2), encoding="utf-8")
     (app / "state.json").write_text(json.dumps({"cursor": "2026-01-01T00:00", "last_refresh": None, "loops": []}), encoding="utf-8")
-    # launchd supplies HOME/USER but only the minimal PATH - that is the exact bug environment
-    base = {"HOME": os.environ["HOME"], "USER": os.environ.get("USER", ""), "LOGNAME": os.environ.get("LOGNAME", ""),
-            "BROWSER": "/usr/bin/true"}
+    # launchd supplies HOME/USER but only the minimal PATH - that is the exact bug environment. HOME is a throwaway
+    # folder: with the real one, the app's add_install_dirs() finds a ~/.local/bin/claude and "rescues" the broken PATH.
+    user = {"USER": os.environ.get("USER", ""), "LOGNAME": os.environ.get("LOGNAME", ""), "BROWSER": "/usr/bin/true"}
+    bare = tmp / "home-bare"      # no claude anywhere under it
+    faked = tmp / "home-fake"     # a fake claude where the official installer puts it, signed in
+    bare.mkdir()
+    (faked / ".local" / "bin").mkdir(parents=True)
+    script(faked / ".local" / "bin" / "claude", """#!/bin/bash
+case "$1 $2" in
+  "--version "*) echo "2.1.0 (Claude Code)" ;;
+  "auth status") echo '{"loggedIn": true, "email": "test@example.com"}' ;;
+  "mcp list") echo "No MCP servers configured." ;;
+esac
+exit 0
+""")
 
-    srv, PORT_LIVE = start_app(app, dict(base, PATH=MINIMAL))
+    srv, PORT_LIVE = start_app(app, dict(user, HOME=str(bare), PATH=MINIMAL))
     steps = {s["id"]: s for s in api("/api/doctor", {"force": True})["steps"]}
     check(not steps["claude"]["ok"], "broken PATH: doctor cannot find claude (bug reproduced)")
     check(not steps["login"]["ok"], "broken PATH: 'Signed in to Claude' row is red (bug reproduced)")
     stop(srv)
 
-    env_fixed = dict(base, PATH=FIXED)
-    if not shutil.which("claude", path=FIXED):
-        say("SKIP fixed-PATH half: Claude Code is not installed on this machine (e.g. CI), nothing to find")
+    srv, PORT_LIVE = start_app(app, dict(user, HOME=str(faked), PATH=f"{faked}/.local/bin:{MINIMAL}"))
+    steps = {s["id"]: s for s in api("/api/doctor", {"force": True})["steps"]}
+    check(steps["claude"]["ok"], "fixed PATH: doctor finds claude (the fake one)")
+    check(steps["login"]["ok"], "fixed PATH: login row ok: true, matching the fake's claude auth status")
+    stop(srv)
+
+    # The same against the real, signed-in Claude Code and the real HOME: opt in with OPENLOOPS_TEST_REAL_CLAUDE=1.
+    if os.environ.get("OPENLOOPS_TEST_REAL_CLAUDE") != "1":
+        say("SKIP real-Claude check: set OPENLOOPS_TEST_REAL_CLAUDE=1 to run doctor against this machine's claude and HOME")
+    elif not shutil.which("claude", path=FIXED):
+        raise SystemExit(f"FAIL: OPENLOOPS_TEST_REAL_CLAUDE=1 but no claude on {FIXED}")
     else:
+        env_fixed = dict(user, HOME=os.environ["HOME"], PATH=FIXED)
         r = subprocess.run(["claude", "auth", "status"], env=env_fixed, capture_output=True, text=True, timeout=60)
         truth = bool(re.search(r'"loggedIn"\s*:\s*true', r.stdout + r.stderr))
         srv, PORT_LIVE = start_app(app, env_fixed)
         steps = {s["id"]: s for s in api("/api/doctor", {"force": True})["steps"]}
-        check(steps["claude"]["ok"], "fixed PATH: doctor finds claude")
-        if truth:
-            check(steps["login"]["ok"], "fixed PATH: login row ok: true, matching claude auth status")
-        else:
-            say("SKIP login row: claude auth status says this machine is not signed in (the check needs one that is)")
+        check(steps["claude"]["ok"], "real Claude, fixed PATH: doctor finds claude")
+        check(steps["login"]["ok"] == truth, f"real Claude: login row ok: {truth}, matching claude auth status")
 
     check(refresh_job_registered() == job_was_registered, "real launchd registration state unchanged")
     say("PASS - non-interactive macOS launch keeps full claude args and a working PATH")
