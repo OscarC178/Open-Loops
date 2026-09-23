@@ -169,11 +169,25 @@ CODEX_REFUSE = {  # the plain sentence a job prints (and the checklist shows) wh
     "expired": "Your ChatGPT sign-in has run out, so Open Loops couldn't run Codex. Press Sign in on the connection checklist.",
     "failed": "Codex stopped with an error before it could start this job, so nothing was saved. Try again in a minute.",
     "unlisted": "Codex used a tool this job did not allow, so nothing was saved.",
-    "notools": "Codex couldn't reach its Gmail or Slack tools this time (twice), so nothing was saved. Try again in a minute.",
+    "notools": "Codex couldn't reach its Gmail or Slack tools this time, so nothing was saved. Try again in a minute.",
+    "stale": ("Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old), so Open Loops "
+              "didn't run it. Press Check again on the connection checklist in a minute."),
+    "nosources": ("Neither Gmail nor Slack is connected in this ChatGPT account, so there was nothing to read. "
+                  "Connect one on chatgpt.com/apps, then press Check again."),
     "timeout": "Codex took longer than {limit}, so Open Loops stopped it and saved nothing.",
     "start": "Open Loops couldn't start Codex. Press Check again on the connection checklist; it offers Install Codex if it's missing.",
 }
 _CODEX_SAFE_BUILTINS = {"list_mcp_resources", "list_mcp_resource_templates"}  # Codex's own listing tools: harmless
+# Connector tools that only read. A run is retried (see codex_run) only when its job lists nothing else, and never
+# after a call to anything outside this set, so a retry can never repeat a draft, a send or any other change.
+CODEX_READ_TOOLS = {"gmail.get_profile", "gmail.search_emails", "gmail.search_email_ids", "gmail.read_email",
+                    "gmail.read_email_thread", "gmail.batch_read_email", "gmail.batch_read_email_threads",
+                    "gmail.list_labels", "gmail.list_drafts", "slack.slack_read_channel", "slack.slack_read_thread",
+                    "slack.slack_search_public_and_private", "slack.slack_search_users", "slack.slack_read_user_profile",
+                    "slack.slack_list_user_channels"}
+_CODEX_WROTE_RE = re.compile(r"^(?:DRAFT_CREATED|SENT):", re.M)  # a chase's own success markers
+_CODEX_SKIP = {"gmail": "Gmail is not connected in this ChatGPT account; skip email.",
+               "slack": "Slack is not connected in this ChatGPT account; skip Slack."}
 
 
 _LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota", re.I)
@@ -299,7 +313,7 @@ def codex_snapshot_age(home):
     except (OSError, ValueError):
         return None
     import time
-    return max(0.0, time.time() - newest)
+    return time.time() - newest  # negative when the file claims to be from the future: treated as stale
 
 
 def _toml_str(v):
@@ -497,7 +511,7 @@ def codex_timeout():
 def _refused(args, why, detail=""):
     said = CODEX_REFUSE[why].format(store=codex_keyring_store(), limit="the time allowed")
     p = subprocess.CompletedProcess(args, 3, stdout=said + "\n", stderr=f"codex: not run ({why}){': ' + detail if detail else ''}\n")
-    p.refused, p.tools_used, p.tools_ok, p.errors, p.codex_stderr = why, [], [], [], ""
+    p.refused, p.tools_used, p.tools_ok, p.errors, p.codex_stderr, p.dropped = why, [], [], [], "", []
     return p
 
 
@@ -543,9 +557,11 @@ def _codex_warmup(budget):
     return rc, ev, err
 
 
-def _codex_once(prompt, tools, needed, left, effort_):
-    """One job run bound to one snapshot -> (rc, events, codex stderr, final message, args, allowed tool names).
-    Raises CodexNotReady when the snapshot lacks a tool the job lists even after one warm-up, or the warm-up failed."""
+def _codex_once(prompt, tools, left, effort_):
+    """One job run bound to one snapshot -> (rc, events, codex stderr, final message, args, allowed tool names, dropped
+    sources). Raises CodexNotReady when the run cannot be made safely: the warm-up failed (its reason), the snapshot
+    still lacks a tool the job lists after one warm-up ("cold"), it is still more than a day old ("stale"), or none of
+    the job's sources is connected ("nosources")."""
     for attempt in (1, 2):
         # ONE snapshot binds policy and execution: the run folder gets its copy of the connector list first, and the
         # allow-list below is generated from that copy, never from the account's list read earlier (another job's
@@ -554,21 +570,33 @@ def _codex_once(prompt, tools, needed, left, effort_):
         try:
             snap = codex_connectors(home[1])
             have = {t for names in snap.values() for t in names}
+            # A source with no tool at all in the list is not connected in this ChatGPT account: its tools are dropped
+            # and the job told to skip it (the caller learns which, e.g. refresh.py holds that source's cursor). With
+            # no list at all nothing is dropped: the warm-up below fetches one first.
+            listed = {t.split(".", 1)[0] for t in have}
+            asked = {q.split(".", 1)[0] for q in _qualify(tools) if "." in q}
+            dropped = sorted(asked - listed) if have else []
+            run_tools = [t for t in tools if t.split(".", 1)[0] not in dropped]
+            needed = {q for q in _qualify(run_tools) if "." in q}
             age = codex_snapshot_age(home[1])
-            complete = needed <= have
-            fresh = age is not None and age < SNAPSHOT_MAX_AGE_S
-            if complete and (fresh or not needed or attempt == 2):
-                # Fail closed: a job runs only when every tool it lists is in the snapshot. A tool OpenAI added to a
-                # connector after this snapshot is not on its deny-list: it is refused only after the call (the
-                # unlisted check in codex_run, rc 3), until a warm-up refreshes the list - at most SNAPSHOT_MAX_AGE_S later.
-                allow_toml, allowed = codex_allow_toml(tools, snap)
-                result = _codex_exec(home, prompt, tools, allow_toml, left(), effort_) + (allowed,)
+            fresh = age is not None and 0 <= age < SNAPSHOT_MAX_AGE_S
+            if asked and have and not needed:
+                raise CodexNotReady("nosources")
+            if needed <= have and (fresh or not needed):
+                # Fail closed: a job runs only on a complete, fresh snapshot. A tool OpenAI added to a connector after
+                # the snapshot was fetched cannot be switched off in advance: it is refused only after it has run (the
+                # unlisted check in codex_run, rc 3). Snapshots older than SNAPSHOT_MAX_AGE_S are refreshed or refused,
+                # which bounds that window to a day.
+                allow_toml, allowed = codex_allow_toml(run_tools, snap)
+                skip = "".join(_CODEX_SKIP[x] + "\n" for x in dropped)
+                result = _codex_exec(home, (skip + "\n" if skip else "") + prompt, run_tools, allow_toml, left(),
+                                     effort_) + (allowed, dropped)
         finally:
             _codex_done(home)
         if result:
             return result
         if attempt == 2:
-            raise CodexNotReady("cold")  # a warm-up ran and the list still lacks a tool this job needs
+            raise CodexNotReady("stale" if needed <= have else "cold")  # a warm-up ran and did not help
         # Missing, incomplete or stale list: one warm-up within this run's time budget; its failure is this run's
         wrc, wev, werr = _codex_warmup(min(120, left() or 120))
         why = codex_failure(wrc, wev["errors"], werr)
@@ -589,28 +617,45 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
     timeout = timeout if timeout is not None else codex_timeout()
     deadline = time.time() + timeout if timeout else None
     left = lambda: None if deadline is None else max(1, deadline - time.time())
-    needed = {q for q in _qualify(tools) if "." in q}  # connector tools this job lists ("miro" is a server, not here)
-    services = {q.split(".", 1)[0] for q in needed}  # "gmail", "slack": each must be reached for the run to count
-    blind_note = ""
+    blind_note, used_all, ok_all, errs_all, err_all = "", [], [], [], ""
+    read_only_job = {q for q in _qualify(tools) if "." in q} <= CODEX_READ_TOOLS
     try:
         for tries in (1, 2):
-            rc, ev, err, final, args, allowed = _codex_once(prompt, tools, needed, left, effort_)
+            missed = []
+            rc, ev, err, final, args, allowed, dropped = _codex_once(prompt, tools, left, effort_)
+            # Everything every attempt did is kept: a forbidden call in the first attempt still fails the run.
+            used_all += ev["used"]
+            ok_all += ev["ok"]
+            errs_all += ev["errors"]
+            err_all += err
+            if codex_failure(rc, ev["errors"], err):
+                break  # a timeout, spent allowance or expired sign-in: retrying would not help
             # Measured on real runs: a session now and then starts without one connector's tools (in one of three
             # probes Gmail's were simply not there, with Slack's present). A refresh would then report "no Gmail"
-            # and move its cursor past mail it never read. So a run that did not call a tool of every connector it
-            # lists is retried once, and if it happens again it fails like any other and saves nothing.
+            # and move its cursor past mail it never read. So a run that called no tool of a connector its job lists
+            # fails and saves nothing - retried once first, but only for a job that can only read, and never after
+            # the first attempt called anything that is not a read or reported a draft or a send.
+            services = {q.split(".", 1)[0] for q in allowed}
             reached = {u.split("/", 1)[1].split(".", 1)[0] for u in ev["used"] if u.startswith("codex_apps/")}
-            missed = sorted(services - reached) if rc == 0 else []
+            missed = sorted(services - reached)
             if not missed:
                 break
-            blind_note = (f"; RETRIED: no {', '.join(missed)} tool was called (it said: "
+            wrote = [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in CODEX_READ_TOOLS]
+            wrote += [u for u in ev["used"] if u in ("command_execution", "file_change", "web_search")]
+            marked = _CODEX_WROTE_RE.search(final or ev["msg"] or "")
+            wrote += [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in allowed]
+            blind_note = (f"; no {', '.join(missed)} tool was called in attempt {tries} (it said: "
                           + " ".join((final or ev["msg"]).split())[:200] + ")")
-            if tries == 2 or (deadline is not None and deadline - time.time() < 30):
+            if (tries == 2 or not read_only_job or wrote or marked
+                    or (deadline is not None and deadline - time.time() < 30)):
                 break
     except CodexNotReady as e:
         return _refused([cli(), "exec"], e.why)
     except OSError as e:  # the CLI missing or not runnable (the run folder is gone already)
         return _refused([cli(), "exec"], "start", f"{type(e).__name__}: {e}")
+    used_all, ok_all = list(dict.fromkeys(used_all)), list(dict.fromkeys(ok_all))
+    ev = dict(ev, used=used_all, errors=errs_all)
+    err = err_all
     servers = {q for q in _qualify(tools) if "." not in q}  # a whole MCP server the job allows ("miro")
     extra = [u for u in ev["used"] if u.split("/", 1)[-1] not in allowed | _CODEX_SAFE_BUILTINS
              and u.split("/", 1)[0] not in servers]
@@ -619,7 +664,7 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
         u = ev["usage"]
         note += f"; tokens in {u.get('input_tokens', '?')} (cached {u.get('cached_input_tokens', '?')}), out {u.get('output_tokens', '?')}"
     stdout = final or ev["msg"]
-    blind = bool(missed)
+    blind = bool(missed) and not codex_failure(rc, ev["errors"], err)
     if extra:
         note += "; REFUSED: used a tool the job did not list: " + ", ".join(extra)
         rc, stdout = 3, CODEX_REFUSE["unlisted"] + "\n"
@@ -632,7 +677,8 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
     out_err = err + ("\n" if err and not err.endswith("\n") else "") + note + "\n" + "".join(f"codex error: {x}\n" for x in ev["errors"])
     done = subprocess.CompletedProcess(args, rc, stdout=stdout, stderr=out_err)
     done.refused = "unlisted" if extra else "notools" if blind else ""
-    done.tools_used, done.tools_ok, done.errors, done.codex_stderr = ev["used"], ev["ok"], ev["errors"], err
+    done.tools_used, done.tools_ok, done.errors, done.codex_stderr = used_all, ok_all, errs_all, err
+    done.dropped = dropped  # sources skipped because they are not connected in this ChatGPT account
     return done
 
 
