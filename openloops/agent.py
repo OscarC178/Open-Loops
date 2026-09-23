@@ -8,7 +8,7 @@ Grok: Slack is opt-in (config.json "use_slack"). Off, the Slack plugin is not st
 doctor does not probe it. Vercel is never started. Jobs pass --effort low because the Grok
 CLI defaults to xhigh. Gmail is the bundled gmail_mcp.py server (not Claude's connector).
 """
-import json, os, re, shutil, subprocess, sys
+import json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 from .paths import ROOT
@@ -61,8 +61,10 @@ def miro_source():
     return v if v in _CLAUDE_MIRO else "plugin"
 
 
-def display_name():
-    return {"claude": "Claude", "grok": "Grok"}.get(name(), name().capitalize())
+def display_name(agent=None):
+    """"Claude" / "Grok" for the selected agent, or for the one named."""
+    n = (agent or name()).strip().lower()
+    return {"claude": "Claude", "grok": "Grok"}.get(n, n.capitalize())
 
 
 def cli():
@@ -203,7 +205,7 @@ def _route_of(server, svc):
 #                %LOCALAPPDATA%\Programs\OpenAI\Codex\bin). npm i -g @openai/codex and brew install --cask codex
 #                also work but need Node or Homebrew first, so they are the manual fallback in INSTALL.md.
 #   Grok         https://docs.x.ai/build/overview        (install script; lands in ~/.grok/bin)
-# The line shown on the page is the line that runs: bash -c <line> on a Mac, powershell -Command <line> on Windows.
+# The page shows the complete invocation that runs, shell-quoted, so pasting it by hand behaves the same.
 INSTALL_STEP = "install"
 _INSTALL = {  # agent -> (Mac/Linux line, Windows PowerShell line, where it is documented, who makes it)
     "claude": ("curl -fsSL https://claude.ai/install.sh | bash", "irm https://claude.ai/install.ps1 | iex",
@@ -237,8 +239,19 @@ def install_cmd(agent=None, win=None):
         argv = _PS + [ps]
         return {"argv": argv, "command": subprocess.list2cmdline(argv), "needs": ["powershell"], "source": src, "vendor": vendor}
     # pipefail: a download that fails would otherwise hand bash an empty script, which "succeeds" with exit 0
-    return {"argv": ["bash", "-o", "pipefail", "-c", unix], "command": unix, "needs": ["curl", "bash"], "source": src,
-            "vendor": vendor}
+    argv = ["bash", "-o", "pipefail", "-c", unix]
+    return {"argv": argv, "command": shlex.join(argv), "needs": ["curl", "bash"], "source": src, "vendor": vendor}
+
+
+# What the checklist says when an install ends badly, by what went wrong (app.py records which). Plain words as
+# #25 asks: what happened, then what to do; no exit codes or file paths. The installer's own output stays in
+# state/connect-install.log and the page's Console.
+INSTALL_SAID = {
+    "install": "{ai}'s installer stopped with an error. Press Install {ai} to try again. If it fails again, paste the "
+               "command below into Terminal (Windows: PowerShell) and press Enter.",
+    "timeout": "The install took longer than 10 minutes, so Open Loops stopped it. Press Install {ai} to try again.",
+    "start":   "Open Loops couldn't start {ai}'s installer. Press Install {ai} to try again.",
+}
 
 
 def install_dirs():

@@ -284,13 +284,15 @@ def run_connect(step):
     log = connect_log(step)
 
     def go():
-        rc, deadline = -1, time.time() + (INSTALL_TIMEOUT_S if install else CONNECT_TIMEOUT_S)
+        rc, deadline, why = -1, time.time() + (INSTALL_TIMEOUT_S if install else CONNECT_TIMEOUT_S), ""
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
             for argv in cmds():
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
+                    why = "timeout" if time.time() >= deadline else "install"
                     break
         except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"
+            why = "start"
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
         finally:
@@ -298,7 +300,7 @@ def run_connect(step):
                 add_install_dirs()  # before the page's re-check, which runs with this process's PATH
             doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
             doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
-            connects[step].update(running=False, rc=rc)
+            connects[step].update(running=False, rc=rc, why=why)
 
     try:  # anything failing between the claim and the worker would leave the step "already running" for good
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +324,8 @@ def connect_status(step):
     from . import agent
     if step == agent.INSTALL_STEP:  # what the button runs, so the page can show it before anyone presses it
         c["command"] = (agent.install_cmd() or {}).get("command", "")
+        if c.get("why"):  # the page shows this sentence, never the installer's raw last line ("last", for the Console)
+            c["said"] = agent.INSTALL_SAID.get(c["why"], agent.INSTALL_SAID["install"]).format(ai=agent.display_name())
     return c
 
 
