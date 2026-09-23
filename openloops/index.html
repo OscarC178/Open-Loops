@@ -452,7 +452,7 @@ const CONNECT_LABEL={install:'Install',login:'Sign in',slack_install:'Install Sl
 const CONN={};   // step -> {busy, url, msg}: kept here because the rows are repainted on every tick
 const repaint=()=>{if(DOC&&stage()==='connect')paintConnect()};   // never bring the checklist back once the page has moved on
 function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
- const cmd=s.command?`<div class="sub" style="margin-top:4px">${c.busy?'Running':'This runs'}: <code>${esc(s.command)}</code></div>`:'';   // shown before the press: nothing runs unseen
+ const cmd=s.command?`<div class="sub" style="margin-top:4px">${c.busy?'Running':'This runs'}:<code style="display:block;white-space:pre-wrap;word-break:break-all">${esc(s.command)}</code></div>`:'';   // shown before the press: nothing runs unseen
  if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}</div>${cmd}`;
  const label=s.connect==='install'?'Install '+agentLabel():CONNECT_LABEL[s.connect];
  return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}

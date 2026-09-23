@@ -26,15 +26,18 @@ doesn't do it, *Open Claude (advanced)* opens a terminal running `claude`, where
 Open Loops stores no tokens for this: the sign-ins stay wherever the Claude CLI keeps them.
 
 **Installing the AI CLI: one button.** Apart from Python, nothing needs installing first. When the selected
-AI's CLI is missing, the checklist's first row shows **Install Claude** (or Grok) with the exact command underneath;
-nothing downloads until you press it. It runs the vendor's own installer, which needs no Node or Homebrew, logs to
-`state/connect-install.log`, and the row ticks when it finishes. If the button fails, run the same command yourself:
+AI's CLI is missing (or is there but won't start), the checklist's first row shows **Install Claude** (or Grok) with
+every command it will run underneath; nothing downloads until you press it. The app saves the vendor's own installer
+to `state/install/`, checks the download is complete, runs it, then checks the CLI answers `--version`; only then
+does the row tick. None of it needs Node or Homebrew. What the commands printed is in `state/connect-install.log`;
+the page itself only says, in plain words, which part failed. If the button fails, paste the commands the row
+shows into Terminal (Windows: PowerShell). The installers, and where they are documented:
 
-| AI | Mac (Terminal) | Windows (PowerShell) | Source |
+| AI | Mac installer (run with) | Windows installer | Source |
 |---|---|---|---|
-| Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` | [code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup) (also `brew install --cask claude-code`, `winget install Anthropic.ClaudeCode`) |
-| Codex (once it can be chosen, #12) | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` | [github.com/openai/codex](https://github.com/openai/codex) (also `npm i -g @openai/codex`, `brew install --cask codex`) |
-| Grok | `curl -fsSL https://x.ai/cli/install.sh \| bash` | `irm https://x.ai/cli/install.ps1 \| iex` | [docs.x.ai/build/overview](https://docs.x.ai/build/overview) (lands in `~/.grok/bin`) |
+| Claude Code | `https://claude.ai/install.sh` (bash) | `https://claude.ai/install.ps1` | [code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup) (also `brew install --cask claude-code`, `winget install Anthropic.ClaudeCode`) |
+| Codex (once it can be chosen, #12) | `https://chatgpt.com/codex/install.sh` (sh) | `https://chatgpt.com/codex/install.ps1` | [github.com/openai/codex](https://github.com/openai/codex) (also `npm i -g @openai/codex`, `brew install --cask codex`) |
+| Grok | `https://x.ai/cli/install.sh` (bash) | `https://x.ai/cli/install.ps1` | [docs.x.ai/build/overview](https://docs.x.ai/build/overview) (lands in `~/.grok/bin`) |
 
 **Accounts / permissions this touches**
 - **Slack**: whatever your Slack user can already see. The tool never posts; it only uses `slack_send_message_draft`.

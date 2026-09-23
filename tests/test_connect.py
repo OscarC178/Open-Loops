@@ -71,7 +71,8 @@ check(doctor.route("gmail", {}) == ("", "", ""), "no server -> no route")
 # ---------------------------------------------------------------- doctor rows when the listing fails
 _real = (doctor.run, doctor.shutil.which)
 doctor.shutil.which = lambda _: "/usr/local/bin/claude"
-doctor.run = lambda args, timeout=60: ((0, '{"loggedIn": true, "email": "me@example.com"}') if args[1] == "auth"
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version"  # installed and starts (#16)
+                                       else (0, '{"loggedIn": true, "email": "me@example.com"}') if args[1] == "auth"
                                        else (1, "Checking MCP server health...\nError: timed out"))
 rows = {}
 doctor.claude_steps(rows.setdefault("steps", []))
@@ -181,6 +182,8 @@ import os, sys, time
 a = sys.argv[1:]
 with open(os.path.join(os.path.dirname(__file__), "calls.txt"), "a") as f:
     f.write(" | ".join(a) + "\n")
+if a == ["--version"]:  # doctor.py checks the CLI starts before anything else (#16)
+    print("2.1.280 (Claude Code)"); sys.exit(0)
 if a[:3] == ["plugin", "marketplace", "list"]:
     print("Configured marketplaces:\n\n  > claude-plugins-official\n"); sys.exit(0)
 if a[:2] == ["plugin", "install"]:
