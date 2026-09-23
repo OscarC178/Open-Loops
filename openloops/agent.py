@@ -8,7 +8,7 @@ Grok: Slack is opt-in (config.json "use_slack"). Off, the Slack plugin is not st
 doctor does not probe it. Vercel is never started. Jobs pass --effort low because the Grok
 CLI defaults to xhigh. Gmail is the bundled gmail_mcp.py server (not Claude's connector).
 """
-import json, os, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 from .paths import ROOT
@@ -164,7 +164,22 @@ def login_cmd(step):
         add = [] if _has_marketplace() else [["claude", "plugin", "marketplace", "add", _MARKETPLACE_SRC]]
         return add + [["claude", "plugin", "install", f"slack@{_MARKETPLACE}"]]
     src = {"slack": slack_source, "miro": miro_source}.get(step, lambda: "connector")()
-    return [["claude", "mcp", "login", CLAUDE_SERVERS[step][src]] + ([] if WIN else ["--no-browser"])]
+    server = CLAUDE_SERVERS[step][src]
+    # doctor.py saves the name `claude mcp list` actually printed; use it when it is the same route. Checked
+    # against a plain pattern because Windows runs this through cmd.exe.
+    seen = str((_cfg().get("claude_servers") or {}).get(step) or "")
+    if seen and re.fullmatch(r"[\w .:@/-]{1,100}", seen) and _route_of(seen, step) == src:
+        server = seen
+    return [["claude", "mcp", "login", server] + ([] if WIN else ["--no-browser"])]
+
+
+def _route_of(server, svc):
+    """"plugin" / "connector" / "server" for a server name, by exact match or by the shape of the name."""
+    exact = next((s for s, n in CLAUDE_SERVERS[svc].items() if n == server), None)
+    if exact:
+        return exact
+    low = server.lower()
+    return ("plugin" if low.startswith("plugin:") else "connector" if low.startswith("claude.ai") else None) if svc in low else None
 
 
 def model():

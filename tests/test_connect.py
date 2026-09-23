@@ -50,15 +50,15 @@ check(doctor.parse_mcp_list("") == {} and doctor.parse_mcp_list("No MCP servers 
 
 # ---------------------------------------------------------------- route
 servers = doctor.parse_mcp_list(SAMPLE)
-check(doctor.route("slack", servers) == ("plugin", "connected"), "Slack via the plugin")
-check(doctor.route("gmail", servers) == ("connector", "connected"), "Gmail via the claude.ai connector")
-check(doctor.route("miro", servers) == ("plugin", "auth"), "Miro: both need signing in -> the plugin, as the jobs expect")
-check(doctor.route("miro", {"plugin:miro:miro": "auth", "claude.ai Miro": "connected"}) == ("connector", "connected"),
+check(doctor.route("slack", servers) == ("plugin", "connected", "plugin:slack:slack"), "Slack via the plugin")
+check(doctor.route("gmail", servers) == ("connector", "connected", "claude.ai Gmail"), "Gmail via the claude.ai connector")
+check(doctor.route("miro", servers) == ("plugin", "auth", "plugin:miro:miro"), "Miro: both need signing in -> the plugin, as the jobs expect")
+check(doctor.route("miro", {"plugin:miro:miro": "auth", "claude.ai Miro": "connected"}) == ("connector", "connected", "claude.ai Miro"),
       "a connected route beats one that needs signing in")
-check(doctor.route("miro", {"miro": "connected"}) == ("server", "connected"), "Miro as a user-added server named miro")
-check(doctor.route("slack", {"plugin:slack-v2:slack": "auth"}) == ("plugin", "auth"), "a renamed plugin still reads as the plugin route")
-check(doctor.route("slack", {"my-slack": "connected"}) == ("", ""), "an unknown server named like slack is not guessed at")
-check(doctor.route("gmail", {}) == ("", ""), "no server -> no route")
+check(doctor.route("miro", {"miro": "connected"}) == ("server", "connected", "miro"), "Miro as a user-added server named miro")
+check(doctor.route("slack", {"plugin:slack-v2:slack": "auth"}) == ("plugin", "auth", "plugin:slack-v2:slack"), "a renamed plugin still reads as the plugin route, name kept")
+check(doctor.route("slack", {"my-slack": "connected"}) == ("", "", ""), "an unknown server named like slack is not guessed at")
+check(doctor.route("gmail", {}) == ("", "", ""), "no server -> no route")
 
 # ---------------------------------------------------------------- login_cmd
 cfg = {"agent": "claude"}
@@ -80,6 +80,13 @@ check(agent.login_cmd("miro") == [["claude", "mcp", "login", "plugin:miro:miro",
 for src, name in (("connector", "claude.ai Miro"), ("server", "miro")):
     cfg["miro_source"] = src
     check(agent.login_cmd("miro") == [["claude", "mcp", "login", name, "--no-browser"]], f"Miro, {src} route")
+cfg["slack_source"], cfg["claude_servers"] = "plugin", {"slack": "plugin:slack-v2:slack"}
+check(agent.login_cmd("slack") == [["claude", "mcp", "login", "plugin:slack-v2:slack", "--no-browser"]], "a renamed server is signed in to by its listed name")
+cfg["slack_source"] = "connector"
+check(agent.login_cmd("slack")[0][3] == "claude.ai Slack", "a listed name for another route is ignored")
+cfg["slack_source"], cfg["claude_servers"] = "plugin", {"slack": "plugin:slack:x & calc.exe"}
+check(agent.login_cmd("slack")[0][3] == "plugin:slack:slack", "a listed name with shell characters is ignored")
+cfg.pop("claude_servers")
 agent.WIN = True
 check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail"]], "Windows: no --no-browser (the CLI opens the browser)")
 agent.WIN = sys.platform == "win32"

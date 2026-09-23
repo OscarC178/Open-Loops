@@ -46,20 +46,18 @@ def parse_mcp_list(txt):
 
 
 def route(svc, servers):
-    """Which way Claude reaches one service -> (source, state): source is a key of agent.CLAUDE_SERVERS[svc]
-    ("plugin", "connector", "server"), state as parse_mcp_list. ("", "") when no such server is set up.
+    """Which way Claude reaches one service -> (source, state, name): source is a key of agent.CLAUDE_SERVERS[svc]
+    ("plugin", "connector", "server"), state as parse_mcp_list, name the server exactly as listed (what
+    `claude mcp login` needs, even if a later Claude Code renames it). ("", "", "") when no such server is set up.
     A connected route beats one that needs signing in; otherwise the plugin wins, as the jobs expect."""
     names = agent.CLAUDE_SERVERS[svc]
     found = []
     for name, state in servers.items():
-        src = next((s for s, n in names.items() if n == name), None)
-        if src is None:  # a server renamed by a later Claude Code: fall back to the shape of the name
-            low = name.lower()
-            src = ("plugin" if low.startswith("plugin:") else "connector" if low.startswith("claude.ai") else None) if svc in low else None
+        src = agent._route_of(name, svc)  # exact name, or for a server renamed by a later Claude Code its shape
         if src in names:
-            found.append((src, state))
+            found.append((src, state, name))
     found.sort(key=lambda f: (f[1] != "connected", list(names).index(f[0])))
-    return found[0] if found else ("", "")
+    return found[0] if found else ("", "", "")
 
 
 def claude_steps(steps):
@@ -96,7 +94,8 @@ def claude_steps(steps):
         servers = parse_mcp_list(txt)
         if rc != 0 and not servers:  # the listing itself failed (timeout, CLI error): not the same as "nothing set up"
             unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]
-    (slack_source, s_st), (_, g_st), (miro_source, m_st) = (route(k, servers) for k in ("slack", "gmail", "miro"))
+    (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (route(k, servers) for k in ("slack", "gmail", "miro"))
+    names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
     slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
     first = "Sign in to Claude first (the row above)."
 
@@ -127,7 +126,7 @@ def claude_steps(steps):
                      ("Add Miro first: claude.ai → Settings → Connectors → Miro, or in a terminal: "
                       "claude plugin install miro@claude-plugins-official. Then press Check again and Connect Miro.", None),
                      "Press Connect Miro: your browser opens Miro's sign-in page; pick the team and click Allow."))
-    return email, slack, gmail, slack_source, miro, miro_source
+    return email, slack, gmail, slack_source, miro, miro_source, names
 
 
 def grok_steps(steps):
@@ -189,13 +188,13 @@ def grok_steps(steps):
         gmail_fix = ""
     steps.append({"id": "gmail", "ok": gmail, "optional": True, "title": "Gmail connected (optional)",
                   "fix": gmail_fix})
-    return email, slack, gmail, "", False, ""
+    return email, slack, gmail, "", False, "", {}
 
 
 def main(detect=False):
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig")) if CONFIG.exists() else {}
     out = {"steps": [], "agent": agent.name()}
-    email, slack, gmail, slack_source, miro, miro_source = (grok_steps if agent.name() == "grok" else claude_steps)(out["steps"])
+    email, slack, gmail, slack_source, miro, miro_source, names = (grok_steps if agent.name() == "grok" else claude_steps)(out["steps"])
     out["miro"] = miro
     # Remember which Slack / Miro route Claude has, so the job scripts allow the right tool prefix.
     changed = False
@@ -203,6 +202,10 @@ def main(detect=False):
         if val and cfg.get(key) != val:
             cfg[key] = val
             changed = True
+    # ...and the exact server names, so a Connect button signs in to the server that is really there
+    if names and {**(cfg.get("claude_servers") or {}), **names} != cfg.get("claude_servers"):
+        cfg["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
+        changed = True
     if changed:
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
     out["slack_source"] = slack_source or cfg.get("slack_source") or ""
