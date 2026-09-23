@@ -2,11 +2,13 @@
 
     python3 tests/test_install.py    # fast; downloads nothing, installs nothing real. Temp install, temp HOME, spare port.
 
-The API half puts a fake `curl` first on a PATH that has no real `claude`. The app runs the real command line
-(`curl -fsSL https://claude.ai/install.sh | bash`); the fake curl answers with a tiny installer script instead of
-Anthropic's, which the real bash runs: it drops a fake `claude` into $HOME/.local/bin (HOME is a temp folder),
-where the real installer puts it. So a pass proves the shown command is the one that runs, that the app finds a
-CLI in a folder that was not on its PATH, and that the re-check goes green. Skipped on Windows (own console window).
+The API half puts a fake `curl` first on a PATH that has no real `claude`. The app runs the real commands the row
+shows (curl -o <script>, test -s, bash <script>, claude --version); the fake curl saves a tiny installer in place of
+Anthropic's, which the real bash runs. Fixtures: a failed download, a download cut off after a stub (never run), a
+CLI that installs but won't start, an installer that asks a question (fails at once), one that never finishes
+(stopped at a 6-second deadline), Quit during an install, and the good case, which drops a fake `claude` into
+$HOME/.local/bin (HOME is a temp folder) and turns the row green. The runner's Windows branch is checked in-process.
+The API half is skipped on Windows (the fake installers are shell scripts).
 """
 import json, os, shlex, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
@@ -94,9 +96,28 @@ row = doctor.install_row("Grok", False)
 check(row["connect"] == "install" and row["command"] == SHOWN("grok") and "xAI" in row["fix"], "Grok selected -> Grok's installer")
 agent.shutil.which, agent._cfg, agent.WIN = _which, _real_cfg, sys.platform == "win32"
 
+# ---------------------------------------------------------------- the runner's Windows branch, in-process
+# Windows installs capture output to the log instead of a console window. The branch is taken here with app.WIN forced
+# on (CREATE_NO_WINDOW is 0 off Windows), so the log header, the capture and the timeout note are checked on any OS.
+from openloops import app  # noqa: E402
+_logdir = Path(tempfile.mkdtemp(prefix="openloops-runner-"))
+app.WIN, app.connects["t"] = True, {}
+lg = _logdir / "t.log"
+lg.write_text("", encoding="utf-8")
+argv = [sys.executable, "-c", "print('installing'); import sys; sys.exit(3)"]
+check(app._install_one("t", argv, lg, time.time() + 20) == (3, False), "Windows branch: exit code comes back")
+text = lg.read_text(encoding="utf-8")
+check(text.startswith("$ " + subprocess.list2cmdline(argv)) and "installing" in text, "Windows branch: command and output land in the log")
+app.INSTALL_TIMEOUT_S = 1
+check(app._install_one("t", [sys.executable, "-c", "import time; time.sleep(3)"], lg, time.time() + 1) == (-1, True),
+      "Windows branch: the deadline is reported as a timeout")
+check("stopped: the install did not finish within 1 seconds" in lg.read_text(encoding="utf-8"), "Windows branch: the log says why")
+app.WIN = sys.platform == "win32"
+shutil.rmtree(_logdir, ignore_errors=True)
+
 # ---------------------------------------------------------------- /api/connect/install
 if sys.platform == "win32":
-    say("skip /api/connect/install: Windows runs the installer in its own console window")
+    say("skip /api/connect/install: the fake installers are shell scripts")
     raise SystemExit(0)
 
 # Fake installers: the fake curl saves one of these (picked by the file bin/mode) where -o says, as the real one would.
@@ -114,7 +135,12 @@ INSTALLERS = {
     "ok": 'echo "Downloading Claude Code..."\nsleep 1\n' + PUT_CLAUDE +
           'echo "Docs: https://code.claude.com/docs/en/setup"\necho "Claude Code successfully installed"\n',
     # a CLI that lands on PATH but will not start: the row must not go green
-    "stub": PUT_CLAUDE,  # what arrives before a download is cut off: would install claude if it were ever run
+    "stub": PUT_CLAUDE,
+    # asks a question: first on the terminal, then on stdin. Neither exists for it, so it must fail at once, not wait
+    "prompt": 'echo "Install Claude Code? [y/N]"\nif read -r a < /dev/tty; then exit 0; fi\n'
+              'read -r a || { echo "no answer"; exit 1; }\n[ "$a" = y ] || exit 1\n' + PUT_CLAUDE,
+    # never finishes: stopped at the deadline (OPENLOOPS_INSTALL_TIMEOUT_S), or by Quit
+    "hang": 'echo "Downloading Claude Code..."\nsleep 120\n' + PUT_CLAUDE,  # what arrives before a download is cut off: would install claude if it were ever run
     "broken": PUT_CLAUDE.replace('sys.exit(0)\nif a[:2]', 'sys.exit(1)\nif a[:2]', 1) + 'echo "Claude Code successfully installed"\n',
 }
 FAKE_CURL = r'''#!PYTHON
@@ -174,7 +200,10 @@ if shutil.which("claude", path=PATH):  # a claude in the system folders would ma
     raise SystemExit(f"FAIL: a real claude is on the test PATH ({shutil.which('claude', path=PATH)}); cannot test the install")
 calls = lambda: (tmp / "bin" / "calls.txt").read_text().splitlines() if (tmp / "bin" / "calls.txt").exists() else []
 AT = lambda ag: SHOWN(ag).replace(str(agent.ROOT), str(tmp))  # the command as the app in tmp shows it
-env = dict(os.environ, OPENLOOPS_PORT=str(PORT), PATH=PATH, HOME=str(tmp / "home"), BROWSER="true")
+TIMEOUT_S = 6  # the app's install deadline for this run; the fake installers other than "hang" take about a second
+env = dict(os.environ, OPENLOOPS_PORT=str(PORT), PATH=PATH, HOME=str(tmp / "home"), BROWSER="true",
+           OPENLOOPS_INSTALL_TIMEOUT_S=str(TIMEOUT_S))
+waiting = lambda: subprocess.run(["pgrep", "-f", f"{tmp}/state/install/"], capture_output=True).returncode == 0
 srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
@@ -236,6 +265,25 @@ try:
     check(not row(doc)["ok"] and "won't start" in row(doc)["fix"] and row(doc)["connect"] == "install", "the row says it won't start, offers Install again")
     fake.unlink()
 
+    # an installer that asks a question: no terminal, empty stdin, so it fails straight away instead of hanging
+    use("prompt")
+    t = time.time()
+    api("/api/connect/install", shown)
+    s = wait_install()
+    check(time.time() - t < TIMEOUT_S - 1 and s["rc"] == 1 and s["why"] == "install" and not fake.exists(),
+          f"a prompting installer fails at once (rc {s['rc']}, {time.time() - t:.1f}s, last {s['last']!r})")
+    check(s["said"].startswith("Claude's installer stopped with an error"), "...and the page says so plainly")
+
+    # an installer that never finishes: stopped at the deadline, the log says why, nothing left running
+    use("hang")
+    api("/api/connect/install", shown)
+    s = wait_install(TIMEOUT_S + 10)
+    log = (tmp / "state" / "connect-install.log").read_text(encoding="utf-8")
+    check(s["rc"] == -1 and s["why"] == "timeout" and f"stopped: the install did not finish within {TIMEOUT_S} seconds" in log,
+          f"the deadline stops it and says so (got {s['rc']}, {s['why']!r})")
+    check(s["said"].startswith("The install took longer than 10 minutes") and not waiting() and not fake.exists(),
+          "the page says it took too long; no installer is left running")
+
     # the real thing, with the fake installer
     use("ok")
     code, out = api("/api/connect/install", shown)
@@ -263,11 +311,21 @@ try:
     code, out = api("/api/connect/login", {})
     check(code == 400, "the sign-in steps stay Claude-only")
 
+    # Quit while an install runs: the installer is stopped and the server exits without waiting for it
+    api("/api/config", {"agent": "claude"})
+    use("hang")
+    fake.unlink()
+    shown = {k: api("/api/connect/install")[1][k] for k in ("agent", "command_id")}
+    code, out = api("/api/connect/install", shown)
+    time.sleep(1)
+    check(out == {"started": True} and waiting(), "an install is running")
     api("/api/quit", {})
     try:
         srv.wait(10)
     except subprocess.TimeoutExpired:
-        raise SystemExit("FAIL: the server did not quit")
+        raise SystemExit("FAIL: the server kept waiting for the install after Quit")
+    time.sleep(0.5)
+    check(not waiting() and not fake.exists(), "Quit stopped the install and the server exited")
     say("PASS")
 finally:
     srv.terminate()
