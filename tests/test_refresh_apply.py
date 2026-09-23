@@ -192,14 +192,13 @@ refresh.apply(s, {"new_loops": [{"id": "sam-lunch", "owner": "Sam", "ask": "lunc
               slack_only=True, now=NOW)
 check("sam-lunch" in [l["id"] for l in s["loops"]], "a separate ask of me in a DM where my own ask is still waiting is kept")
 
-check(refresh.slack_key({"thread": f"DM Jo {JO_DM} 1757800000.000100"}) == refresh.slack_key({"thread": f"dm jo bloggs  {JO_DM} 1757800000.000100"}) == (JO_DM, "1757800000.000100"),
-      "slack_key: a DM ask is its DM id + the ask ts")
-check(refresh.slack_key({"thread": "#ops C0OPSCH001 1757000000.000100"}) == ("C0OPSCH001/1757000000.000100", "1757000000.000100"),
-      "slack_key: a channel ask is channel id + thread ts; the thread's first message is the ask when there is one ts")
-check(refresh.slack_key({"thread": "#ops C0OPSCH001", "owner": "Kit Smith", "ask": "The  rota"}) == ("C0OPSCH001/kit", "the rota"),
-      "slack_key: no ts -> the asker's first name and the ask's words")
-check(refresh.slack_key({"thread": ""}) is None and refresh.slack_key({"thread": "#General  chat", "ask": "x"}) == ("#general chat", "x"),
-      "slack_key: no thread -> None; no id -> the thread text")
+check(refresh.slack_conv({"thread": f"dm jo bloggs  {JO_DM} 1757800000.000100"}) == JO_DM and refresh.ask_ts({"thread": f"DM Jo {JO_DM} 1757800000.000100"}) == "1757800000.000100",
+      "slack_conv / ask_ts: a DM ask is its DM id + the ask ts")
+check(refresh.slack_conv({"thread": "#ops C0OPSCH001 1757000000.000100 1757000500.000200"}) == "C0OPSCH001" and refresh.ask_ts({"thread": "#ops C0OPSCH001 1757000000.000100 1757000500.000200"}) == "1757000500.000200",
+      "slack_conv / ask_ts: a channel ask is the channel id + the last ts (the asking message)")
+check(refresh.ask_ts({"thread": "#ops C0OPSCH001 1757000000.000100", "ask_ts": "1757000999.000300"}) == "1757000999.000300", "ask_ts: an explicit ask_ts wins")
+check(refresh.slack_conv({"thread": ""}) is None and refresh.slack_conv({"thread": "#General  chat"}) == "#general chat" and refresh.ask_ts({"thread": "#ops C0OPSCH001"}) is None,
+      "slack_conv / ask_ts: no thread -> None; no id -> the thread text; no ts -> None")
 
 # --- closing: a done update stamps closed_at (re-check window + day log); reopening clears it
 s = base()

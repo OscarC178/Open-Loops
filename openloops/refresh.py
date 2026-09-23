@@ -74,6 +74,7 @@ Reply with ONLY a JSON object between the markers, nothing else ("slack_availabl
 <<<OPENLOOPS>>>
 {{
   "new_loops": [{{"id": "<owner-slug>-<topic-slug>", "owner": "...", "owner_email": "... or null",
+                  "owner_id": "Slack user id of the owner, or null", "ask_ts": "Slack ts of the asking message, or null",
                   "ask": "one line", "channel": "slack|email", "thread": "DM <name> <channel id> <ask ts> | #<channel> <channel id> <thread ts> <ask ts> | email subject",
                   "link": "Slack message permalink or gmail search url", "asked_at": "ISO datetime",
                   "status": "waiting, or needs_me for inbound", "inbound": false, "notes": "",
@@ -99,35 +100,84 @@ def from_mail(l):
     return not l.get("manual") and l.get("channel") not in ("note", "vault")
 
 
-def first_name(l):
-    return (str(l.get("owner") or "").lower().split() or [""])[0]
-
-
-def slack_key(l):
-    """(conversation, ask) for a Slack loop, whatever id or wording the agent used. The conversation
-    is the DM id, or the channel/group id plus the thread ts (the asker's first name if there is no ts),
-    or the thread text when there is no id; the ask is the last ts in `thread` (the message that asked),
-    else the ask's words. None when there is no thread to go on."""
-    t = str(l.get("thread") or "")
-    cid, ts = SLACK_CID.search(t), SLACK_TS.findall(t)
-    ask = ts[-1] if ts else " ".join(str(l.get("ask") or "").lower().split())
-    if not cid:
-        t = " ".join(t.lower().split())
-        return (t, ask) if t else None
-    if cid.group(1).startswith("D"):
-        return cid.group(1), ask
-    return cid.group(1) + "/" + (ts[0] if ts else first_name(l)), ask
-
-
 def words(v):
     return " ".join(str(v or "").lower().split())
 
 
-def reply_keys(l, u):
-    """The reply an update reports on the owner's Slack loop l, as the keys an inbound loop for that same
-    message would have: (conversation, reply ts) and (conversation, reply words)."""
-    conv = slack_key(l)[0]
-    return {(conv, v) for v in (str(u.get("reply_ts") or "").strip(), words(u.get("reply_snippet"))) if v}
+def slack_conv(l):
+    """The Slack conversation a loop lives in: the DM / channel / group id in `thread` (a message ts is
+    unique within one), else the thread text. None when there is no thread to go on."""
+    t = str(l.get("thread") or "")
+    cid = SLACK_CID.search(t)
+    return cid.group(1) if cid else (words(t) or None)
+
+
+def ask_ts(l):
+    """The ts of the message that asked: `ask_ts`, else the last ts in `thread`, else None."""
+    v = str(l.get("ask_ts") or "").strip()
+    if SLACK_TS.fullmatch(v):
+        return v
+    ts = SLACK_TS.findall(str(l.get("thread") or ""))
+    return ts[-1] if ts else None
+
+
+def same_asker(a, b):
+    """Slack user ids when both loops have one, else the full names - never just a first name."""
+    ia, ib = str(a.get("owner_id") or "").strip().upper(), str(b.get("owner_id") or "").strip().upper()
+    return ia == ib if ia and ib else words(a.get("owner")) == words(b.get("owner"))
+
+
+def ts_after(ts, iso):
+    """Whether Slack ts `ts` is later than ISO time `iso` (a naive one is local time)."""
+    try:
+        return datetime.fromtimestamp(float(ts)).astimezone() > datetime.fromisoformat(str(iso)).astimezone()
+    except (TypeError, ValueError):
+        return False
+
+
+def known_ask(c, loops):
+    """Whether Slack inbound candidate c is an ask already on the list. Message ts first:
+    - both have a ts: the same ts is the same message, open or closed (the agent may re-report a closed
+      one); a different ts is a different message, whatever the wording;
+    - c has a ts, an existing loop has none: same asker + same wording is that loop - it takes the ts
+      (unless it was closed before c was sent: then c is a fresh ask);
+    - c has no ts: same asker + same wording as a loop still open is that loop."""
+    conv, ts = slack_conv(c), ask_ts(c)
+    for l in loops:
+        if slack_conv(l) != conv:
+            continue
+        lts = ask_ts(l)
+        if ts and lts:
+            if ts == lts:
+                return True
+            continue
+        if not (same_asker(c, l) and words(c.get("ask")) == words(l.get("ask"))):
+            continue
+        is_open = l.get("status") in ("waiting", "needs_me")
+        if ts:   # l has no ts: upgrade it, unless it closed before this message
+            if is_open or not ts_after(ts, l.get("closed_at")):
+                l["ask_ts"] = ts
+                return True
+        elif is_open:
+            return True
+    return False
+
+
+def reply_seen(c, replies):
+    """Whether Slack inbound candidate c is a reply this run already reported on one of the owner's loops
+    (loop, update). A candidate with a ts matches only a reply with that ts; wording is used only when the
+    candidate has no ts, and then only for the same asker."""
+    conv, ts = slack_conv(c), ask_ts(c)
+    for l, u in replies:
+        if slack_conv(l) != conv:
+            continue
+        rts = str(u.get("reply_ts") or "").strip()
+        if ts:
+            if ts == rts:
+                return True
+        elif same_asker(c, l) and words(u.get("reply_snippet")) and words(u.get("reply_snippet")) == words(c.get("ask")):
+            return True
+    return False
 
 
 def in_scope(l, slack_only, recent):
@@ -216,25 +266,10 @@ def apply(s, out, slack_only, now, slack_on=True):
     slack_on: whether this run searched Slack at all (a full run with Slack off did not); an agent
     that reports "slack_available": false (the searches failed) leaves the Slack cursor where it was."""
     by_id = {l["id"]: l for l in s["loops"]}
-    # Slack asks of the owner still open once this run's updates land (an ask closed now no longer counts):
-    # the same ask (conversation + ask ts) seen again under a new id is not added twice. And a reply this
-    # run reports on one of the owner's loops (an update to needs_me) is that loop's news, not a second
-    # Needs me row from the inbound search: the same message (its ts, else its words) -> dropped; any
-    # other ask in that conversation is kept.
-    ups = {u.get("id"): u for u in out.get("updates", []) or [] if isinstance(u, dict)}
-    slack = [l for l in s["loops"] if l.get("channel") == "slack" and slack_key(l)]
-    inbound_open = {slack_key(l) for l in slack if l.get("inbound") and (ups.get(l["id"], {}).get("status") or l["status"]) in ("waiting", "needs_me")}
-    replied = set().union(*[reply_keys(l, ups[l["id"]]) for l in slack if ups.get(l["id"], {}).get("status") == "needs_me"])
     n_new = n_upd = 0
-    for nl in out.get("new_loops", []) or []:
-        nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
-        if not nl["id"] or nl["id"] in by_id:
-            continue
-        if slack_only and nl.get("channel") != "slack":
-            continue  # belt and braces: the prompt says no email, the merge enforces it
-        key = slack_key(nl) if nl.get("inbound") and nl.get("channel") == "slack" else None
-        if key and (key in inbound_open or key in replied or (key[0], words(nl.get("ask"))) in replied):
-            continue
+
+    def add(nl):
+        nonlocal n_new
         links = nl.pop("links", None)
         nl.setdefault("status", "needs_me" if nl.get("inbound") else "waiting")
         nl["priority"] = nl.get("priority") if nl.get("priority") in PRIORITIES else "normal"
@@ -244,13 +279,10 @@ def apply(s, out, slack_only, now, slack_on=True):
         merge_links(nl, links)
         s["loops"].append(nl)
         by_id[nl["id"]] = nl
-        if key:
-            inbound_open.add(key)
         n_new += 1
-    for u in out.get("updates", []) or []:
-        l = by_id.get(u.get("id"))
-        if not l:
-            continue
+
+    def update(l, u):
+        nonlocal n_upd
         was = l.get("status")
         for k in ("status", "last_reply_at", "reply_snippet", "asked_at"):
             if u.get(k):
@@ -266,6 +298,41 @@ def apply(s, out, slack_only, now, slack_on=True):
         elif l["status"] == "done" and was != "done":
             l["closed_at"] = now
         n_upd += 1
+
+    # 1. new loops, except Slack asks of the owner (those wait until the list is settled)
+    slack_in = []
+    for nl in out.get("new_loops", []) or []:
+        nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
+        if not nl["id"] or nl["id"] in by_id or nl["id"] in {x["id"] for x in slack_in}:
+            continue
+        if slack_only and nl.get("channel") != "slack":
+            continue  # belt and braces: the prompt says no email, the merge enforces it
+        if nl.get("inbound") and nl.get("channel") == "slack" and slack_conv(nl):
+            slack_in.append(nl)
+        else:
+            add(nl)
+    # 2. updates (to loops that exist now; any to a Slack ask added below are applied after it)
+    later, replies = [], []
+    for u in out.get("updates", []) or []:
+        l = by_id.get(u.get("id"))
+        if not l:
+            later.append(u)
+            continue
+        update(l, u)
+        if l["status"] == "needs_me" and l.get("channel") == "slack" and u.get("status") == "needs_me":
+            replies.append((l, u))   # a reply reported on one of the owner's loops, created this run or before
+    # 3. Slack asks of the owner, against the settled list: a known ask (by message ts first; see known_ask)
+    # or a reply already reported in step 2 is not a second Needs me row
+    for nl in slack_in:
+        inbound = [l for l in s["loops"] if l.get("inbound") and l.get("channel") == "slack"]
+        if known_ask(nl, inbound) or reply_seen(nl, replies):
+            continue
+        if ask_ts(nl):
+            nl["ask_ts"] = ask_ts(nl)
+        add(nl)
+    for u in later:
+        if u.get("id") in by_id:
+            update(by_id[u["id"]], u)
     searched = slack_on and str(out.get("slack_available", True)).lower() == "true"   # missing -> trust the run, as before; "false"/junk -> not searched
     if slack_only:
         if searched:
