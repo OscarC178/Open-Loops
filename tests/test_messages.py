@@ -66,7 +66,7 @@ show("2. every id used exists, and every entry is used; every placeholder is fil
 import ast  # noqa: E402
 SOURCES = {p: (REPO / "openloops" / p).read_text(encoding="utf-8")
            for p in ("doctor.py", "app.py", "agent.py", "standing.py", "index.html", "messages.py", "refresh.py", "chase.py")}
-asked, fmt_at, dynamic = set(), {}, []   # ids the code asks for; id -> keyword names given at its call sites
+asked, calls, dynamic = set(), [], []   # ids the code asks for; every call site: (ids, keywords it passes, where)
 
 
 def ids_of(node):
@@ -81,8 +81,13 @@ def ids_of(node):
 for name, text in SOURCES.items():
     if not name.endswith(".py"):
         continue
-    for node in ast.walk(ast.parse(text)):
-        if isinstance(node, ast.Call) and node.args:
+    tree = ast.parse(text)
+    # agent.CODEX_REFUSE = {k: say("codex_…")}: templates on purpose, {store} / {limit} filled by .format() where used
+    # (TABLES below holds those uses); these builds are not call sites that show a sentence
+    templates = [range(n.lineno, n.end_lineno + 1) for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                 and any(getattr(t, "id", "") == "CODEX_REFUSE" for t in n.targets)]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and node.args and not any(node.lineno in r for r in templates):
             fn = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             if fn in ("say", "part"):
                 got = ids_of(node.args[0])
@@ -91,14 +96,16 @@ for name, text in SOURCES.items():
                         dynamic.append(f"{name}:{node.lineno}")
                     continue
                 asked |= got
-                for i in got:
-                    fmt_at.setdefault(i, set()).update(k.arg for k in node.keywords if k.arg)
+                if any(k.arg is None for k in node.keywords):   # say(id, **fmt): only messages.py's own helpers do this
+                    dynamic.append(f"{name}:{node.lineno}")
+                calls.append((got, {k.arg for k in node.keywords if k.arg}, f"{name}:{node.lineno}"))
 for text in SOURCES.values():   # doctor.SCHEDULE_MSG reads the table directly: _F["schedule_blocked"]["what"]
     asked |= set(re.findall(r"""_F\[["']([a-z_]+)["']\]""", text))
 page_src = SOURCES["index.html"]
 for m in re.finditer(r"""\bmsg\('([a-z_]+)'(?:,\{([^}]*)\})?\)""", page_src):
     asked.add(m.group(1))
-    fmt_at.setdefault(m.group(1), set()).update(re.findall(r"(\w+)\s*(?::|,|$)", m.group(2) or ""))
+    line_no = page_src.count("\n", 0, m.start()) + 1
+    calls.append(({m.group(1)}, set(re.findall(r"(\w+)\s*(?::|,|$)", m.group(2) or "")), f"index.html:{line_no}"))
 from openloops import app  # noqa: E402  (importing app writes config/state into the throwaway install only)
 # ids reached through tables rather than a literal call, and what their callers fill in
 TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entries below say what these are filled with
@@ -107,7 +114,7 @@ TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entri
           **{i: {"store", "limit"} for i in messages.CODEX_JOB_IDS}}   # agent.py .format(store=, limit=)
 for i, keys in TABLES.items():
     asked.add(i)
-    fmt_at.setdefault(i, set()).update(keys)
+    calls.append(({i}, keys, f"table:{i}"))
 missing = sorted(i for i in asked if i not in FAILURES)
 check(not missing, f"every id the code asks for (conditional ones included) is in FAILURES (missing: {missing})")
 check(set(dynamic) <= {f"messages.py:{n}" for n in range(1, 10000)},
@@ -120,9 +127,31 @@ SAMPLE = {"ai": "Claude", "vendor": "Anthropic", "tools": "curl", "email": "sam@
           "party": "Google", "limit": "10 minutes", "job": "The refresh", "job_lower": "the refresh", "port": "8791",
           "store": "the Mac keychain"}
 import string as _string  # noqa: E402
+
+
+def holes_of(fid):
+    m = FAILURES[fid]
+    return {f for part_ in ("what", "fix", "fix_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
+
+
+def short_calls(cs):
+    """Call sites that do not pass every placeholder their entry needs, each judged on its own (not the union)."""
+    return [(where, i, sorted(holes_of(i) - keys)) for ids, keys, where in cs for i in ids if i in FAILURES and holes_of(i) - keys]
+
+
+# the check itself catches one short call beside a complete one (the gap the review reproduced)
+check(short_calls([({"install_timeout"}, {"ai", "limit"}, "a:1"), ({"install_timeout"}, {"ai"}, "b:2")]) == [("b:2", "install_timeout", ["limit"])],
+      "a call that leaves out {limit} is caught even when another call passes it")
+for name in ("agent.py", "doctor.py"):   # the CODEX_REFUSE templates, where they are shown: each use fills what it needs
+    for m in re.finditer(r'CODEX_REFUSE\["(\w+)"\](\.format\(([^)]*(?:\([^)]*\)[^)]*)*)\))?', SOURCES[name]):
+        line_no = SOURCES[name].count("\n", 0, m.start()) + 1
+        if '"""' in SOURCES[name].splitlines()[line_no - 1]:
+            continue   # a docstring naming it, not a use
+        calls.append(({"codex_" + m.group(1)}, set(re.findall(r"(\w+)=", m.group(3) or "")), f"{name}:{line_no}"))
+short = short_calls(calls)
+check(not short, f"every call site passes every placeholder its entry needs (short: {short})")
 for fid, m in FAILURES.items():
-    holes = {f for part_ in ("what", "fix", "fix_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
-    check(holes <= fmt_at.get(fid, set()), f"{fid}: every placeholder {sorted(holes)} is filled at a call site (given {sorted(fmt_at.get(fid, set()))})")
+    holes = holes_of(fid)
     for win in (False, True):
         text = say(fid, win=win, **{k: SAMPLE[k] for k in holes})
         bad = [w for w in FORBIDDEN if w in text]
