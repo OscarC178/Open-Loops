@@ -498,6 +498,17 @@ try:
     (old / "state.json").write_text(json.dumps({"cursor": "2026-09-01T00:00", "last_refresh": None, "loops": [{"id": "keep-me"}]}),
                                     encoding="utf-8")
     (home2 / "Desktop").mkdir(parents=True)
+    # a process naming the old copy (as `python3 <old>/openloops/app.py` would), started from elsewhere: no port is
+    # probed under --isolated, so its command line is what stops the copy
+    busy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", str(old / "openloops" / "app.py")], cwd=str(tmp))
+    try:
+        r = install(home2, "--isolated", "--no-launch")
+        check(r.returncode == 1 and "Something is still working in the old Open Loops folder." in r.stderr
+              and not (home2 / "Library" / "Application Support" / "OpenLoops" / "state.json").exists(),
+              f"--isolated over an old install that a process still names: refused, nothing copied ({r.stderr.strip()[-160:]!r})")
+    finally:
+        busy.kill()
+        busy.wait()
     r = install(home2, "--isolated", "--no-launch")
     new = home2 / "Library" / "Application Support" / "OpenLoops"
     check(r.returncode == 0 and json.loads((new / "state.json").read_text())["loops"] == [{"id": "keep-me"}],

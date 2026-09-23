@@ -268,7 +268,10 @@ its Settings is read, and written back when you press *done*.
 - the header shows a grey **Test copy: no automatic scans** pill;
 - the weekday refresh and auto-chase skip on it even if a scheduled job points at it, and `--isolated` removes that
   copy's own weekday job if it has one (a job for another copy is left alone);
-- the old-install port probe (8765–8784) is skipped, so nothing is sent to the copy you use every day.
+- the old-install port probe (8765–8784) is skipped, so nothing is sent to the copy you use every day. Instead,
+  when it copies from an old `~/Documents/OpenLoops`, it refuses while any process has a file or its working folder
+  there, or names that folder on its command line. Not detectable: a copy started from another folder with the old
+  package on `PYTHONPATH`; quit it first.
 
 `OPENLOOPS_ISOLATED=1` in the environment does the same for any copy at run time
 (`OPENLOOPS_ISOLATED=1 python3 -m openloops.app --port 8790`). Running the installer on that folder again without
