@@ -46,7 +46,7 @@ check(agent._qualify(["gmail.search_threads"]) == ["mcp__claude_ai_Gmail__search
 cfg["agent"] = "codex"
 pre = agent.codex_preamble(["gmail.search_threads", "gmail.reply", "slack.read_channel"])
 check("- gmail.search_emails (the instructions below may call it search_threads)" in pre
-      and "reply_message_id" in pre and "- slack.slack_read_channel\n" in pre and "Do not run shell commands" in pre,
+      and "reply_message_id" in pre and "- slack.slack_read_channel\n" in pre and "do not run shell commands" in pre,
       "the preamble lists only the job's tools, by connector name, with the short name the prompts use")
 check("Use no tools at all" in agent.codex_preamble([]), "a job with no tools is told to use none")
 check(agent.login_cmd("login") == [[agent.cli(), "login"]] and agent.login_cmd("gmail") is None, "Sign in runs codex login")
@@ -69,23 +69,34 @@ if sys.platform == "win32":
 # ---------------------------------------------------------------- the fake CLI and a temp install
 FAKE = r'''#!PYTHON
 # Fake Codex CLI for test_codex.py: records each call; answers like codex-cli 0.156.1 where it matters.
-import json, os, sys, time
+# It honours the run's allow-list the way the real CLI was measured to (apps._default off, an app on, a tool off),
+# fetches its connector list into CODEX_HOME/cache during a run when none is there (as the real one does), and can be
+# told by flag files to misbehave: call a send tool anyway, echo the question, report a 401, run out of allowance.
+import json, os, re, sys, time
 a = sys.argv[1:]
 here = os.path.dirname(os.path.abspath(__file__))
 flag = lambda n: os.path.exists(os.path.join(here, n))
-rec = {"argv": a, "codex_home": os.environ.get("CODEX_HOME", ""), "cwd": os.getcwd()}
-data = ""
+home = os.environ.get("CODEX_HOME", "")
+rec = {"argv": a, "codex_home": home, "cwd": os.getcwd()}
+data, cfg = "", ""
+TOOLS = {"connector_g": ["gmail.get_profile", "gmail.search_emails", "gmail.read_email_thread", "gmail.create_draft",
+                         "gmail.send_email", "gmail.delete_emails"],
+         "asdk_app_s": ["slack.slack_read_user_profile", "slack.slack_list_user_channels", "slack.slack_read_channel",
+                        "slack.slack_search_users", "slack.slack_send_message", "slack.slack_send_message_draft"],
+         "connector_drive": ["google_drive.search"]}
 if a[:1] == ["exec"]:
     rec["stdin_is_tty"] = os.isatty(0)
     data = sys.stdin.read()  # returns only at the end of input: a stdin left open hangs here, and the test times out
-    home = os.environ.get("CODEX_HOME", "")
-    rec.update(stdin_len=len(data), stdin_head=data[:3000], stdin_tail=data[-100:],
-               auth_link=os.path.realpath(os.path.join(home, "auth.json")) if home else "",
-               cache_seeded=os.path.isdir(os.path.join(home, "cache", "codex_apps_tools")))
     try:
-        rec["config"] = open(os.path.join(home, "config.toml"), encoding="utf-8").read()
+        cfg = open(os.path.join(home, "config.toml"), encoding="utf-8").read()
     except OSError:
-        rec["config"] = None
+        cfg = ""
+    cache = os.path.join(home, "cache", "codex_apps_tools")
+    rec.update(stdin_len=len(data), stdin_head=data[:3000], stdin_tail=data[-100:], config=cfg,
+               auth_link=os.path.realpath(os.path.join(home, "auth.json")) if home else "",
+               creds=os.path.exists(os.path.join(home, ".credentials.json")),
+               cache_had=sorted(os.listdir(cache)) if os.path.isdir(cache) else [],
+               account=json.load(open(os.path.join(home, "auth.json")))["tokens"]["account_id"] if os.path.exists(os.path.join(home, "auth.json")) else "")
 with open(os.path.join(here, "calls.jsonl"), "a") as f:
     f.write(json.dumps(rec) + "\n")
 if a == ["--version"]:
@@ -105,26 +116,55 @@ if a[:1] == ["exec"]:
     out = a[a.index("-o") + 1]
     ev = lambda **e: print(json.dumps(e), flush=True)
     ev(type="thread.started", thread_id="t1"); ev(type="turn.started")
+    cache = os.path.join(home, "cache", "codex_apps_tools")
+    cold = not (os.path.isdir(cache) and os.listdir(cache))
+    if cold and not flag("nofetch"):  # the list arrives during the run; this session never sees it
+        os.makedirs(cache, exist_ok=True)
+        json.dump({"tools": [{"tool": {"name": n, "_meta": {"connector_id": c}}} for c, ns in TOOLS.items() for n in ns]},
+                  open(os.path.join(cache, "abc123.json"), "w"))
+    def enabled(tool):  # the real CLI's rules, as measured on 0.156.1
+        cid = next((c for c, ns in TOOLS.items() if tool in ns), None)
+        if cold or cid is None:
+            return False
+        default_off = re.search(r"\[apps\._default\]\s*\nenabled = false", cfg) is not None
+        app_on = re.search(r"\[apps\.%s\]\s*\nenabled = true" % cid, cfg) is not None
+        tool_off = re.search(r"\[apps\.%s\.tools\.%s\]\s*\nenabled = false" % (cid, tool.split(".", 1)[1]), cfg) is not None
+        return (app_on or not default_off) and not tool_off
     if flag("slow"):
         time.sleep(30)
     if flag("limit"):
         ev(type="error", message="You've hit your usage limit. Try again in 3 hours.")
         ev(type="turn.failed", error={"message": "You've hit your usage limit."}); sys.exit(1)
     call = lambda t: ev(type="item.completed", item={"type": "mcp_tool_call", "server": "codex_apps", "tool": t, "status": "completed"})
+    if flag("e401"):
+        ev(type="error", message="unexpected status 401 Unauthorized: token expired")
+        text = "GMAIL: CONNECTED\nSLACK: CONNECTED\nSLACK_ID: U0TESTSELF1"
+        open(out, "w").write(text); sys.exit(1)
     if "GMAIL: CONNECTED or NOT-CONNECTED" in data:
-        g, s = flag("gmail_ok"), flag("slack_ok")
-        if g:
-            call("gmail.get_profile")
-        if s:
-            call("slack.slack_read_user_profile")
-        text = ("GMAIL: " + ("CONNECTED" if g else "NOT-CONNECTED") + "\nSLACK: " + ("CONNECTED" if s else "NOT-CONNECTED")
-                + "\nSLACK_ID: " + ("U0TESTSELF1" if s else "NONE"))
-        if "MIRO: CONNECTED or NOT-CONNECTED" in data:
-            text += "\nMIRO: CONNECTED"
+        if flag("echo"):
+            text = "GMAIL: CONNECTED or NOT-CONNECTED\nSLACK: CONNECTED or NOT-CONNECTED\nSLACK_ID: NONE"
+        else:
+            g = flag("gmail_ok") and enabled("gmail.get_profile")
+            s = flag("slack_ok") and enabled("slack.slack_read_user_profile")
+            if g and not flag("claim_only"):
+                call("gmail.get_profile")
+            if s and not flag("claim_only"):
+                call("slack.slack_read_user_profile")
+            sid = open(os.path.join(here, "slack_id")).read().strip() if flag("slack_id") else "U0TESTSELF1"
+            text = ("GMAIL: " + ("CONNECTED" if g else "NOT-CONNECTED") + "\nSLACK: " + ("CONNECTED" if s else "NOT-CONNECTED")
+                    + "\nSLACK_ID: " + (sid if s else "NONE"))
+            if "MIRO: CONNECTED or NOT-CONNECTED" in data:
+                ev(type="item.completed", item={"type": "mcp_tool_call", "server": "miro", "tool": "list_boards", "status": "completed"})
+                text += "\nMIRO: CONNECTED"
     else:
-        if flag("rogue"):
+        if flag("rogue_send"):  # a Codex that ignores its allow-list: sends anyway, then reports success
+            call("gmail.send_email")
+            text = "DRAFT_CREATED: thread 123"
+        elif flag("rogue"):
             ev(type="item.completed", item={"type": "command_execution", "command": "cat ~/.ssh/id_rsa", "status": "completed"})
-        text = "OK"
+            text = "OK"
+        else:
+            text = "OK"
     ev(type="item.completed", item={"type": "agent_message", "text": text})
     ev(type="turn.completed", usage={"input_tokens": 27000, "cached_input_tokens": 13000, "output_tokens": 50})
     open(out, "w", encoding="utf-8").write(text)
@@ -158,13 +198,13 @@ env.update(PATH=str(fbin) + os.pathsep + os.environ.get("PATH", ""), HOME=str(ho
 
 # The in-install checks: one script, run with the temp install as its root and the fake home as HOME.
 HARNESS = r'''
-import json, os, sys, time
+import io, contextlib, json, os, shutil, sys, time
 from pathlib import Path
 sys.path.insert(0, os.getcwd())
 from openloops import agent, doctor
 from openloops.paths import ROOT
 BIN, HOME = Path(sys.argv[1]), Path(os.environ["HOME"])
-JOB = ROOT / "state" / "codex-home"
+JOBS = ROOT / "state" / "codex-home"
 AUTH = HOME / ".codex" / "auth.json"
 
 def check(cond, what):
@@ -178,9 +218,9 @@ def calls():
 execs = lambda: [c for c in calls() if c["argv"][:1] == ["exec"]]
 flag = lambda n, on=True: (BIN / n).touch() if on else (BIN / n).unlink(missing_ok=True)
 
-def auth(mode, email="me@example.com"):
+def auth(mode, account="acct-A", email="me@example.com"):
     doc = {"auth_mode": mode, "OPENAI_API_KEY": "sk-test" if mode == "apikey" else None,
-           "tokens": {"id_token": sys.argv[2], "access_token": "a", "refresh_token": "r"} if mode == "chatgpt" else None}
+           "tokens": {"id_token": sys.argv[2], "access_token": "a", "refresh_token": "r", "account_id": account} if mode == "chatgpt" else None}
     AUTH.write_text(json.dumps(doc))
     (BIN / "mode").write_text(mode)
 
@@ -189,141 +229,237 @@ def rows(recheck=False):
     out = doctor.codex_steps(steps, recheck)
     return {r["id"]: r for r in steps}, out
 
-# ---- agent.run() through `codex exec`
+def age(secs):
+    p = json.loads(doctor.CODEX_PROBE.read_text())
+    doctor.CODEX_PROBE.write_text(json.dumps(dict(p, at=time.time() - secs)))
+
+def runs_left():
+    return [p for p in JOBS.glob("*/run-*")]
+
+def main_doctor():
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor.main(detect=True, recheck=True)
+    return json.loads(buf.getvalue().strip().splitlines()[-1])
+
+# ---- agent.run() through `codex exec`: first run on a new account warms up, then runs with its allow-list
 auth("chatgpt")
 check(agent.name() == "codex", "config.json agent codex is what the jobs see")
 prompt = "Find my open loops. " + "x" * 300000 + " END-OF-PROMPT"
 p = agent.run(prompt, ["gmail.search_threads", "slack.read_channel"])
-c = execs()[-1]
+ex = execs()
+check(len(ex) == 2 and "Reply with exactly: OK" in ex[0]["stdin_head"] and "[apps._default]\nenabled = false" in ex[0]["config"]
+      and "enabled = true" not in ex[0]["config"], "a new account's first run is a warm-up with every connector off")
+c = ex[-1]
 a = c["argv"]
+acct_home = JOBS / agent.codex_auth()["account"]
 check(p.returncode == 0 and p.stdout == "OK", f"the run's stdout is the final message from -o (got {p.returncode}, {p.stdout!r})")
-check(a[:7] == ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "-C"] and a[-1] == "-",
-      f"codex exec, read-only sandbox, nothing saved, prompt from stdin (argv {a})")
+check(a[:7] == ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "-C"] and a[-1] == "-"
+      and "-p" not in a, f"codex exec, read-only sandbox, nothing saved, prompt from stdin (argv {a})")
 check(a[a.index("-m") + 1] == "gpt-5.6-sol" and 'model_reasoning_effort="low"' in a and "features.shell_tool=false" in a,
       "the template's model and effort, and the shell tool off, on the command line")
-check(c["codex_home"] == str(JOB) and c["cwd"] == str(ROOT), f"CODEX_HOME is the job home state/codex-home (got {c['codex_home']})")
-check(Path(a[a.index("-C") + 1]) == JOB / "work" and (JOB / "work").is_dir(), "the run works in an empty folder of its own")
+check(Path(c["codex_home"]).parent == acct_home and Path(c["codex_home"]).name.startswith("run-") and c["cwd"] == str(ROOT),
+      f"CODEX_HOME is a fresh run folder under the account's job home (got {c['codex_home']})")
+check(not runs_left() and not list(acct_home.glob("run-*")), "the run folder, -o file included, is gone afterwards")
+check(c["cache_had"] == ["abc123.json"] and (acct_home / "cache" / "codex_apps_tools" / "abc123.json").exists(),
+      "the connector list fetched in the warm-up is kept for the account and copied into each run")
 check(c["stdin_is_tty"] is False and c["stdin_len"] == len(agent.codex_preamble(["gmail.search_threads", "slack.read_channel"])) + len(prompt)
       and c["stdin_tail"].endswith("END-OF-PROMPT"), "a 300 KB prompt arrives whole on stdin, which is then closed")
-check(c["stdin_head"].startswith("[Open Loops: an unattended run.") and "gmail.search_emails" in c["stdin_head"]
-      and "slack.slack_read_channel" in c["stdin_head"], "the preamble with the allowed tools comes first")
-cfgt = c["config"] or ""
-for line in ('model = "gpt-5.6-sol"', 'model_reasoning_effort = "low"', "project_doc_max_bytes = 0", "[features]",
-             "memories = false", "shell_tool = false", "[apps.gmail]", "[apps.slack]", 'default_tools_approval_mode = "auto"'):
-    check(line in cfgt, f"job config.toml has {line}")
-check(c["auth_link"] == str(AUTH.resolve()) and (JOB / "auth.json").is_symlink(), "auth.json is a link to the user's own")
-check(not list(JOB.glob("codex-last-*.txt")), "the -o file is removed after the run")
+check(c["stdin_head"].startswith("[Open Loops: an unattended run.") and "gmail.search_emails" in c["stdin_head"],
+      "the preamble with the allowed tools comes first")
+cfgt = c["config"]
+for line in ('model = "gpt-5.6-sol"', 'model_reasoning_effort = "low"', "project_doc_max_bytes = 0", "memories = false",
+             "shell_tool = false", "[apps._default]\nenabled = false", "[apps.connector_g]\nenabled = true",
+             "[apps.asdk_app_s]\nenabled = true", "[apps.connector_g.tools.send_email]\nenabled = false",
+             "[apps.connector_g.tools.create_draft]\nenabled = false", "[apps.asdk_app_s.tools.slack_send_message]\nenabled = false"):
+    check(line in cfgt, "run config.toml has " + line.replace("\n", " "))
+for line in ("[apps.connector_g.tools.search_emails]", "[apps.asdk_app_s.tools.slack_read_channel]", "[apps.connector_drive]"):
+    check(line not in cfgt, "and not " + line + " (allowed tools stay on; unrelated connectors stay off by _default)")
+check(c["auth_link"] == str(AUTH.resolve()), "auth.json in the run folder is a link to the user's own")
 check("codex: tools used: none" in p.stderr and "tokens in 27000 (cached 13000)" in p.stderr, "stderr ends with tools and tokens")
+
+# (A) a tool off the job's list fails the job: nothing to apply
+flag("rogue_send")
+p = agent.run("Draft a chase.", ["gmail.search_threads", "gmail.get_thread", "gmail.create_draft"])
+flag("rogue_send", False)
+check(p.returncode != 0 and p.stdout.strip() == "Codex used a tool this job did not allow, so nothing was saved."
+      and "DRAFT_CREATED" not in p.stdout and "REFUSED: used a tool the job did not list: codex_apps/gmail.send_email" in p.stderr,
+      "a send the job did not list fails the run: non-zero, plain sentence, no DRAFT_CREATED for chase.py to trust")
 flag("rogue")
 p = agent.run("hello", ["gmail.search_threads"])
 flag("rogue", False)
-check("WARNING: used a tool the job did not list: command_execution" in p.stderr, "a tool off the list is flagged in the log")
+check(p.returncode != 0 and "command_execution" in p.stderr, "a shell command fails the run too")
+p = agent.run("Send the chase.", ["gmail.search_threads", "gmail.reply"])
+check("[apps.connector_g.tools.send_email]" not in execs()[-1]["config"] and "[apps.connector_g.tools.create_draft]\nenabled = false" in execs()[-1]["config"],
+      "with Send ticked the job lists gmail.reply, so send_email is on and create_draft off")
+
+# (E) timeouts, launch failures, the app-bundle fallback
 cj = json.loads((ROOT / "config.json").read_text())
+(ROOT / "config.json").write_text(json.dumps(dict(cj, codex_timeout_s=2)))
+flag("slow")
+t = time.time()
+p = agent.run("hello", ["gmail.search_threads"])
+flag("slow", False)
+check(p.returncode == 124 and time.time() - t < 20 and "saved nothing" in p.stdout and not runs_left(),
+      "an ordinary job stops at codex_timeout_s, says so, and leaves no run folder")
 (ROOT / "config.json").write_text(json.dumps(dict(cj, codex_model="", codex_effort="")))
 agent.run("hello", [])
 a2, c2 = execs()[-1]["argv"], execs()[-1]["config"]
 check("-m" not in a2 and not any("model_reasoning_effort" in x for x in a2) and "model = " not in c2,
-      "blank model and effort leave Codex's own defaults")
+      "blank model and effort leave Codex's built-in defaults")
 (ROOT / "config.json").write_text(json.dumps(cj))
-alt = HOME / "alt-codex"
-alt.mkdir()
-(alt / "auth.json").write_text(AUTH.read_text())
-os.environ["CODEX_HOME"] = str(alt)
-agent.run("hello", [])
-check(execs()[-1]["auth_link"] == str((alt / "auth.json").resolve()), "a user CODEX_HOME is where auth.json comes from")
-del os.environ["CODEX_HOME"]
-agent.run("hello", [])
-check(execs()[-1]["auth_link"] == str(AUTH.resolve()), "...and back to ~/.codex without it")
+real_cli = agent.cli
+agent.cli = lambda: str(BIN / "no-such-codex")
+p = agent.run("hello", ["gmail.search_threads"])
+agent.cli = real_cli
+check(p.returncode != 0 and "couldn't start Codex" in p.stdout and not runs_left(),
+      "a CLI that cannot be started (FileNotFoundError): plain sentence, run folder and -o file removed")
+real = (agent.shutil.which, agent._exists)
+agent.shutil.which, agent._exists = (lambda *_: None), (lambda q: str(q) == "/Applications/Codex.app/Contents/Resources/codex")
+got = agent.cli()
+agent.shutil.which, agent._exists = real
+check(got == "/Applications/Codex.app/Contents/Resources/codex", f"Codex.app alone is found (got {got})")
 
-# ---- the checklist
+# (B) keyring sign-in: refuse, never fall back to the user's own home
+n = len(execs())
+AUTH.unlink()
+p = agent.run("hello", ["gmail.search_threads"])
+check(p.returncode != 0 and "keychain" in p.stdout and "codex logout" in p.stdout and len(execs()) == n,
+      "no auth.json but signed in (keychain): the job refuses and Codex does not run")
+r, _ = rows()
+check(not r["login"]["ok"] and "keychain" in r["login"]["fix"] and "connect" not in r["login"] and len(execs()) == n,
+      "...and the sign-in row says why, with no probe run")
+(BIN / "mode").unlink()
+p = agent.run("hello", [])
+check(p.returncode != 0 and "isn't signed in" in p.stdout, "signed out altogether: refuses with Sign in")
+auth("chatgpt")
+real_link = agent._link
+agent._link = lambda o, d: (_ for _ in ()).throw(OSError("read-only"))
+p = agent.run("hello", ["gmail.search_threads"])
+agent._link = real_link
+check(p.returncode != 0 and "couldn't link" in p.stdout and not runs_left(), "a link that cannot be made: refuses, cleans up")
+
+# (C) account switch: separate homes, no stale MCP credentials
+(HOME / ".codex" / ".credentials.json").write_text("{}")
+agent.run("hello", [])
+check(execs()[-1]["creds"], "the user's MCP sign-ins (.credentials.json) are linked in when present")
+(HOME / ".codex" / ".credentials.json").unlink()
+agent.run("hello", [])
+check(not execs()[-1]["creds"], "...and gone from the next run once the user no longer has them")
+a_home = JOBS / agent.codex_auth()["account"]
+auth("chatgpt", account="acct-B")
+agent.run("hello", ["gmail.search_threads"])
+b = execs()[-1]
+check(Path(b["codex_home"]).parent != a_home and b["account"] == "acct-B" and "Reply with exactly: OK" in execs()[-2]["stdin_head"],
+      "another ChatGPT account gets its own job home (and its own warm-up): nothing of account A is used")
+auth("chatgpt")
+
+# (D) the checklist
 (BIN / "mode").unlink()
 AUTH.unlink()
 n = len(execs())
 r, out = rows()
 check(r["claude"]["ok"] and r["claude"]["title"] == "Codex is installed", "Codex is installed (the fake answers --version)")
-check(not r["login"]["ok"] and r["login"].get("connect") == "login" and "ChatGPT sign-in page" in r["login"]["fix"]
-      and "codex login --device-auth" in r["login"]["fix"], "signed out: Sign in button, device sign-in as the fallback")
-check(r["gmail"]["fix"] == "Sign in to ChatGPT first (the row above)." and "connect" not in r["gmail"], "sources wait for sign-in")
-check(len(execs()) == n, "no Codex run while signed out")
+check(not r["login"]["ok"] and r["login"].get("connect") == "login" and "codex login --device-auth" in r["login"]["fix"],
+      "signed out: Sign in button, device sign-in as the fallback")
+check(r["gmail"]["fix"] == "Sign in to ChatGPT first (the row above)." and len(execs()) == n, "sources wait for sign-in, no run")
 auth("apikey")
 r, _ = rows()
 check(not r["login"]["ok"] and r["login"].get("connect") == "login" and r["login"]["fix"].startswith(
-      "Codex is signed in with an API key, which can't use Gmail or Slack. Sign in with your ChatGPT account instead"),
-      "API-key sign-in: red, says why, offers Sign in")
-check(len(execs()) == n, "no Codex run with an API key (connectors can't work)")
+      "Codex is signed in with an API key, which can't use Gmail or Slack.") and len(execs()) == n,
+      "API-key sign-in: red, says why, offers Sign in, no run")
 
 auth("chatgpt")
-r, _ = rows()
-check(r["login"]["ok"] and r["login"]["title"] == "Signed in to ChatGPT as me@example.com", "signed in with ChatGPT, email shown")
-check(len(execs()) == n + 1 and not execs()[-1]["cache_seeded"], "one probe run, on a job home with no connector list yet")
-check(not r["gmail"]["ok"] and "getting your ChatGPT connections ready" in r["gmail"]["fix"] and "connect" not in r["gmail"],
-      "a cold first run that tried no tool is 'not ready yet', not 'not connected'")
-rows()
-check(len(execs()) == n + 2, "...and is not kept: the next check asks again")
-
-(HOME / ".codex" / "cache" / "codex_apps_tools").mkdir(parents=True)
-(HOME / ".codex" / "cache" / "codex_apps_tools" / "abc.json").write_text('{"tools": []}')
 flag("gmail_ok")
 r, _ = rows(recheck=True)
-check(execs()[-1]["cache_seeded"] and (JOB / "cache" / "codex_apps_tools" / "abc.json").exists(),
-      "the job home is seeded with the user's connector list")
-check(r["gmail"]["ok"] and not r["slack"]["ok"] and r["slack"].get("connect") == "slack"
-      and "ChatGPT's apps page" in r["slack"]["fix"], "Gmail green; Slack red with Connect Slack (ChatGPT's apps page)")
+check(r["login"]["ok"] and r["login"]["title"] == "Signed in to ChatGPT as me@example.com", "signed in with ChatGPT, email shown")
+check(r["gmail"]["ok"] and not r["slack"]["ok"] and r["slack"].get("connect") == "slack" and "ChatGPT's apps page" in r["slack"]["fix"],
+      "Gmail green (its call succeeded); Slack red with Connect Slack")
+probe_cfg = execs()[-1]["config"]
+check("[apps.connector_g.tools.send_email]\nenabled = false" in probe_cfg and "[apps.asdk_app_s.tools.slack_send_message]\nenabled = false" in probe_cfg,
+      "the probe itself runs with only its read tools on")
 m = len(execs())
-rows()
-rows(recheck=True)
-check(len(execs()) == m, "the answer is reused: a plain check, and a forced one within 30 s, run nothing")
-probe = json.loads(doctor.CODEX_PROBE.read_text())
-doctor.CODEX_PROBE.write_text(json.dumps(dict(probe, at=probe["at"] - 60)))
-rows()
+rows(); rows(recheck=True)
+check(len(execs()) == m, "reused: a plain check, and Check again within 30 s, run nothing")
+age(60); rows()
 check(len(execs()) == m, "a plain check a minute later still reuses a working answer")
 rows(recheck=True)
-check(len(execs()) == m + 1, "Check again after 30 s asks Codex afresh")
+check(len(execs()) == m + 1, "Check again after 30 s asks afresh")
 
-flag("slack_ok")
-age = lambda secs: doctor.CODEX_PROBE.write_text(json.dumps(dict(json.loads(doctor.CODEX_PROBE.read_text()),
-                                                                 at=time.time() - secs)))
-age(60)  # past the 30 s floor, so the forced check below asks again
-cj = json.loads((ROOT / "config.json").read_text())
-cj["slack_self_id"] = ""
-(ROOT / "config.json").write_text(json.dumps(cj))
-import io, contextlib
-m = len(execs())
-buf = io.StringIO()
-with contextlib.redirect_stdout(buf):
-    doctor.main(detect=True, recheck=True)
-res = json.loads(buf.getvalue().strip().splitlines()[-1])
-st = {s["id"]: s for s in res["steps"]}
-check(res["agent"] == "codex" and res["all_ok"] and st["slack"]["ok"] and st["gmail"]["ok"], f"all green with both connected ({res})")
-check(st["self"]["ok"] and "U0TESTSELF1" in st["self"]["title"] and json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "U0TESTSELF1",
-      "the Slack id comes from the same probe and is saved")
-check(len(execs()) == m + 1, "one Codex run for the whole checklist, Slack id included")
-check(not st["miro"]["ok"] and st["miro"]["fix"].startswith("Miro isn't available with Codex"), "Miro: not available with Codex")
-
-(HOME / ".codex" / "config.toml").write_text('model = "x"\n[mcp_servers.miro]\nurl = "https://mcp.miro.com/"\n'
-                                              '[mcp_servers.miro.env]\nA = "1"\n[mcp_servers.other]\nurl = "https://o"\n')
-r, out = rows()
-check(r["miro"]["ok"] and out[4] is True, "a Miro server the user added to Codex is asked about and used")
-cfgt = execs()[-1]["config"]
-check("[mcp_servers.miro]" in cfgt and '[mcp_servers.miro.env]' in cfgt and "mcp_servers.other" not in cfgt
-      and 'model = "x"' not in cfgt, "only the user's Miro tables are copied into the job config")
-(HOME / ".codex" / "config.toml").unlink()
-
-doctor.PROBE_TIMEOUT_S = 2
-flag("slow")
+flag("claim_only"); age(60)
 r, _ = rows(recheck=True)
-flag("slow", False)
-check("took too long" in r["gmail"]["fix"] and "connect" not in r["gmail"] and not r["gmail"]["ok"],
-      "a probe that runs out of time says so, with no Connect button")
-m = len(execs())
-rows()
-check(len(execs()) == m + 1, "...and is not kept")
-flag("limit")
-age(60)  # the last kept answer (the Miro one) is seconds old: past the 30 s floor, so this asks again
+flag("claim_only", False)
+check(not r["gmail"]["ok"] and r["gmail"].get("connect") == "gmail", "CONNECTED with no successful call behind it is not believed")
+flag("echo"); age(60)
+r, _ = rows(recheck=True)
+flag("echo", False)
+check(not r["gmail"]["ok"] and "Couldn't ask Codex" in r["gmail"]["fix"] and "connect" not in r["gmail"],
+      "an answer that repeats the question ('GMAIL: CONNECTED or NOT-CONNECTED') is no answer")
+flag("e401"); age(60)
+r, _ = rows(recheck=True)
+flag("e401", False)
+check(not r["login"]["ok"] and r["login"].get("connect") == "login" and "run out" in r["login"]["fix"] and not r["gmail"]["ok"],
+      "a 401 wins over 'GMAIL: CONNECTED' in the text: sign in again")
+flag("limit"); age(60)
 r, _ = rows(recheck=True)
 flag("limit", False)
-check("Codex allowance is used up" in r["slack"]["fix"] and "connect" not in r["slack"], "a spent ChatGPT allowance is named")
+check("allowance is used up" in r["slack"]["fix"] and "connect" not in r["slack"], "a spent ChatGPT allowance is named")
+m = len(execs())
+rows()
+check(len(execs()) == m, "a failed attempt is kept too: the next plain check does not ask again at once")
+doctor.PROBE_TIMEOUT_S = 2
+flag("slow"); age(60)
+r, _ = rows(recheck=True)
+flag("slow", False)
+doctor.PROBE_TIMEOUT_S = 90
+check("took too long" in r["gmail"]["fix"] and "connect" not in r["gmail"], "a probe that runs out of time says so")
 
+# warming: bounded to three attempts, then a Connect button
+auth("chatgpt", account="acct-C")
+flag("nofetch")
+seen = []
+for i in range(3):
+    if i:
+        age(60)
+    r, _ = rows(recheck=True)
+    seen.append((r["gmail"].get("connect"), r["gmail"]["fix"][:30]))
+flag("nofetch", False)
+check(all(s[0] is None and s[1].startswith("Codex is getting") for s in seen[:2]) and seen[2][0] == "gmail",
+      f"no connector list: 'getting ready' twice, then the third attempt offers Connect (got {seen})")
+m = len(execs())
+rows()
+check(len(execs()) == m, "and each of those attempts counted for the cooldown")
+
+# Slack id: detected once, replaced when it changes, cleared on another account without Slack
+auth("chatgpt")
+flag("slack_ok")
+cj = json.loads((ROOT / "config.json").read_text())
+(ROOT / "config.json").write_text(json.dumps(dict(cj, slack_self_id="UOLD000001")))
+res = main_doctor()
+st = {s["id"]: s for s in res["steps"]}
+check(res["all_ok"] and st["self"]["ok"] and "U0TESTSELF1" in st["self"]["title"]
+      and json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "U0TESTSELF1",
+      "the probe's Slack id replaces an older stored one")
+(BIN / "slack_id").write_text("UNEW000002"); age(60)
+main_doctor()
+check(json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "UNEW000002", "...and a changed one again")
+(BIN / "slack_id").unlink()
+auth("chatgpt", account="acct-D")
+flag("slack_ok", False)
+main_doctor()
+check(json.loads((ROOT / "config.json").read_text())["slack_self_id"] == "", "another account with no Slack clears the stored id")
+check(not st["miro"]["ok"] and st["miro"]["fix"].startswith("Miro isn't available with Codex"), "Miro: not available with Codex")
+
+auth("chatgpt")
+(HOME / ".codex" / "config.toml").write_text('model = "x"\n[mcp_servers.miro]\nurl = "https://mcp.miro.com/"\n'
+                                              '[mcp_servers.miro.env]\nA = "1"\n[mcp_servers.other]\nurl = "https://o"\n')
+age(60)
+r, out = rows(recheck=True)
+check(r["miro"]["ok"] and out[4] is True, "a Miro server the user added to Codex is asked about and used")
+cfgt = execs()[-1]["config"]
+check("[mcp_servers.miro]" in cfgt and "[mcp_servers.miro.env]" in cfgt and "mcp_servers.other" not in cfgt
+      and 'model = "x"' not in cfgt, "only the user's Miro tables are copied into the run config")
+(HOME / ".codex" / "config.toml").unlink()
 print("HARNESS OK", flush=True)
 '''
 
