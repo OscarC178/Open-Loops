@@ -521,10 +521,13 @@ class H(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if self.path == "/api/reset":
             # "Start over": back to the state a brand-new user sees, keeping only name/domains/tone settings.
+            # Config first: if it cannot be read, refuse before deleting anything, so an unreadable
+            # config.json never leaves the user with no list AND stale people/Slack id (Codex review, #21).
+            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="")) is False:
+                return self._json({"ok": False, "error": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
             for f in (STATE, VOICEF, PEOPLEF):
                 if f.exists():
                     f.unlink()
-            update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id=""))
             STATE.write_text(fresh_state(), encoding="utf-8")
             doctor_gen["n"] += 1
             doctor_cache = {"at": 0, "result": None}

@@ -427,6 +427,17 @@ try:
           f"no write lost on either side (lost {len(lost)} of doctor's keys; owner_name={saved.get('owner_name')!r})")
     check(not list(tmp.glob("config.json.*.tmp")), "no temp files left behind")
 
+    # Start over with a config.json that cannot be read: refuse BEFORE deleting anything (Codex review, #21)
+    cfg = tmp / "config.json"
+    good = cfg.read_text(encoding="utf-8")
+    cfg.write_text('{"agent": "claude", "people": {', encoding="utf-8")
+    state_before = (tmp / "state.json").read_text(encoding="utf-8") if (tmp / "state.json").exists() else None
+    code, out = api("/api/reset", {})
+    state_after = (tmp / "state.json").read_text(encoding="utf-8") if (tmp / "state.json").exists() else None
+    check(code == 500 and not out.get("ok") and state_after == state_before,
+          f"reset with an unreadable config.json refuses and deletes nothing (code {code}, state changed={state_after != state_before})")
+    cfg.write_text(good, encoding="utf-8")
+
     # Grok: no setup buttons
     api("/api/config", {"agent": "grok"})
     code, out = api("/api/connect/login", {})
