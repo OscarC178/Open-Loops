@@ -78,7 +78,8 @@ def install_row(label, have):
                     f"it needs is missing ({', '.join(missing)}). Ask IT to install {label}, then press Check again.")
     else:
         r.update(fix=f"Open Loops couldn't find {label} on this computer. Press Install {label}: it downloads {label} from "
-                     f"{ic['vendor']} and takes a minute or two.", connect="install", command=ic["command"])
+                     f"{ic['vendor']} and takes a minute or two.", connect="install", command=ic["command"],
+                 agent=ic["agent"], command_id=ic["id"])  # sent back with the press: app.py runs nothing else
     return r
 
 

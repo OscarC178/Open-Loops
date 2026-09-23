@@ -160,18 +160,28 @@ try:
     code, doc = api("/api/doctor", {"force": True})
     check(code == 200 and not row(doc)["ok"] and row(doc).get("connect") == "install", "the checklist says Claude is missing, offers Install")
     check(row(doc).get("command") == SHOWN("claude"), f"...and shows the exact command first (got {row(doc).get('command')!r})")
+    shown = {"agent": row(doc)["agent"], "command_id": row(doc)["command_id"]}  # what the page sends back with the press
+    check(shown == {"agent": "claude", "command_id": agent.install_cmd("claude")["id"]}, "the row names its agent and command id")
     login = next(x for x in doc["steps"] if x["id"] == "login")
     check("connect" not in login and login["fix"].startswith("Install Claude first"), "the sign-in row points at Install, offers no button yet")
     code, s = api("/api/connect/install")
     check(code == 200 and s["running"] is False and s["rc"] is None and s["command"] == SHOWN("claude"),
           "GET /api/connect/install: idle, with the command it would run")
-    code, _ = api("/api/connect/install", {}, origin="http://evil.example")
+    code, _ = api("/api/connect/install", shown, origin="http://evil.example")
     check(code == 403, "a POST from another site is refused")
+    code, out = api("/api/connect/install", {})
+    check(code == 409 and not out["started"], "a press that names no agent and command is refused")
+    api("/api/config", {"agent": "grok"})  # another tab switches to Grok; this tab still shows Install Claude
+    code, out = api("/api/connect/install", shown)
+    check(code == 409 and out.get("said", "").startswith("The AI chosen in Settings changed"), "a stale tab's press is refused, in plain words")
+    code, s = api("/api/connect/install")
+    check(s["agent"] == "grok" and s["command"] == SHOWN("grok"), "idle status offers the AI chosen now")
+    api("/api/config", {"agent": "claude"})
     check(calls() == [], "nothing downloaded or run before the button was pressed")
 
     # a download that fails: pipefail makes the whole line fail, so the row does not pretend
     (tmp / "bin" / "fail").touch()
-    code, out = api("/api/connect/install", {})
+    code, out = api("/api/connect/install", shown)
     check(code == 200 and out == {"started": True}, "POST /api/connect/install starts it")
     s = wait_install()
     check(s["rc"] == 22 and "404" in s["last"], f"a failed download reports curl's exit code and error (got {s['rc']}, {s['last']!r})")
@@ -180,10 +190,14 @@ try:
     (tmp / "bin" / "fail").unlink()
 
     # the real thing, with the fake installer
-    code, out = api("/api/connect/install", {})
+    code, out = api("/api/connect/install", shown)
     check(out == {"started": True}, "pressed again: started")
-    code, out = api("/api/connect/install", {})
+    code, out = api("/api/connect/install", shown)
     check(out.get("started") is False and out.get("error") == "already running", "a second click while it runs starts nothing")
+    api("/api/config", {"agent": "grok"})  # settings change mid-install: the status still reports the run's own command
+    code, s = api("/api/connect/install")
+    check(s["running"] and s["agent"] == "claude" and s["command"] == SHOWN("claude"), "a running install reports its own command, not a recomputed one")
+    api("/api/config", {"agent": "claude"})
     s = wait_install()
     check(s["rc"] == 0 and s["last"] == "Claude Code successfully installed", f"install finished (got {s['rc']}, {s['last']!r})")
     check(s["url"] == "", "an installer's output is not taken for a sign-in link")
