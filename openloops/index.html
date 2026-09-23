@@ -511,7 +511,7 @@ async function connectStep(step){
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
   if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
    CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
-    :`Open Loops couldn't open your browser. Go to chatgpt.com/apps yourself, connect ${n} there, then press Check again.`};repaint();return}
+    :msg('codex_browser_failed',{service:n})};repaint();return}
   const ai=aiName(CONN[step].agent||row.agent);
   CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
    :step==='slack_install'?msg('slack_install_failed'):msg('connect_failed',{party:PARTY(step)})};

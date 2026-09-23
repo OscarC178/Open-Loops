@@ -227,6 +227,113 @@ FAILURES = {
         "fix": "Close this tab, open Open Loops again, then try again.",
         "button": None},
 
+    # ---- Codex (ChatGPT): why Open Loops would not run it, or a run failed (agent.CODEX_REFUSE, #40). A job prints the
+    # sentence itself; the checklist shows the same words.
+    "codex_keyring": {
+        "what": "Codex keeps your sign-in in {store}, which Open Loops can't share with its own settings yet.",
+        "fix": "Run codex logout, then codex login again with file storage (see INSTALL.md, Codex (ChatGPT)).",
+        "button": None},
+    "codex_signin": {
+        "what": "Codex isn't signed in with a ChatGPT account.",
+        "fix": "Press Sign in on the connection checklist.",
+        "button": "login"},
+    "codex_link": {
+        "what": "Open Loops couldn't link Codex's sign-in into its own settings folder, so it didn't run Codex.",
+        "fix": "Check that the Open Loops folder isn't read-only, then press Check again.",
+        "button": None},
+    "codex_cold": {
+        "what": "Codex is still getting ready (loading your ChatGPT connections), so Open Loops didn't run it.",
+        "fix": "Press Check again on the connection checklist in a minute.",
+        "button": None},
+    "codex_limit": {
+        "what": "Your ChatGPT plan's Codex allowance is used up for now, so Open Loops couldn't run Codex.",
+        "fix": "Wait: it comes back by itself, usually within a few hours.",
+        "button": None},
+    "codex_expired": {
+        "what": "Your ChatGPT sign-in has run out, so Open Loops couldn't run Codex.",
+        "fix": "Press Sign in on the connection checklist.",
+        "button": "login"},
+    "codex_failed": {
+        "what": "Codex stopped with an error before it could start this job, so nothing was saved.",
+        "fix": "Try again in a minute.",
+        "button": None},
+    "codex_unlisted": {
+        "what": "Codex used a tool this job did not allow, so nothing was saved.",
+        "fix": "Try again, and if it happens again press Copy all in the Console and send it to whoever set Open Loops up.",
+        "button": None},
+    "codex_notools": {
+        "what": "Codex couldn't reach its Gmail or Slack tools this time, so nothing was saved.",
+        "fix": "Try again in a minute.",
+        "button": None},
+    "codex_stale": {
+        "what": "Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old), so Open Loops didn't run it.",
+        "fix": "Press Check again on the connection checklist in a minute.",
+        "button": None},
+    "codex_nosources": {
+        "what": "Neither Gmail nor Slack is connected in this ChatGPT account, so there was nothing to read.",
+        "fix": "Connect one on chatgpt.com/apps, then press Check again.",
+        "button": None},
+    "codex_timeout": {
+        "what": "Codex took longer than {limit}, so Open Loops stopped it and saved nothing.",
+        "fix": "Try again in a minute.",
+        "button": None},
+    "codex_start": {
+        "what": "Open Loops couldn't start Codex.",
+        "fix": "Press Check again on the connection checklist, which offers Install Codex if it's missing.",
+        "button": None},
+
+    # ---- Codex on the checklist (doctor.codex_steps / CODEX_SAID, #40)
+    "codex_check_timeout": {
+        "what": "Codex took too long to answer, so Open Loops couldn't check your connections just now.",
+        "fix": "Press Check again.",
+        "button": None},
+    "codex_check_limit": {
+        "what": "Your ChatGPT plan's Codex allowance is used up for now, so Open Loops couldn't check your connections.",
+        "fix": "It comes back by itself, usually within a few hours: press Check again then.",
+        "button": None},
+    "codex_check_expired": {
+        "what": "Your ChatGPT sign-in has run out.",
+        "fix": "Press Sign in to sign in again.",
+        "button": "login"},
+    "codex_check_failed": {
+        "what": "Couldn't ask Codex about your connections just now.",
+        "fix": "Press Check again.",
+        "button": None},
+    "codex_check_warming": {
+        "what": "Codex is still getting ready (loading your ChatGPT connections).",
+        "fix": "Press Check again in a minute.",
+        "button": None},
+    "codex_check_stale": {
+        "what": "Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old).",
+        "fix": "Press Check again in a minute.",
+        "button": None},
+    "codex_apikey": {
+        "what": "Codex is signed in with an API key, which can't use Gmail or Slack.",
+        "fix": "Sign in with your ChatGPT account instead: press Sign in.",
+        "button": "login"},
+    "codex_signin_needed": {
+        "what": "Open Loops isn't signed in to ChatGPT through Codex yet.",
+        "fix": "Press Sign in to open the ChatGPT sign-in page, using the account whose Gmail and Slack Open Loops should "
+               "read (if the browser never comes back, type codex login --device-auth in Terminal and follow what it "
+               "says, then press Check again).",
+        "button": "login"},
+    "codex_source_missing": {
+        "what": "{service} is connected in your ChatGPT account, not in Open Loops.",
+        "fix": "Press Connect {service} to open ChatGPT's apps page, connect {service} there, then come back and press Check again.",
+        "button": None},  # the row's own Connect step
+    "codex_browser_failed": {
+        "what": "Open Loops couldn't open your browser at ChatGPT's apps page.",
+        "fix": "Go to chatgpt.com/apps yourself, connect {service} there, then press Check again.",
+        "button": None},
+    "codex_no_miro": {
+        "what": "Miro isn't available with Codex, so the Roadmap card stays off.",
+        "fix": "To use it, choose Claude under Settings, Your AI.",
+        "button": None},
+    "codex_miro_failed": {
+        "what": "Codex has a Miro server but it didn't answer.",
+        "fix": "Open Terminal, type codex mcp login miro, press Enter and follow what it says, then press Check again.",
+        "button": None},
+
     # ---- your own to-do file (standing.py, #37)
     "standing_no_path": {
         "what": "No to-do file is selected.",
@@ -288,9 +395,19 @@ JOB_SIGNS = (
 )
 
 
+CODEX_JOB_IDS = ("codex_keyring", "codex_signin", "codex_link", "codex_cold", "codex_limit", "codex_expired",
+                 "codex_failed", "codex_unlisted", "codex_notools", "codex_stale", "codex_nosources", "codex_timeout",
+                 "codex_start")
+
+
 def job_failure(name, rc, log, ai="Claude"):
     """The failure id and sentence for a job that ended with exit code rc (not 0, not 2 = SKIPPED) -> (id, said)."""
     job = JOBS.get(name, "The " + name)
+    for line in reversed((log or "").splitlines()):  # a Codex job printed its own sentence (agent.CODEX_REFUSE): use it
+        for id_ in CODEX_JOB_IDS:
+            lead = FAILURES[id_]["what"].split("{")[0].strip()
+            if lead and line.strip().startswith(lead):
+                return id_, line.strip()
     if rc == -1 and log.startswith("could not start"):
         return "job_start_failed", say("job_start_failed", job=job, job_lower=job[0].lower() + job[1:])
     low = (log or "").lower()

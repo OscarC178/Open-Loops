@@ -63,7 +63,7 @@ check("internet" not in FAILURES["install_vendor"]["what"] + FAILURES["install_v
 
 # ---------------------------------------------------------------- 2. who uses it
 show("2. every id used exists, and every entry is used")
-SOURCES = {p: (REPO / "openloops" / p).read_text(encoding="utf-8") for p in ("doctor.py", "app.py", "standing.py", "index.html", "messages.py")}
+SOURCES = {p: (REPO / "openloops" / p).read_text(encoding="utf-8") for p in ("doctor.py", "app.py", "agent.py", "standing.py", "index.html", "messages.py")}
 used = set()
 for name, text in SOURCES.items():
     used |= set(re.findall(r"""\b(?:say|part|msg)\(\s*["']([a-z_]+)["']""", text))
@@ -107,6 +107,11 @@ check(i == "job_failed" and said.startswith("Learning your tone didn't finish.")
 i, said = jf("refresh", -1, "could not start refresh: FileNotFoundError: python")
 check(i == "job_start_failed" and "couldn't start the refresh" in said, "a job that could not start")
 check(jf("refresh", 1, "Not logged in", ai="Grok")[1].startswith("The refresh stopped because Grok"), "the AI is named as chosen")
+line = agent.CODEX_REFUSE["timeout"].format(limit="15 minutes")
+check(jf("refresh", 3, "[2026-09-23_0915] refresh: 3 open loops\n" + line) == ("codex_timeout", line),
+      "a Codex job's own sentence (agent.CODEX_REFUSE) is what the page shows")
+check(agent.CODEX_REFUSE["unlisted"] == say("codex_unlisted") and "{store}" in agent.CODEX_REFUSE["keyring"],
+      "agent.CODEX_REFUSE is built from the table, placeholders left for the caller")
 
 e = app._ended("refresh", 1, "Invalid API key · Please run /login")
 check(e["failure"] == "job_signed_out" and e["said"].startswith("The refresh stopped because") and e["rc"] == 1,

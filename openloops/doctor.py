@@ -256,16 +256,8 @@ def probe_prompt(srcs):
             "fails, or asks to connect or sign in.")
 PROBE_PROOF = {"gmail": ("gmail.get_profile",), "slack": ("slack.slack_read_user_profile", "slack.slack_list_user_channels")}
 # What the Gmail / Slack / Miro rows say when the probe itself could not answer (#25: what happened, what to do)
-CODEX_SAID = {
-    "timeout": "Codex took too long to answer, so Open Loops couldn't check your connections just now. Press Check again.",
-    "limit": ("Your ChatGPT plan's Codex allowance is used up for now, so Open Loops couldn't check your connections. "
-              "It comes back by itself, usually within a few hours. Press Check again then."),
-    "expired": "Your ChatGPT sign-in has run out. Press Sign in to sign in again.",
-    "failed": "Couldn't ask Codex about your connections just now. Press Check again.",
-    "warming": "Codex is still getting ready (loading your ChatGPT connections). Press Check again in a minute.",
-    "stale": ("Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old). "
-              "Press Check again in a minute."),
-}
+CODEX_SAID = {"timeout": say("codex_check_timeout"), "limit": say("codex_check_limit"), "expired": say("codex_check_expired"),
+              "failed": say("codex_check_failed"), "warming": say("codex_check_warming"), "stale": say("codex_check_stale")}
 _codex_found = {}  # what the probe learnt that main() uses: the Slack user id, and which account it was
 
 
@@ -394,26 +386,22 @@ def codex_steps(steps, recheck=False):
     ok = chatgpt and pwhy not in ("expired", "keyring", "signin", "link")
     login = {"id": "login", "ok": ok, "title": f"Signed in to ChatGPT{(' as ' + auth['email']) if ok and auth['email'] else ''}"}
     if not have:
-        login["fix"] = "Install Codex first (the row above)."
+        login["fix"] = say("needs_install", ai="Codex")
     elif logged and mode == "keyring" or pwhy == "keyring":
         login["fix"] = agent.CODEX_REFUSE["keyring"].format(store=agent.codex_keyring_store())  # no button: a terminal step
     elif pwhy == "link":
         login["fix"] = agent.CODEX_REFUSE["link"]
     elif logged and mode == "apikey":
-        login.update(fix="Codex is signed in with an API key, which can't use Gmail or Slack. Sign in with your ChatGPT "
-                         "account instead: press Sign in.", connect="login")
+        login.update(fix=say("codex_apikey"), connect="login")
     elif pwhy == "expired":
         login.update(fix=CODEX_SAID["expired"], connect="login")
     elif not ok:
-        login.update(fix="Press Sign in: your browser opens the ChatGPT sign-in page. Use the ChatGPT account whose Gmail "
-                         "and Slack you want Open Loops to read. If the browser never comes back to Open Loops, open "
-                         "Terminal, type codex login --device-auth, press Enter and follow what it says, then press Check again.",
-                     connect="login")
+        login.update(fix=say("codex_signin_needed"), connect="login")
     else:
         login["fix"] = ""
     steps.append(login)
 
-    first = "Sign in to ChatGPT first (the row above)."
+    first = say("needs_signin", ai="ChatGPT")
     why = CODEX_SAID.get(pwhy, "")
 
     def row(id_, title, name):
@@ -426,8 +414,7 @@ def codex_steps(steps, recheck=False):
         elif state is None and why:
             r["fix"] = why
         else:
-            r["fix"] = (f"{name} is connected in your ChatGPT account, not in Open Loops. Press Connect {name}: ChatGPT's "
-                        f"apps page opens in your browser. Connect {name} there, come back and press Check again.")
+            r["fix"] = say("codex_source_missing", service=name)
             r["connect"] = id_
         return r
 
@@ -436,10 +423,7 @@ def codex_steps(steps, recheck=False):
     miro = {"id": "miro", "ok": bool(ok and want_miro and probe.get("miro")), "optional": True,
             "title": "Miro connected (optional, for the Roadmap card)", "fix": ""}
     if not miro["ok"]:
-        miro["fix"] = ("Miro isn't available with Codex, so the Roadmap card stays off. To use it, choose Claude "
-                       "under Settings, Your AI." if not want_miro else first if not ok else why or
-                       "Codex has a Miro server but it didn't answer. Open a terminal, type codex mcp login miro, "
-                       "press Enter and follow what it says, then press Check again.")
+        miro["fix"] = (say("codex_no_miro") if not want_miro else first if not ok else why or say("codex_miro_failed"))
     steps.append(miro)
     _codex_found.clear()
     if ok and not pwhy:  # a real answer: its Slack id (or none) is the truth for this account
