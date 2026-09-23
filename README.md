@@ -103,7 +103,7 @@ MIT licence. WhatsApp is not possible (no API for personal accounts).
 
 ## Running from a checkout (developers)
 
-The installed copy lives in `%LOCALAPPDATA%\OpenLoops` (Mac: `~/Documents/OpenLoops`) and answers on port 8765.
+The installed copy lives in `%LOCALAPPDATA%\OpenLoops` (Mac: `~/Library/Application Support/OpenLoops`) and answers on port 8765.
 A git checkout is a second, separate copy with its own gitignored `config.json` and `state.json`. From the
 checkout folder, in any terminal (needs Node for the `npm` wrapper, nothing is installed):
 

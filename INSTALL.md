@@ -90,9 +90,11 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
    - **Mac**: double-click **`Open Loops.command`** (right-click → **Open** the first time, to get past the
      unidentified-developer warning). It runs `install.sh`, which does the same but installs Python / Claude Code
      via Homebrew / the official installer if missing, copies the app to
-     `~/Documents/OpenLoops`, creates **Open Loops.app** (logo icon) on the Desktop and in
+     `~/Library/Application Support/OpenLoops`, creates **Open Loops.app** (logo icon) on the Desktop and in
      `~/Applications` and pins it to the Dock, and registers
      the weekday refresh as a `launchd` agent (`com.openloops.refresh`, default 09:15).
+     Older versions installed to `~/Documents/OpenLoops`; running the installer again moves that copy (list,
+     settings, tone and logs included) and re-registers the morning refresh. See gotcha 8 for why.
 
    The downloaded folder can be deleted afterwards either way.
 2. On first open the app shows the **connection checklist** (`doctor.py`, re-checked every minute) until Claude is
@@ -105,6 +107,27 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
 Manual equivalents, for support: `python -m openloops.doctor`, `python -m openloops.people`, `python -m openloops.voice`, `python -m openloops.refresh`,
 `scripts\register-task.ps1 -At HH:MM` (`-Remove` to delete the task) on Windows, or
 `scripts/register-task.sh --at HH:MM` (`--remove` to delete the agent) on Mac.
+
+### Testing a fresh install
+
+To try the installer as a new user would, next to the copy you use every day and without touching it:
+
+```bash
+bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "Test"
+```
+
+- `--dest DIR` installs there instead of `~/Library/Application Support/OpenLoops` (or set `OPENLOOPS_DEST`). It never
+  moves an older `~/Documents/OpenLoops`; only a default install does that.
+- `--no-app` leaves `Open Loops.app` in `~/Applications`, on the Desktop and in the Dock alone.
+- `--no-task` leaves the weekday refresh alone. There is one `com.openloops.refresh` job per Mac; without this flag
+  the test copy would take it over.
+- `--port N` saves the port in the test copy's `config.json`, so it never competes with the installed copy on 8765.
+  `app.py` takes `--port`, then `OPENLOOPS_PORT`, then `config.json` `port`, then 8765.
+- `--no-launch` also skips starting it at the end.
+
+Start it again later with `cd ~/OpenLoops-test && python3 -m openloops.app`; delete the folder when you are done.
+Windows: `powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoops-test -NoApp -NoTask -Port 8790 -Name Test`
+(`-NoLaunch` as before).
 
 ## 3. Daily use
 
@@ -244,3 +267,11 @@ state/logs/       one log per run
    is usually the most expensive model available. Grok ignores both.
 7. **Jobs never clobber your clicks.** A refresh can run for minutes; anything you add or snooze meanwhile is kept
    because every job re-reads `state.json` just before writing (`store.update_state`).
+8. **Mac: keep Open Loops out of Documents, Desktop and Downloads.** macOS privacy protection stops a background
+   job started by `launchd` from reading those folders, so a weekday refresh installed there fails every morning
+   with `Operation not permitted` in `state/logs/launchd.err.log`, and nothing notices while a browser tab is doing
+   the refresh instead. That is why the install lives in `~/Library/Application Support/OpenLoops` (Finder:
+   *Go → Go to Folder…* and paste the path). If the morning refresh cannot start, the page says so in a red box with
+   the fix, and *Copy all* in the Console includes the tail of that log. The same limit applies to anything the
+   morning refresh reads: keep your own to-do file outside those three folders too, or it is only read while the
+   page is open.

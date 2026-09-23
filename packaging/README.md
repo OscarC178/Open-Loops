@@ -18,7 +18,8 @@ install logic and means the installer rarely needs rebuilding.
   `pythonw -m openloops.app` in that folder with `docs\AppIcon.ico`. An uninstaller is registered in
   *Apps & features*; it removes the program files, both shortcuts and the scheduled task, and asks before
   deleting personal files.
-- **Mac**: unchanged from `install.sh` — code in `~/Documents/OpenLoops`, `Open Loops.app` in `~/Applications`
+- **Mac**: unchanged from `install.sh` — code in `~/Library/Application Support/OpenLoops` (an older `~/Documents/OpenLoops`
+  install is moved there), `Open Loops.app` in `~/Applications`
   and on the Desktop, pinned to the Dock, `launchd` agent for the weekday refresh.
 
 ## Releasing
