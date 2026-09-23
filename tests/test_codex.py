@@ -118,7 +118,8 @@ if a[:1] == ["exec"]:
     ev(type="thread.started", thread_id="t1"); ev(type="turn.started")
     cache = os.path.join(home, "cache", "codex_apps_tools")
     cold = not (os.path.isdir(cache) and os.listdir(cache))
-    if cold and not flag("nofetch"):  # the list arrives during the run; this session never sees it
+    stale = not cold and time.time() - max(os.path.getmtime(os.path.join(cache, f)) for f in os.listdir(cache)) > 3600
+    if (cold or stale) and not flag("nofetch"):  # the list arrives (or is refreshed) during the run; this session never sees it
         os.makedirs(cache, exist_ok=True)
         json.dump({"tools": [{"tool": {"name": n, "_meta": {"connector_id": c}}} for c, ns in TOOLS.items() for n in ns]},
                   open(os.path.join(cache, "abc123.json"), "w"))
@@ -146,10 +147,11 @@ if a[:1] == ["exec"]:
         else:
             g = flag("gmail_ok") and enabled("gmail.get_profile")
             s = flag("slack_ok") and enabled("slack.slack_read_user_profile")
-            if g and not flag("claim_only"):
-                call("gmail.get_profile")
-            if s and not flag("claim_only"):
-                call("slack.slack_read_user_profile")
+            bad = lambda t: ev(type="item.completed", item={"type": "mcp_tool_call", "server": "codex_apps", "tool": t,
+                                                             "status": "failed", "error": {"message": "not connected"}})
+            for t, good in (("gmail.get_profile", g), ("slack.slack_read_user_profile", s)):
+                if ("- " + t) in data and enabled(t) and not flag("claim_only"):
+                    call(t) if good else bad(t)  # in the list = connected in ChatGPT; it may still fail
             sid = open(os.path.join(here, "slack_id")).read().strip() if flag("slack_id") else "U0TESTSELF1"
             text = ("GMAIL: " + ("CONNECTED" if g else "NOT-CONNECTED") + "\nSLACK: " + ("CONNECTED" if s else "NOT-CONNECTED")
                     + "\nSLACK_ID: " + (sid if s else "NONE"))
@@ -163,7 +165,10 @@ if a[:1] == ["exec"]:
         elif flag("rogue"):
             ev(type="item.completed", item={"type": "command_execution", "command": "cat ~/.ssh/id_rsa", "status": "completed"})
             text = "OK"
-        else:
+        else:  # a working run calls the tools its preamble lists (flags: "blind" calls none, "half" skips Gmail's)
+            for t in re.findall(r"^- ((?:gmail|slack)\.\w+)", data, re.M):
+                if enabled(t) and not flag("blind") and not (flag("half") and t.startswith("gmail.")):
+                    call(t)
             text = "OK"
     ev(type="item.completed", item={"type": "agent_message", "text": text})
     ev(type="turn.completed", usage={"input_tokens": 27000, "cached_input_tokens": 13000, "output_tokens": 50})
@@ -276,7 +281,22 @@ for line in ('model = "gpt-5.6-sol"', 'model_reasoning_effort = "low"', "project
 for line in ("[apps.connector_g.tools.search_emails]", "[apps.asdk_app_s.tools.slack_read_channel]", "[apps.connector_drive]"):
     check(line not in cfgt, "and not " + line + " (allowed tools stay on; unrelated connectors stay off by _default)")
 check(c["auth_link"] == str(AUTH.resolve()), "auth.json in the run folder is a link to the user's own")
-check("codex: tools used: none" in p.stderr and "tokens in 27000 (cached 13000)" in p.stderr, "stderr ends with tools and tokens")
+check("codex: tools used: codex_apps/gmail.search_emails, codex_apps/slack.slack_read_channel" in p.stderr
+      and "tokens in 27000 (cached 13000)" in p.stderr, "stderr ends with tools and tokens")
+for fl, what in (("blind", "no tool at all"), ("half", "Slack's tools but not Gmail's")):
+    flag(fl)
+    n = len(execs())
+    p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+    flag(fl, False)
+    check(p.returncode == 3 and p.refused == "notools" and "couldn't reach its Gmail or Slack tools" in p.stdout
+          and len(execs()) == n + 2 and "REFUSED: no gmail" in p.stderr,
+          f"a run that called {what} is retried once, then fails: a refresh must not move its cursor past unread mail")
+flag("half")
+p = agent.run("Chase on Slack.", ["slack.read_channel"])
+flag("half", False)
+check(p.returncode == 0, "...while a Slack-only job that reached Slack is fine")
+p = agent.run("hello", [])
+check(p.returncode == 0 and p.stdout == "OK", f"a job with no tools: stdout is the final message from -o (got {p.returncode}, {p.stdout!r})")
 
 # (A) a tool off the job's list fails the job: nothing to apply
 flag("rogue_send")
@@ -354,6 +374,65 @@ check(Path(b["codex_home"]).parent != a_home and b["account"] == "acct-B" and "R
       "another ChatGPT account gets its own job home (and its own warm-up): nothing of account A is used")
 auth("chatgpt")
 
+# review 2: one snapshot, fail closed, warm-up failures surfaced
+def write_cache(folder, names, mtime=None):
+    d = folder / "cache" / "codex_apps_tools"
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    f = d / "abc123.json"
+    f.write_text(json.dumps({"tools": [{"tool": {"name": n, "_meta": {"connector_id": "connector_g" if n.startswith("gmail.") else "asdk_app_s"}}}
+                                       for n in names]}))
+    if mtime:
+        os.utime(f, (mtime, mtime))
+
+auth("chatgpt", account="acct-S")
+s_home = JOBS / agent.codex_auth()["account"]
+write_cache(s_home, ["gmail.get_profile", "gmail.search_emails", "gmail.read_email_thread"])  # no create_draft
+flag("nofetch")
+n = len(execs())
+p = agent.run("Draft a chase.", ["gmail.search_threads", "gmail.get_thread", "gmail.create_draft"])
+flag("nofetch", False)
+new = execs()[n:]
+check(p.returncode != 0 and p.refused == "cold" and "still getting ready" in p.stdout
+      and len(new) == 1 and "Reply with exactly: OK" in new[0]["stdin_head"],
+      "a snapshot without a tool the job lists: one warm-up, then not run at all (fail closed)")
+write_cache(s_home, ["gmail.get_profile", "gmail.create_draft", "gmail.send_email"])
+real_env = agent.codex_job_env
+def mutating_env():
+    home = real_env()
+    write_cache(s_home, ["gmail.get_profile", "gmail.create_draft", "gmail.brand_new_send"])  # after the run's copy
+    return home
+agent.codex_job_env = mutating_env
+agent.run("Draft a chase.", ["gmail.create_draft"])
+agent.codex_job_env = real_env
+cfgt = execs()[-1]["config"]
+check("[apps.connector_g.tools.send_email]\nenabled = false" in cfgt and "brand_new_send" not in cfgt,
+      "the deny-list comes from the run's own copy, not the account's list changed meanwhile")
+write_cache(s_home, ["gmail.get_profile", "gmail.search_emails", "gmail.read_email_thread", "gmail.create_draft"],
+            mtime=time.time() - 25 * 3600)
+n = len(execs())
+agent.run("Draft a chase.", ["gmail.create_draft"])
+new = execs()[n:]
+check(len(new) == 2 and "Reply with exactly: OK" in new[0]["stdin_head"] and agent.codex_snapshot_age(s_home) < 60,
+      "a list older than 24 h is refreshed by a warm-up before the job")
+for acct, flags, want, words in (("acct-W1", ("nofetch", "e401"), "expired", "sign-in has run out"),
+                                 ("acct-W2", ("nofetch", "limit"), "limit", "allowance is used up")):
+    auth("chatgpt", account=acct)
+    for f_ in flags:
+        flag(f_)
+    p = agent.run("hello", ["gmail.search_threads"])
+    for f_ in flags:
+        flag(f_, False)
+    check(p.returncode != 0 and p.refused == want and words in p.stdout, f"a warm-up that fails ({want}) says so, not 'getting ready'")
+auth("chatgpt", account="acct-W3")
+flag("nofetch"); flag("slow")
+t = time.time()
+p = agent.run("hello", ["gmail.search_threads"], timeout=3)
+flag("nofetch", False); flag("slow", False)
+check(p.refused == "timeout" and time.time() - t < 20 and not runs_left(),
+      "a slow warm-up stops within the caller's time budget and says it timed out")
+auth("chatgpt")
+
 # (D) the checklist
 (BIN / "mode").unlink()
 AUTH.unlink()
@@ -376,6 +455,13 @@ check(r["login"]["ok"] and r["login"]["title"] == "Signed in to ChatGPT as me@ex
 check(r["gmail"]["ok"] and not r["slack"]["ok"] and r["slack"].get("connect") == "slack" and "ChatGPT's apps page" in r["slack"]["fix"],
       "Gmail green (its call succeeded); Slack red with Connect Slack")
 probe_cfg = execs()[-1]["config"]
+auth("chatgpt", account="acct-G")
+write_cache(JOBS / agent.codex_auth()["account"], ["gmail.get_profile", "gmail.search_emails"])  # this account has no Slack
+r, _ = rows(recheck=True)
+check(r["gmail"]["ok"] and r["slack"].get("connect") == "slack" and "SLACK:" not in execs()[-1]["stdin_head"],
+      "a source missing from Codex's list is 'not connected' (Connect) without asking; only Gmail is probed")
+auth("chatgpt")
+rows(recheck=True)  # back to account A's answer for the cooldown checks below
 check("[apps.connector_g.tools.send_email]\nenabled = false" in probe_cfg and "[apps.asdk_app_s.tools.slack_send_message]\nenabled = false" in probe_cfg,
       "the probe itself runs with only its read tools on")
 m = len(execs())
@@ -389,7 +475,8 @@ check(len(execs()) == m + 1, "Check again after 30 s asks afresh")
 flag("claim_only"); age(60)
 r, _ = rows(recheck=True)
 flag("claim_only", False)
-check(not r["gmail"]["ok"] and r["gmail"].get("connect") == "gmail", "CONNECTED with no successful call behind it is not believed")
+check(not r["gmail"]["ok"] and "Couldn't ask Codex" in r["gmail"]["fix"],
+      "CONNECTED with no call behind it is not believed (a run that called no tool is a failed run)")
 flag("echo"); age(60)
 r, _ = rows(recheck=True)
 flag("echo", False)
@@ -418,14 +505,15 @@ check("took too long" in r["gmail"]["fix"] and "connect" not in r["gmail"], "a p
 auth("chatgpt", account="acct-C")
 flag("nofetch")
 seen = []
-for i in range(3):
+for i in range(6):
     if i:
         age(60)
     r, _ = rows(recheck=True)
-    seen.append((r["gmail"].get("connect"), r["gmail"]["fix"][:30]))
+    seen.append("Connect" if r["gmail"].get("connect") == "gmail" else "ready" if "still getting ready" in r["gmail"]["fix"] else r["gmail"]["fix"][:40])
 flag("nofetch", False)
-check(all(s[0] is None and s[1].startswith("Codex is getting") for s in seen[:2]) and seen[2][0] == "gmail",
-      f"no connector list: 'getting ready' twice, then the third attempt offers Connect (got {seen})")
+check(seen == ["ready", "ready", "Connect", "Connect", "Connect", "Connect"],
+      f"no connector list: 'still getting ready' twice, then Connect on every later check (got {seen})")
+check(json.loads(doctor.CODEX_PROBE.read_text())["tries"] == 6, "the warming count is kept, not reset, after the third")
 m = len(execs())
 rows()
 check(len(execs()) == m, "and each of those attempts counted for the cooldown")
