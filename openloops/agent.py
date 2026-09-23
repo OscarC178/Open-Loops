@@ -1,4 +1,4 @@
-"""Which AI runs the headless jobs. config.json "agent": "claude" (default) or "grok".
+"""Which AI runs the headless jobs. config.json "agent": "claude" (default), "grok" or "codex".
 
 The job scripts (refresh/chase/voice/people) name tools logically - "slack.read_channel",
 "gmail.search_threads" - and call run(prompt, tools). This module maps those names to the
@@ -7,6 +7,12 @@ agent's own tool ids and invokes the right CLI.
 Grok: Slack is opt-in (config.json "use_slack"). Off, the Slack plugin is not started and
 doctor does not probe it. Vercel is never started. Jobs pass --effort low because the Grok
 CLI defaults to xhigh. Gmail is the bundled gmail_mcp.py server (not Claude's connector).
+
+Codex (OpenAI's CLI, ChatGPT sign-in): Gmail and Slack are ChatGPT connectors that ride on the ChatGPT account
+(server "codex_apps", tools gmail.<tool> / slack.slack_<tool>), not MCP servers on this computer. `codex exec` has
+no tool allow-list (the apps.* enable/disable keys are ignored there, #18), so a run is scoped by a read-only
+sandbox, shell tools switched off, and a prompt preamble naming the only tools it may use. Jobs run under a
+job-local CODEX_HOME (state/codex-home) so the user's plugins, skills, memories and AGENTS.md are not loaded.
 """
 import hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
@@ -14,6 +20,7 @@ from pathlib import Path
 from .paths import ROOT
 WIN = sys.platform == "win32"
 _GROK_JOB_HOME = ROOT / "state" / "grok-home"
+_CODEX_JOB_HOME = ROOT / "state" / "codex-home"
 
 # logical "service.tool" -> per-agent fully-qualified tool id.
 # Claude can reach Slack two ways: the Slack *plugin* (plugin:slack:slack, default) or the
@@ -31,7 +38,18 @@ _CLAUDE_MIRO = {"plugin": "mcp__plugin_miro_miro", "connector": "mcp__claude_ai_
 _FMT = {
     "claude": {"slack": _CLAUDE_SLACK["plugin"], "gmail": "mcp__claude_ai_Gmail__{}", "miro": _CLAUDE_MIRO["plugin"]},
     "grok":   {"slack": "slack__slack_{}",       "gmail": "gmail__{}",                "miro": "miro"},
+    # ChatGPT connectors, as `codex exec --json` names them (verified in #18, Codex CLI 0.156.1). Miro has no
+    # connector: "miro" is a user-added MCP server of that name, only there if the user set one up (see _codex_miro_toml).
+    "codex":  {"slack": "slack.slack_{}",        "gmail": "gmail.{}",                 "miro": "miro"},
 }
+# The logical names the jobs pass where the Gmail connector's tool is called something else. gmail.reply is
+# send_email with reply_message_id (see _CODEX_HINT), used only when a send switch in Settings is ticked (chase.py).
+_CODEX_RENAME = {"gmail.search_threads": "search_emails", "gmail.get_thread": "read_email_thread",
+                 "gmail.reply": "send_email"}
+# Said next to a tool in the Codex preamble. Both take reply_message_id (seen in Codex's cached tool schemas, 0.156.1),
+# which is what keeps a chase in the original email thread.
+_CODEX_HINT = {"gmail.reply": "pass reply_message_id so it answers in the thread",
+               "gmail.create_draft": "pass reply_message_id so the draft answers in the thread"}
 
 # Grok CLI defaults to xhigh; Open Loops jobs are unattended JSON, not coding.
 _GROK_DISALLOWED = (
@@ -64,7 +82,7 @@ def miro_source():
 def display_name(agent=None):
     """"Claude" / "Grok" for the selected agent, or for the one named."""
     n = (agent or name()).strip().lower()
-    return {"claude": "Claude", "grok": "Grok"}.get(n, n.capitalize())
+    return {"claude": "Claude", "grok": "Grok", "codex": "Codex"}.get(n, n.capitalize())
 
 
 def cli():
@@ -72,6 +90,14 @@ def cli():
     if name() == "grok":
         # grok installs to ~/.grok/bin, which Finder/launchd PATHs usually lack
         return shutil.which("grok") or str(Path.home() / ".grok" / "bin" / "grok")
+    if name() == "codex":
+        # Homebrew, the install script (~/.local/bin, Windows %LOCALAPPDATA%), or Codex's own folder: a Finder- or
+        # launchd-started app has none of them on PATH
+        home = Path.home()
+        spots = [Path("/opt/homebrew/bin/codex"), home / ".local" / "bin" / "codex", home / ".codex" / "bin" / "codex"]
+        if WIN and os.environ.get("LOCALAPPDATA"):
+            spots.insert(0, Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
+        return shutil.which("codex") or next((str(p) for p in spots if p.exists()), "codex")
     return "claude"
 
 
@@ -81,7 +107,7 @@ def use_slack():
 
 
 def slack_enabled():
-    """Whether jobs should pass Slack tools. Claude unchanged (still gated on slack_self_id)."""
+    """Whether jobs should pass Slack tools. Claude and Codex: yes (still gated on slack_self_id); Grok: use_slack."""
     return True if name() != "grok" else use_slack()
 
 
@@ -114,8 +140,242 @@ def grok_job_env():
     return env
 
 
+# ---- Codex (OpenAI's CLI, signed in with ChatGPT) ----
+def codex_user_home():
+    """The user's own Codex folder: $CODEX_HOME if set (and not our job home), else ~/.codex."""
+    h = os.environ.get("CODEX_HOME")
+    if h and os.path.realpath(h) != os.path.realpath(_CODEX_JOB_HOME):
+        return Path(h)
+    return Path.home() / ".codex"
+
+
+def codex_auth():
+    """What ~/.codex/auth.json says -> {"mode": "chatgpt" | "apikey" | "", "email": "", "sig": ""}. mode "" = no
+    file (not signed in, or the sign-in is kept in the system keyring instead). The email comes from the ID token's
+    claims (decoded, not verified: it is only shown on the checklist). sig changes whenever the file does, so a new
+    sign-in makes doctor.py ask Codex again. Never returns a token."""
+    import base64
+    f = codex_user_home() / "auth.json"
+    out = {"mode": "", "email": "", "sig": ""}
+    try:
+        st = f.stat()
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return out
+    out["sig"] = f"{st.st_mtime_ns}:{st.st_size}"
+    mode = str(data.get("auth_mode") or "").strip().lower()
+    if not mode:  # older files carry no auth_mode: tokens mean ChatGPT, a key alone means API key
+        mode = "chatgpt" if data.get("tokens") else "apikey" if data.get("OPENAI_API_KEY") else ""
+    out["mode"] = mode
+    try:
+        payload = str((data.get("tokens") or {}).get("id_token") or "").split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        out["email"] = str(claims.get("email") or (claims.get("https://api.openai.com/profile") or {}).get("email") or "")
+    except Exception:
+        pass
+    return out
+
+
+def _codex_miro_toml():
+    """The user's own [mcp_servers.miro] tables from their Codex config.toml, copied verbatim into the job home, or "".
+    Codex has no Miro connector; this is only there if the user added a Miro MCP server to Codex themselves."""
+    try:
+        text = (codex_user_home() / "config.toml").read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    out, on = [], False
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("["):  # a table header: in the Miro server's tables or out of them
+            on = bool(re.match(r'\[\s*mcp_servers\s*\.\s*(?:miro|"miro")\s*(?:\.|\])', s))
+        if on:
+            out.append(ln)
+    return "\n".join(out).strip()
+
+
+def codex_has_miro():
+    return bool(_codex_miro_toml())
+
+
+def codex_apps_cached(sub="codex_apps_tools"):
+    """Whether the job home already holds Codex's list of connector tools (see codex_job_env)."""
+    d = _CODEX_JOB_HOME / "cache" / sub
+    try:
+        return any(f.is_file() and f.stat().st_size > 0 for f in d.iterdir())
+    except OSError:
+        return False
+
+
+def _toml_str(v):
+    return json.dumps(str(v))  # a JSON string is a valid TOML basic string
+
+
+def codex_job_env():
+    """Env for headless Codex: a job-local CODEX_HOME (state/codex-home), rewritten before every run.
+
+    It holds a link to the user's auth.json (Codex keeps it fresh in place, so the user's own sign-in stays the one
+    in use) and a small config.toml: model and effort, memories and shell tools off, no AGENTS.md, no web search,
+    and the Gmail / Slack apps set not to wait for an approval nobody can give. The user's own config, plugins,
+    skills, hooks and memories are not loaded: that alone cut a run from ~190k to ~72k input tokens (#18).
+    If there is no auth.json (sign-in kept in the keyring), the user's own home is used as it is."""
+    src, home = codex_user_home(), _CODEX_JOB_HOME
+    (home / "work").mkdir(parents=True, exist_ok=True)  # the run's working folder (-C): empty, so nothing to read
+    env = dict(os.environ)
+    if not (src / "auth.json").exists():
+        return env
+    for name_ in ("auth.json", ".credentials.json"):  # .credentials.json: MCP sign-ins (a Miro server), if kept on disk
+        origin, dest = src / name_, home / name_
+        if not origin.exists():
+            continue
+        if dest.is_symlink() and os.readlink(dest) == str(origin):
+            continue
+        try:
+            if dest.exists() or dest.is_symlink():
+                dest.unlink()
+            try:
+                dest.symlink_to(origin)
+            except OSError:  # Windows without Developer Mode may not make symlinks; a hard link is shared the same way
+                os.link(origin, dest)
+        except OSError:
+            # Neither: never a copy, whose refreshed token would log the user's own Codex out. Use their home as it is.
+            return env
+    # Codex fetches the list of connector tools in the background and keeps it in cache/codex_apps_tools. In a fresh
+    # home the first session starts before that list arrives, so it has no Gmail or Slack tools at all (seen on
+    # 2026-09-23: zero tool calls, then the list cached mid-run and the next run worked). Seed the job home from the
+    # user's own cache (same file names: they are keyed by account, not by folder) when it has none yet.
+    for sub in ("codex_apps_tools", "codex_apps_server_info"):
+        mine, theirs = home / "cache" / sub, src / "cache" / sub
+        if not codex_apps_cached(sub) and theirs.is_dir():
+            try:
+                shutil.copytree(theirs, mine, dirs_exist_ok=True)
+            except OSError:
+                pass  # Codex fetches it itself; the first run may just see no connectors
+    lines = ["# Generated by Open Loops for headless Codex jobs. Do not edit: it is rewritten before every run."]
+    if model():
+        lines.append("model = " + _toml_str(model()))
+    if effort():
+        lines.append("model_reasoning_effort = " + _toml_str(effort()))
+    lines += ["project_doc_max_bytes = 0", 'web_search = "disabled"', "",
+              "[features]", "memories = false", "shell_tool = false",
+              "image_generation = false", "multi_agent = false", "browser_use = false", "computer_use = false", "",
+              "[apps.gmail]", 'default_tools_approval_mode = "auto"', "",
+              "[apps.slack]", 'default_tools_approval_mode = "auto"']
+    miro = _codex_miro_toml()
+    if miro:
+        lines += ["", "# the user's own Miro MCP server, copied from " + str(src / "config.toml"), miro]
+    (home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    env["CODEX_HOME"] = str(home)
+    return env
+
+
+def codex_preamble(tools):
+    """What a Codex run is told before the job's own prompt. There is no allow-list in `codex exec`, so this is where
+    the job's tool list goes: by exact connector name, with the short name the job's prompt may use for it."""
+    lines = []
+    for t in tools:
+        for q in _qualify([t]):
+            if "." not in q:  # a whole MCP server ("miro.*")
+                lines.append(f"- any tool of the {q} MCP server (only if it is there)")
+                continue
+            short = t.split(".", 1)[1]
+            notes = ([] if q.endswith(short) else [f"the instructions below may call it {short}"]) + (
+                [_CODEX_HINT[t]] if t in _CODEX_HINT else [])
+            lines.append(f"- {q}" + (f" ({'; '.join(notes)})" if notes else ""))
+    lines = list(dict.fromkeys(lines))
+    head = ("[Open Loops: an unattended run. Nobody is watching, so nobody can answer a question or approve anything.]\n")
+    if lines:
+        head += ("You may use ONLY these tools:\n" + "\n".join(lines) +
+                 "\nDo not use any other tool, app or connector, even if one is available. Do not run shell commands, "
+                 "do not read or write files, do not search the web. If a tool you need is missing or fails, carry on "
+                 "without it and say so where the instructions ask.\n")
+    else:
+        head += ("Use no tools at all: no apps, no connectors, no shell commands, no files, no web. "
+                 "Answer from the text below only.\n")
+    return head + "[End of the Open Loops note. The job's instructions follow.]\n\n"
+
+
+def codex_args(out_file, effort_=None):
+    """argv for one `codex exec`: prompt on stdin ("-"), final message to out_file, events as JSON Lines on stdout.
+    read-only sandbox + the shell tool off, so the model can only talk to the connectors. (unified_exec cannot be
+    switched off on Codex 0.156: `codex features list` still shows it on; shell_tool = false does take.)"""
+    e = effort() if effort_ is None else effort_
+    args = [cli(), "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral",
+            "-C", str(_CODEX_JOB_HOME / "work"), "-o", str(out_file),
+            "-c", "features.shell_tool=false"]  # also in the job config; here too for a keyring sign-in (no job home)
+    if model():
+        args += ["-m", model()]
+    if e:
+        args += ["-c", f'model_reasoning_effort="{e}"']
+    return args + ["-"]
+
+
+def _codex_events(jsonl):
+    """`codex exec --json` stdout -> (last agent message, tools called as "server/tool", usage dict, error messages).
+    Only names and counts are kept: a tool's arguments and results (mail, messages) never reach the logs from here."""
+    msg, used, usage, errs = "", [], {}, []
+    for ln in (jsonl or "").splitlines():
+        try:
+            ev = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        kind, item = ev.get("type"), ev.get("item") or {}
+        if kind == "item.completed" and item.get("type") == "agent_message":
+            msg = str(item.get("text") or msg)
+        elif kind in ("item.started", "item.completed") and item.get("type") == "mcp_tool_call":
+            used.append(f"{item.get('server', '?')}/{item.get('tool', '?')}")
+        elif kind in ("item.started", "item.completed") and item.get("type") in ("command_execution", "file_change", "web_search"):
+            used.append(str(item.get("type")))
+        elif kind == "turn.completed":
+            usage = ev.get("usage") or usage
+        elif kind in ("turn.failed", "error"):
+            e = ev.get("error") if isinstance(ev.get("error"), dict) else ev
+            errs.append(str(e.get("message") or e)[:500])
+    return msg, list(dict.fromkeys(used)), usage, errs
+
+
+def codex_run(prompt, tools, timeout=None, effort_=None):
+    """One unattended `codex exec` -> CompletedProcess whose stdout is the final message only (what the jobs parse),
+    and whose stderr is Codex's own stderr plus one summary line: tools used, tokens, and any tool used that was
+    not on the job's list (which the preamble forbids but nothing can block)."""
+    import tempfile
+    env = codex_job_env()
+    fd, out = tempfile.mkstemp(prefix="codex-last-", suffix=".txt", dir=str(_CODEX_JOB_HOME))
+    os.close(fd)
+    args = codex_args(out, effort_)
+    try:
+        p = subprocess.run(args, input=codex_preamble(tools) + prompt, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env, cwd=str(ROOT), timeout=timeout, shell=WIN)
+        rc, events, err = p.returncode, p.stdout or "", p.stderr or ""
+    except subprocess.TimeoutExpired as e:
+        rc, err = 124, f"codex: stopped after {timeout} seconds without an answer\n"
+        events = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+    try:
+        final = Path(out).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        final = ""
+    finally:
+        Path(out).unlink(missing_ok=True)
+    msg, used, usage, errs = _codex_events(events)
+    final = final or msg
+    allowed = set(_qualify(tools))  # "gmail.search_emails" (a connector tool) or "miro" (a whole MCP server)
+    extra = [u for u in used if u.split("/", 1)[-1] not in allowed and u.split("/", 1)[0] not in allowed]
+    note = "codex: tools used: " + (", ".join(used) or "none")
+    if usage:
+        note += (f"; tokens in {usage.get('input_tokens', '?')} (cached {usage.get('cached_input_tokens', '?')}),"
+                 f" out {usage.get('output_tokens', '?')}")
+    if extra:
+        note += "; WARNING: used a tool the job did not list: " + ", ".join(extra)
+    err = err + ("\n" if err and not err.endswith("\n") else "") + note + "\n" + "".join(f"codex error: {x}\n" for x in errs)
+    done = subprocess.CompletedProcess(args, rc, stdout=final, stderr=err)
+    done.tools_used = used  # "server/tool" names, for doctor.py's probe
+    return done
+
+
 def _qualify(tools):
     fmt = dict(_FMT.get(name()) or _FMT["claude"])
+    codex = name() == "codex"
     if name() == "claude":  # from the server actually found, so a renamed server gets its real tool ids
         fmt["slack"] = tool_prefix(server_name("slack")) + "__slack_{}"
         fmt["gmail"] = tool_prefix(server_name("gmail")) + "__{}"
@@ -123,6 +383,8 @@ def _qualify(tools):
     out = []
     for t in tools:
         svc, tool = t.split(".", 1)
+        if codex:
+            tool = _CODEX_RENAME.get(t, tool)
         pat = fmt[svc]
         # "miro.*" -> the bare server id: Claude Code reads that as every tool on that server
         out.append(pat.format(tool) if "{}" in pat else pat)
@@ -138,6 +400,22 @@ CLAUDE_SERVERS = {
     "miro":  {"plugin": "plugin:miro:miro", "connector": "claude.ai Miro", "server": "miro"},
 }
 CONNECT_STEPS = ("login", "slack_install", "slack", "gmail", "miro")
+# Codex: sign in runs `codex login` (browser flow); Gmail and Slack are connected in the ChatGPT account itself, so
+# their buttons open ChatGPT's apps page and the user comes back and presses Check again. No Miro connector exists.
+CODEX_CONNECT_STEPS = ("login", "gmail", "slack")
+CODEX_APPS_URL = "https://chatgpt.com/apps"
+
+
+def connect_steps():
+    """The setup steps the checklist's buttons can start for the selected AI (none for Grok)."""
+    return {"claude": CONNECT_STEPS, "codex": CODEX_CONNECT_STEPS}.get(name(), ())
+
+
+def connect_url(step):
+    """A setup step that is a page to open rather than a command to run -> its URL, else None."""
+    return CODEX_APPS_URL if name() == "codex" and step in ("gmail", "slack") else None
+
+
 _MARKETPLACE = "claude-plugins-official"  # where the Slack plugin lives
 _MARKETPLACE_SRC = "anthropics/claude-plugins-official"
 
@@ -154,11 +432,14 @@ def _has_marketplace():
 
 def login_cmd(step):
     """The commands for one Claude setup step, run in order -> [argv, ...], or None (unknown step, or not Claude).
+    Codex has one command step, sign in (`codex login`, which opens the browser itself).
 
     Each opens the browser at most once and needs nothing typed: the user only clicks Allow. `mcp login`
     gets --no-browser off Windows because app.py runs it on a pseudo-terminal, reads the sign-in link it
     prints and opens that itself (the CLI refuses to wait for the browser when stdin is not a terminal).
     On Windows app.py gives it a console window of its own instead, and the CLI opens the browser."""
+    if name() == "codex":  # the browser flow; Gmail / Slack are pages to open (connect_url), not commands
+        return [[cli(), "login"]] if step == "login" else None
     if name() != "claude" or step not in CONNECT_STEPS:
         return None
     if step == "login":
@@ -306,14 +587,18 @@ def model():
     """config.json "model": the Claude model the jobs run on. An alias (sonnet, haiku, opus) or a
     full id. Blank means whatever `claude` defaults to on this machine, which is usually the most
     expensive model the user has - so the template says sonnet: plenty for reading threads and
-    writing JSON, at a fraction of the cost. Grok ignores it."""
-    return str(_cfg().get("model") or "").strip()
+    writing JSON, at a fraction of the cost. Grok ignores it.
+    Codex has keys of its own, "codex_model" (template gpt-5.6-sol; gpt-5.5 leaves Codex on 2026-10-14), so
+    switching AI in Settings never hands a Claude alias to `codex -m`."""
+    return str(_cfg().get("codex_model" if name() == "codex" else "model") or "").strip()
 
 
 def effort():
     """config.json "effort": low | medium | high | xhigh | max, how hard the model thinks per turn.
-    Template: xhigh with sonnet (opus at medium is the other sensible pairing). Blank = CLI default."""
-    return str(_cfg().get("effort") or "").strip().lower()
+    Template: xhigh with sonnet (opus at medium is the other sensible pairing). Blank = CLI default.
+    Codex: "codex_effort" (low | medium | high | xhigh), template low: every run is metered against the
+    ChatGPT plan's 5-hour and weekly Codex allowance."""
+    return str(_cfg().get("codex_effort" if name() == "codex" else "effort") or "").strip().lower()
 
 
 def claude_args(tools):
@@ -325,8 +610,11 @@ def claude_args(tools):
     return args
 
 
-def run(prompt, tools):
-    """One unattended prompt with only the given MCP tools allowed -> CompletedProcess."""
+def run(prompt, tools, timeout=None):
+    """One unattended prompt with only the given MCP tools allowed -> CompletedProcess.
+    timeout (seconds) is honoured by Codex only (doctor.py's probe); the jobs never set one."""
+    if name() == "codex":
+        return codex_run(prompt, tools, timeout=timeout)
     if name() == "grok":
         # --cwd matters: .grok/config.toml there defines the bundled Gmail MCP server
         # (gmail_mcp.py, which does its own Google auth via gmail_auth.py).
