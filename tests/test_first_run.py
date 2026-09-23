@@ -139,7 +139,7 @@ def page_js(port, session, scenario, tmp):
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
-        grab("async function loadState("), grab("async function loadCfg("),
+        cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("),
         grab("const running="), grab("const havePeople="), grab("const haveVoice="),
         cut("function stage(){", "\nasync function tick(){"), cut("async function tick(){", "\nfunction paintConnect("),
         cut("let peopleRendered=''", "async function findPeople("),
@@ -585,7 +585,7 @@ def setup_js(port, scenario, tmp):
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
         cut("let formPainted=false;", "\n\n// ---------- data"),
-        grab("async function loadState("), grab("async function loadCfg("), grab("const agentLabel="),
+        cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="),
         grab("const running="), grab("const havePeople="), grab("const haveVoice="),
         cut("function stage(){", "\nasync function tick(){"), cut("async function tick(){", "\nfunction paintConnect("),
         cut("function paintConnect(", "\n// ---------- Setup buttons"),
@@ -600,9 +600,10 @@ def setup_js(port, scenario, tmp):
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),
         """const CALLS=[];const realFetch=global.fetch;
 const FAKE={};   // url -> [answer to a POST, answer to a GET]: a setup step the app itself never runs (no browser opens)
-const FAIL_ONCE=new Set(),FAIL_GET=new Set(),HANG=new Set();
+const FAIL_ONCE=new Set(),FAIL_GET=new Set(),HANG=new Set(),HOLD={};
 global.fetch=(u,o)=>{const post=!!(o&&o.method==='POST');if(post)CALLS.push(u+' '+(o.body||''));
  if(FAIL_ONCE.has(u)||(!post&&FAIL_GET.has(u))){FAIL_ONCE.delete(u);FAIL_GET.delete(u);return Promise.resolve({ok:false,status:500,text:async()=>'{"error":"boom"}'})}
+ const hd=!post&&HOLD[u];if(hd&&!hd.used){hd.used=true;return new Promise(res=>{hd.release=()=>res({ok:true,status:200,json:async()=>hd.body,text:async()=>JSON.stringify(hd.body)})})}   // answers when released
  if(HANG.has(u)){HANG.delete(u);return new Promise((res,rej)=>{const sg=o&&o.signal;if(sg)sg.addEventListener('abort',()=>rej(Object.assign(new Error('aborted'),{name:'AbortError'})))})}   // never answers
  if(FAKE[u])return Promise.resolve({ok:true,status:200,json:async()=>FAKE[u][post?0:1],text:async()=>JSON.stringify(FAKE[u][post?0:1])});
  return realFetch(BASE+u,o)};
@@ -862,6 +863,36 @@ if NODE:
               f"a saved change whose settings re-read fails once is read again, then checked ({r['stage']})")
         check("DOC_DEADLINE_MS=250000" in page and "app.py" in page[page.index("let DOC_DEADLINE_MS") - 300:page.index("let DOC_DEADLINE_MS")],
               "the deadline is 250 s, past the app's own 240 s")
+    finally:
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7j. /api/state answers out of order: an older one is dropped, and one sent before a job started cannot clear it
+    tmp = setup_install("openloops-setup-stale-", config={"slack_self_id": "U0TEST12345"})
+    (tmp / "bin" / "slack_ok").write_text("")
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ await boot();await tick();stopped=true;   // no polls of its own: the test decides the order
+ const held=jobs=>({state:S,jobs,today:TODAY,isolated:ISO,instance:INST});
+ HOLD['/api/state']={body:held({refresh:{running:false,seq:0,marker:'old'}})};
+ const s0=ST_SEQ,old=loadState();await sleep(50);await loadState();HOLD['/api/state'].release();await old;
+ out.order={marker:(J.refresh||{}).marker||'',applied:ST_DONE-s0,asked:ST_SEQ-s0};
+ HOLD['/api/state']={body:held({refresh:{running:false,seq:(J.refresh&&J.refresh.seq)||0}})};
+ const early=loadState();await sleep(50);jobStarted('refresh');HOLD['/api/state'].release();await early;
+ out.early={running:J.refresh.running,pending:!!PENDING_START.refresh};await loadState();out.current=J.refresh.running;
+ let n=CALLS.length;TOASTS.length=0;await chooseAI('codex');out.refused={calls:CALLS.slice(n),toasts:TOASTS.slice(),agent:C.agent};
+ await realFetch(BASE+'/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ for(let i=0;i<150&&J.refresh.running;i++){await sleep(100);await loadState()}
+ out.ended={running:J.refresh.running,pending:!!PENDING_START.refresh,seq:J.refresh.seq};""", tmp)
+        check(out["order"] == {"marker": "", "applied": 2, "asked": 2}, f"an older /api/state answer arriving after a newer one is dropped ({out['order']})")
+        check(out["early"] == {"running": True, "pending": True} and out["current"] is True,
+              "an answer sent before jobStarted() and arriving after it leaves the job running (so does a current one not yet showing it)")
+        check(out["refused"]["calls"] == [] and out["refused"]["agent"] == "claude"
+              and out["refused"]["toasts"] == ["Open Loops is still running a job with Claude. Change your AI once it has finished."],
+              "...so chooseAI() refuses, in a sentence")
+        check(out["ended"]["running"] is False and out["ended"]["pending"] is False and (out["ended"]["seq"] or 0) >= 1,
+              f"once an answer shows the job ended after the start, it is no longer running ({out['ended']})")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)

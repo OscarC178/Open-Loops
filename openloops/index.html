@@ -488,7 +488,13 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
  if(t==='settings'&&!formPainted)paintForm();if(t==='settings'&&sec){const d=cfgShow(sec);if(d)d.scrollIntoView({behavior:'smooth',block:'start'})}}
 
 // ---------- data ----------
-async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||''}
+// Polls can overlap and answer out of order: only a newer answer than the last one applied is taken (ST_SEQ). A job this
+// page just started (jobStarted) stays "running" until an answer shows it running or ended after the start (its seq past
+// the one at the start), so an answer sent before the start cannot clear it; 15 s without either and it lets go.
+async function loadState(){const my=++ST_SEQ,r=await api('/api/state');if(my<ST_DONE)return;ST_DONE=my;S=r.state;const jobs=r.jobs||{};
+ for(const k of Object.keys(PENDING_START)){const t=PENDING_START[k],j=jobs[k]||{};
+  if(j.running||(j.seq||0)>t.seq||(j.finished_at&&Date.parse(j.finished_at)>t.at)||Date.now()-t.at>15000)delete PENDING_START[k];else jobs[k]=Object.assign({},j,{running:true})}
+ J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||''}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;
@@ -1090,7 +1096,7 @@ const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job
 // been handled: a follow-up load that fails leaves it for the next poll. WATCH: jobs this page started, polled every
 // 1.5 s until their end.
 let SEEN=null,SEEN_INST=null,INST='';const WATCH={};
-function jobStarted(k){if(!J)J={};J[k]=Object.assign({},J[k]||{},{running:true});WATCH[k]=Date.now();if(!runSeen.has(k)){runSeen.add(k);clog(k+' started')}pollSoon()}
+function jobStarted(k){if(!J)J={};PENDING_START[k]={seq:(J[k]&&J[k].seq)||0,at:Date.now()};J[k]=Object.assign({},J[k]||{},{running:true});WATCH[k]=Date.now();if(!runSeen.has(k)){runSeen.add(k);clog(k+' started')}pollSoon()}
 function pollSoon(){if(inLoop||stopped)return;clearTimeout(loopT);loopT=setTimeout(loop,1000)}
 function newlyEnded(){const out=[];if(!J)return out;
  if(SEEN===null){SEEN={};SEEN_INST=INST;for(const k of Object.keys(J))SEEN[k]=J[k].seq||0;return out}
