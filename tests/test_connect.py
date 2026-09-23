@@ -7,7 +7,7 @@ link it was given, so nothing signs in to anything and no browser window opens. 
 `mcp login` when stdin is not a terminal, as the real CLI (2.1.280) does, so a pass also proves the app
 runs it on a pseudo-terminal. That half is skipped on Windows, where the app gives the CLI a console window.
 """
-import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import json, os, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -48,6 +48,8 @@ got = doctor.parse_mcp_list(coloured)
 check(got == {"claude.ai Slack": "connected", "plugin:miro:miro": "auth"}, f"ANSI colours and links stripped (got {got})")
 check(doctor.parse_mcp_list("claude.ai Gmail: https://x - √ Connected") == {"claude.ai Gmail": "connected"},
       "another glyph before the state still reads as connected (Windows consoles)")
+check(doctor.parse_mcp_list("claude.ai Gmail: https://x - \u2714\ufe0f Connected") == {"claude.ai Gmail": "connected"},
+      "an emoji-style mark (with U+FE0F) still reads as connected")
 check(doctor.parse_mcp_list("") == {} and doctor.parse_mcp_list("No MCP servers configured.") == {}, "nothing listed -> {}")
 
 # ---------------------------------------------------------------- route
@@ -61,6 +63,23 @@ check(doctor.route("miro", {"miro": "connected"}) == ("server", "connected", "mi
 check(doctor.route("slack", {"plugin:slack-v2:slack": "auth"}) == ("plugin", "auth", "plugin:slack-v2:slack"), "a renamed plugin still reads as the plugin route, name kept")
 check(doctor.route("slack", {"my-slack": "connected"}) == ("", "", ""), "an unknown server named like slack is not guessed at")
 check(doctor.route("gmail", {}) == ("", "", ""), "no server -> no route")
+
+# ---------------------------------------------------------------- doctor rows when the listing fails
+_real = (doctor.run, doctor.shutil.which)
+doctor.shutil.which = lambda _: "/usr/local/bin/claude"
+doctor.run = lambda args, timeout=60: ((0, '{"loggedIn": true, "email": "me@example.com"}') if args[1] == "auth"
+                                       else (1, "Checking MCP server health...\nError: timed out"))
+rows = {}
+doctor.claude_steps(rows.setdefault("steps", []))
+rows = {r["id"]: r for r in rows["steps"]}
+check(all("connect" not in rows[k] and "Couldn't ask Claude" in rows[k]["fix"] and "timed out" in rows[k]["fix"]
+          for k in ("slack", "gmail", "miro")), "a failed claude mcp list offers no Install/Connect button, says so")
+doctor.run = lambda args, timeout=60: ((0, '{"loggedIn": true}') if args[1] == "auth" else (0, "No MCP servers configured."))
+rows = {}
+doctor.claude_steps(rows.setdefault("steps", []))
+rows = {r["id"]: r for r in rows["steps"]}
+check(rows["slack"].get("connect") == "slack_install", "an empty listing that ran fine still offers Install Slack plugin")
+doctor.run, doctor.shutil.which = _real
 
 # ---------------------------------------------------------------- login_cmd
 cfg = {"agent": "claude"}
@@ -111,6 +130,15 @@ if a[:3] == ["plugin", "marketplace", "list"]:
     print("Configured marketplaces:\n\n  > claude-plugins-official\n"); sys.exit(0)
 if a[:2] == ["plugin", "install"]:
     print("Installing plugin " + a[2] + "..."); print("Successfully installed plugin: " + a[2]); sys.exit(0)
+here = os.path.dirname(__file__)
+flag = lambda n: os.path.exists(os.path.join(here, n))
+if a[:2] == ["auth", "status"]:
+    print('{"loggedIn": true, "email": "me@example.com"}'); sys.exit(0)
+if a[:2] == ["mcp", "list"]:  # Gmail's state is read first, then (if told to) the listing takes 3 s
+    line = "claude.ai Gmail: https://g - " + ("\u2714 Connected" if flag("gmail_ok") else "! Needs authentication")
+    if flag("slow"):
+        time.sleep(3)
+    print("Checking MCP server health...\n\n" + line); sys.exit(0)
 if a[:2] == ["auth", "login"]:
     time.sleep(0.5); print("Login cancelled"); sys.exit(3)
 if a[:2] == ["mcp", "login"]:
@@ -120,15 +148,18 @@ if a[:2] == ["mcp", "login"]:
     u = "https://example.invalid/authorize?state=abc&redirect_uri=http%3A%2F%2Flocalhost%3A51580%2Fcallback"
     print("Visit this URL to authorize:\n  \x1b]8;;" + u + "\x1b\\\x1b[94m" + u + "\x1b[39m\x1b]8;;\x1b\\\n", flush=True)
     print("Waiting for authorization... (^C to cancel)", flush=True)
-    time.sleep(1.5)
+    time.sleep(60 if flag("hang") else 1.5)
+    if a[2] == "claude.ai Gmail":
+        open(os.path.join(here, "gmail_ok"), "w").close()
     print("Authentication successful. Connected to " + a[2] + "."); sys.exit(0)
 print("fake claude: unexpected " + " ".join(a)); sys.exit(9)
 '''.replace("PYTHON", sys.executable)
 
 
-def api(path, body=None):
+def api(path, body=None, origin=None):
+    headers = {"Content-Type": "application/json", **({"Origin": origin} if origin else {})}
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json"}, method="POST" if body is not None else "GET")
+                                 headers=headers, method="POST" if body is not None else "GET")
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read())
@@ -191,6 +222,8 @@ try:
     check("mcp | login | miro | --no-browser" in calls(), f"the configured Miro route was used (calls: {calls()})")
     log = (tmp / "state" / "connect-miro.log").read_text(encoding="utf-8")
     check("\x1b" not in log and "Waiting for authorization" in log, "state/connect-miro.log kept, without escape codes")
+    check("state=abc" not in log and "https://example.invalid/authorize?(rest of the link not saved)" in log,
+          "the log keeps the link's address but not its query")
 
     # install: marketplace already known -> install only, no browser
     api("/api/connect/slack_install", {})
@@ -204,10 +237,63 @@ try:
     s = wait_step("login")
     check(s["rc"] == 3 and s["last"] == "Login cancelled", f"a cancelled sign-in reports its exit code (got {s['rc']}, {s['last']!r})")
 
+    # four clicks at the same moment (two tabs, a double click): exactly one run starts. Four, not more:
+    # the server's listen backlog is 5, and a burst past it is reset by the OS, which is not what this tests
+    gate, got = threading.Barrier(4), []
+    def click():
+        gate.wait()
+        got.append(api("/api/connect/slack", {})[1].get("started"))
+    ts = [threading.Thread(target=click) for _ in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    check(got.count(True) == 1 and got.count(False) == 3, f"simultaneous clicks start one run (got {got})")
+    wait_step("slack")
+    check(sum(c.startswith("mcp | login | plugin:slack:slack") for c in calls()) == 1, "and one sign-in command ran")
+
+    # a check that started before a sign-in finished must not be cached over the fresh answer
+    (tmp / "bin" / "slow").touch()
+    old = []
+    slow = threading.Thread(target=lambda: old.append(api("/api/doctor", {"force": True})[1]))
+    slow.start()
+    time.sleep(1)
+    api("/api/connect/gmail", {})
+    wait_step("gmail")
+    (tmp / "bin" / "slow").unlink()
+    slow.join()
+    gm = lambda r: next(x for x in r["steps"] if x["id"] == "gmail")
+    check(not gm(old[0])["ok"], "the check that started before the sign-in still says Gmail needs signing in")
+    fresh = api("/api/doctor", {})[1]  # not forced: would come from the cache if the old answer had been kept
+    check(gm(fresh)["ok"], "the next check is fresh: Gmail ticked")
+
+    # cross-site POSTs are refused on every endpoint; this page's own origin and no origin at all are not
+    code, out = api("/api/connect/login", {}, origin="http://evil.example")
+    check(code == 403, "a POST from another site is refused (403)")
+    code, _ = api("/api/refresh", {}, origin="null")
+    check(code == 403, "a POST from an opaque origin is refused too")
+    code, out = api("/api/bye", {"page": "x"}, origin=f"http://localhost:{PORT}")
+    check(code == 200 and out["ok"], "the page's own origin gets through (close-tab beacon)")
+    code, out = api("/api/bye", {"page": "x"})
+    check(code == 200, "no Origin at all (--stop, scripts) gets through")
+
     # Grok: no setup buttons
     api("/api/config", {"agent": "grok"})
     code, out = api("/api/connect/login", {})
     check(code == 400 and "Grok" in out.get("error", ""), "with Grok selected the endpoint refuses")
+
+    # quitting stops a sign-in still waiting in the browser, and the server does not wait for it
+    api("/api/config", {"agent": "claude"})
+    (tmp / "bin" / "hang").touch()
+    api("/api/connect/miro", {})
+    time.sleep(1)
+    waiting = lambda: subprocess.run(["pgrep", "-f", str(tmp / "bin" / "claude")], capture_output=True).returncode == 0
+    check(waiting(), "a sign-in is waiting")
+    api("/api/quit", {})
+    try:
+        srv.wait(10)
+    except subprocess.TimeoutExpired:
+        raise SystemExit("FAIL: the server kept waiting for the sign-in after Quit")
+    time.sleep(0.5)
+    check(not waiting(), "Quit stopped the waiting sign-in and the server exited")
     say("PASS")
 finally:
     srv.terminate()
