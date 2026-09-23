@@ -336,8 +336,8 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   <select id="cfg_agent" style="margin:6px 0 0;font:inherit;padding:4px" onchange="agentFormUI(this.value)"><option value="claude">Claude (Claude Code)</option><option value="grok">Grok (Grok CLI)</option><option value="codex">Codex (ChatGPT)</option></select>
   <div id="cfg_model_wrap" style="margin-top:10px">
    <label>Model <select id="cfg_model" style="font:inherit;padding:4px"><option value="sonnet">Sonnet (recommended)</option><option value="haiku">Haiku (cheapest)</option><option value="opus">Opus</option><option value="">Claude Code's default</option></select></label>
-   <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="xhigh">xhigh (recommended with Sonnet)</option><option value="max">max</option><option value="high">high</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
-   <div class="sub" id="cfg_model_note">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
+   <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="high">high (recommended with Sonnet)</option><option value="xhigh">xhigh</option><option value="max">max</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
+   <div class="sub" id="cfg_model_note">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at high or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
   </div>
   <div class="sub" id="cfg_codex_note" style="margin-top:8px;display:none"><b>Before you schedule a daily refresh:</b> Codex runs on your ChatGPT plan, which only allows so much Codex use every 5 hours and every week, shared with ChatGPT's other Codex tools. Every scan, refresh and chase uses some of it. If it runs out, Open Loops can't read anything until it comes back. Gmail and Slack are the ones connected in your ChatGPT account (chatgpt.com/apps), and Miro isn't available with Codex.</div>
   <div class="sub" id="cfg_slack_src" style="margin-top:6px"></div>
@@ -512,10 +512,10 @@ function agentUI(){if(!$('#agent_btn'))return;
 // Model and effort per AI. Claude keeps "model" / "effort", Codex has "codex_model" / "codex_effort" (agent.py), so
 // switching AI never hands one CLI the other's model. Grok takes neither.
 const MODELS={
- claude:{keys:['model','effort'],def:['sonnet','xhigh'],
+ claude:{keys:['model','effort'],def:['sonnet','high'],
   model:[['sonnet','Sonnet (recommended)'],['haiku','Haiku (cheapest)'],['opus','Opus'],['',"Claude Code's default"]],
-  effort:[['xhigh','xhigh (recommended with Sonnet)'],['max','max'],['high','high'],['medium','medium (recommended with Opus)'],['low','low'],['',"Claude Code's default"]],
-  note:'Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code\'s default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.'},
+  effort:[['high','high (recommended with Sonnet)'],['xhigh','xhigh'],['max','max'],['medium','medium (recommended with Opus)'],['low','low'],['',"Claude Code's default"]],
+  note:'Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at high or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code\'s default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.'},
  codex:{keys:['codex_model','codex_effort'],def:['gpt-5.6-sol','low'],
   model:[['gpt-5.6-sol','GPT-5.6 Sol (recommended)'],['gpt-6-astra','GPT-6 Astra'],['',"Codex's default"]],
   effort:[['low','low (recommended)'],['medium','medium'],['high','high'],['xhigh','xhigh'],['',"Codex's default"]],

@@ -443,8 +443,10 @@ state/logs/       one log per run
 5. **OneDrive / Dropbox folders** lock files while syncing. Install to the default `%LOCALAPPDATA%\OpenLoops`, not a
    synced folder.
 6. **Which model the jobs use.** Every job runs `claude -p` with `--model` and `--effort` from `model` and
-   `effort` in `config.json` (template: `sonnet` at `xhigh`; Settings → Preferences → Your AI). Sonnet at xhigh or Opus at medium
-   both do the job. Leave either blank and the jobs inherit whatever `claude` defaults to on that computer, which
+   `effort` in `config.json` (template: `sonnet` at `high`; Settings → Preferences → Your AI). Sonnet at high or Opus at medium
+   both do the job (`xhigh` cost about 8p even for a one-line answer in testing, #50). The two small lookups, the
+   connection check's Slack lookup and *Who's who*, always run at `low`, whatever `effort` says. Leave either blank and
+   the jobs inherit whatever `claude` defaults to on that computer, which
    is usually the most expensive model available. Grok ignores both. Codex has its own pair, `codex_model` and
    `codex_effort` (template `gpt-5.6-sol` at `low`), so switching AI never hands Codex a Claude model name.
 7. **Jobs never clobber your clicks.** A refresh can run for minutes; anything you add or snooze meanwhile is kept

@@ -59,7 +59,8 @@ def main():
                            sources="\n".join(sources), domains=", ".join(CFG.get("internal_domains", [])))
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     print(f"[{stamp}] finding people...")
-    p = agent.run(prompt, (SLACK_TOOLS if slack_on else []) + GMAIL_TOOLS)
+    # a small job: low effort whatever Settings say for the scans (#50)
+    p = agent.run(prompt, (SLACK_TOOLS if slack_on else []) + GMAIL_TOOLS, effort_="low")
     (LOG / f"people-{stamp}.log").write_text(p.stdout + "\n--- stderr ---\n" + p.stderr, encoding="utf-8")
     # some agents drop the markers and emit bare JSON - accept that too
     m = re.search(r"<<<PEOPLE>>>(.*?)<<<END>>>", p.stdout, re.S) or re.search(r'(\{\s*"people"\s*:.*\})', p.stdout, re.S)

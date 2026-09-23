@@ -1056,28 +1056,33 @@ def model():
 
 def effort():
     """config.json "effort": low | medium | high | xhigh | max, how hard the model thinks per turn.
-    Template: xhigh with sonnet (opus at medium is the other sensible pairing). Blank = CLI default.
+    Template: high with sonnet (#50: xhigh cost about £0.08 for a bare one-line answer; opus at medium is the other
+    sensible pairing). Blank = CLI default. The small jobs (doctor's Slack lookup, people) pass effort_="low" to run().
     Codex: "codex_effort" (low | medium | high | xhigh), template low: every run is metered against the
     ChatGPT plan's 5-hour and weekly Codex allowance."""
     return str(_cfg().get("codex_effort" if name() == "codex" else "effort") or "").strip().lower()
 
 
-def claude_args(tools):
+def claude_args(tools, effort_=None):
     # json, not text (#46): one result object whose is_error flag says whether the CLI itself failed (signed out, usage
     # limit, no network), so a failure is classified from that flag and never from prose mixed into the answer.
+    # effort_: this run's own effort, overriding config.json "effort" (run()'s per-job override, #50).
     args = ["claude", "-p", "--output-format", "json", "--allowedTools", ",".join(_qualify(tools))]
     if model():
         args += ["--model", model()]
-    if effort():
-        args += ["--effort", effort()]
+    e = effort() if effort_ is None else effort_
+    if e:
+        args += ["--effort", e]
     return args
 
 
-def run(prompt, tools, timeout=None):
+def run(prompt, tools, timeout=None, effort_=None):
     """One unattended prompt with only the given MCP tools allowed -> CompletedProcess.
-    timeout (seconds) is honoured by Codex only; unset, Codex jobs use config.json "codex_timeout_s" (900)."""
+    timeout (seconds) is honoured by Codex only; unset, Codex jobs use config.json "codex_timeout_s" (900).
+    effort_: this job's effort whatever Settings say ("low" for the small jobs: doctor's Slack lookup, people, #50);
+    None uses config.json "effort" / "codex_effort". Grok always runs at low."""
     if name() == "codex":
-        return codex_run(prompt, tools, timeout=timeout)
+        return codex_run(prompt, tools, timeout=timeout, effort_=effort_)
     if name() == "grok":
         # --cwd matters: .grok/config.toml there defines the bundled Gmail MCP server
         # (gmail_mcp.py, which does its own Google auth via gmail_auth.py).
@@ -1091,7 +1096,7 @@ def run(prompt, tools, timeout=None):
         return subprocess.run(args, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", env=grok_job_env(), shell=WIN)
     # shell=True only on Windows, to resolve claude.cmd (npm shim) via PATH
-    p = subprocess.run(claude_args(tools), input=prompt, capture_output=True, text=True,
+    p = subprocess.run(claude_args(tools, effort_), input=prompt, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", shell=WIN)
     return claude_result(p)
 
