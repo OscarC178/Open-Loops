@@ -18,13 +18,20 @@ So a pass means the served page, the app and the jobs agree, not that a copy of 
   4. install.sh --isolated: writes "isolated" and "test_copy", no app and no launchd job, the first-scan cursor is
      history_days back (not a week); a re-run without it takes the mark off. Over an old ~/Documents install it
      copies without sending anything to a port (the stub curl logs nothing). setup.ps1 -Isolated: static check.
-Node is required in CI (as test_messages.py); locally without node parts 1-3 are skipped.
+  5. #49: a job that fails within a second (signed out) is in /api/state with its sentence and a new seq within
+     3 s; the page, set up and idle on its 60 s poll, shows that sentence, logs it in the Console and re-checks,
+     which brings back Sign in, with "Knows who you are on Slack" unticked and "At least one source" saying sign in
+     first. A job that starts and ends between two polls (started elsewhere) is still announced. With Claude
+     missing, "At least one source" says install Claude first.
+Node is required in CI (as test_messages.py); locally without node parts 1-3 and the page half of 5 are skipped.
 """
 import json, os, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+from openloops import messages  # noqa: E402  (the wording table only; importing it writes nothing)
 from _helpers import fresh_install, isolated_env, start_app, stop  # noqa: E402
 
 t0 = time.time()
@@ -58,12 +65,15 @@ a = sys.argv[1:]
 here = os.path.dirname(os.path.abspath(__file__))
 if a == ["--version"]:
     print("2.1.280 (Claude Code)"); sys.exit(0)
+out_ = os.path.exists(os.path.join(here, "signed_out"))   # #49: signed out, as a real expired sign-in looks
 if a[:2] == ["auth", "status"]:
-    print('{"loggedIn": true, "email": "me@example.com"}'); sys.exit(0)
+    print('{"loggedIn": %s, "email": "me@example.com"}' % ("false" if out_ else "true")); sys.exit(0)
 if a[:2] == ["mcp", "list"]:
     print("Checking MCP server health...\n\nplugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ✔ Connected"); sys.exit(0)
 if a[:1] == ["-p"]:
     prompt = sys.stdin.read()
+    if out_:   # fails within a second, the way Claude Code does when the sign-in has gone
+        sys.stderr.write("Not logged in \u00b7 Please run /login\n"); sys.exit(1)
     kind = ("people" if "<<<PEOPLE>>>" in prompt else "voice" if "<<<VOICE>>>" in prompt else
             ("refresh-slack-only" if "SLACK-ONLY RUN" in prompt else "refresh-full") if "<<<OPENLOOPS>>>" in prompt else
             "slack-id" if "Slack user id" in prompt else "other")
@@ -117,9 +127,10 @@ def page_js(port, session, scenario, tmp):
         "const fs=require('fs');const seen=()=>fs.existsSync(PF)?fs.readFileSync(PF,'utf8').split(/\\s+/).filter(Boolean):[];",
         "const sessionStorage={getItem:k=>k in SS?SS[k]:null,setItem:(k,v)=>{SS[k]=String(v)},removeItem:k=>{delete SS[k]}};",
         "const els={};const $=s=>els[s]||(els[s]={style:{},textContent:'',innerHTML:'',disabled:false,title:'',classList:{toggle(){}}});",
-        "const CON=[];function clog(m){CON.push(String(m))}function toast(){}function renderLists(){}function paintVoice(){}",
+        "const CON=[];function clog(m){CON.push(String(m))}const TOASTS=[];function toast(m){TOASTS.push(String(m))}",
+        "function renderLists(){}function paintVoice(){}function banner(){}function appDown(e){CON.push('appDown '+e)}",
         "function paintSchedule(){}function schedBad(){return false}function paintConnect(){}function paintDaylog(){}function paintRm(){}",
-        "function agentUI(){}let docFails=0;const PAGE='t';",
+        "async function loadDaylog(){}async function loadRm(){}function agentUI(){}const PAGE='t';let stopped=false;",
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("),
         cut("const api=async", "let lastBanner="),
@@ -129,6 +140,8 @@ def page_js(port, session, scenario, tmp):
         cut("let peopleRendered=''", "async function findPeople("),
         cut("async function stageAuto(", "// Update Slack needs Slack"),
         cut("// Update Slack needs Slack", "\n// ---------- lists"),
+        cut("const counts=()=>", "\n// ---------- day log"),
+        cut("let docAt=0", "document.addEventListener('visibilitychange'"),   # doctor(), the poll loop, finished() (#49)
         """const CALLS=[];const realFetch=global.fetch;
 global.fetch=(u,o)=>{if(o&&o.method==='POST')CALLS.push(u+' '+(o.body||''));return realFetch(BASE+u,o)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -139,7 +152,8 @@ const jobCalls=()=>CALLS.filter(c=>/^\\/api\\/(people|voice|refresh) /.test(c));
 async function boot(){await loadCfg();await loadState();DOC=await api('/api/doctor',{force:true,detect:true})}
 const snap=()=>({stage:stage(),shown:shown(),jobs:jobCalls(),said:$('#start_said').textContent,ask:$('#start_ask').textContent,
   later:$('#start_msg').textContent,uslack:$('#uslack').style.display,pill:$('#isolated_pill').style.display,lists:$('#lists').style.display});
-(async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}out.SS=SS;console.log(JSON.stringify(out))})();""",
+(async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
+ stopped=true;clearTimeout(loopT);out.SS=SS;console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
     r = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=300)
     if r.returncode != 0 or not r.stdout.strip():
@@ -258,6 +272,75 @@ if NODE:
         (tmp / "people_suggested.json").unlink(missing_ok=True)   # each round starts as a fresh setup
         (tmp / "bin" / "prompts.txt").unlink(missing_ok=True)
     check(todo.read_text(encoding="utf-8").count("\n") == 1, "the to-do file was left as it was")
+    shutil.rmtree(tmp, ignore_errors=True)
+
+# ---------------------------------------------------------------- 5. a job that fails fast (#49)
+if sys.platform == "win32":
+    say("SKIP part 5 on Windows: the fake claude here is a POSIX script")
+else:
+    say("5. a job that fails within a second is noticed, and the checklist says what to do first")
+    tmp = install_with_fake("openloops-firstrun-fast-", {"slack_self_id": "U0TEST12345",
+                                                         "people": {"Sam Lee": {"level": "peer", "aliases": ["Sam"], "email": None}},
+                                                         "voice_sample_people": ["Sam Lee"]})
+    (tmp / "voice.json").write_text(json.dumps({"general": "x", "people": {"Sam Lee": {"level": "peer"}}}), encoding="utf-8")
+    (tmp / "state.json").write_text(json.dumps({"cursor": "2026-09-01T00:00", "last_refresh": "2026-09-22T09:00", "loops": []}),
+                                    encoding="utf-8")
+    srv, port = start_app(tmp, env_for(tmp))
+    try:
+        # the app on its own: the failure, its sentence and a new seq are in /api/state within 3 s
+        (tmp / "bin" / "signed_out").write_text("")
+        api(port, "/api/refresh", {})
+        t1 = time.time()
+        while time.time() - t1 < 3 and api(port, "/api/state")["jobs"]["refresh"]["running"]:
+            time.sleep(0.1)
+        j = api(port, "/api/state")["jobs"]["refresh"]
+        check(not j["running"] and j.get("failure") == "job_signed_out" and j.get("said") == messages.say("job_signed_out", job="The refresh", ai="Claude")
+              and j.get("seq") == 1 and j.get("finished_at"), f"app: within 3 s the job is over with job_signed_out, its sentence and seq 1 ({time.time() - t1:.1f}s)")
+        api(port, "/api/refresh", {})
+        t1 = time.time()
+        while time.time() - t1 < 5 and api(port, "/api/state")["jobs"]["refresh"].get("seq") != 2:
+            time.sleep(0.1)
+        check(api(port, "/api/state")["jobs"]["refresh"].get("seq") == 2, "app: the next end of any job takes the next seq")
+        (tmp / "bin" / "signed_out").unlink()
+        if NODE:
+            out = page_js(port, {}, """
+     await boot();await loop();out.idle={stage:stage(),seen:SEEN.refresh};
+     fs.writeFileSync(PF.replace('prompts.txt','signed_out'),'');
+     const t0=Date.now();await refresh();await until(()=>TOASTS.length>0,3000);out.ms=Date.now()-t0;
+     out.toasts=TOASTS.slice();out.said=J.refresh.said;out.con=CON.filter(l=>/refresh/.test(l));
+     await until(()=>DOC&&DOC.steps.some(x=>x.id==='login'&&!x.ok),10000);await tick();
+     out.after={stage:stage(),rows:Object.fromEntries(DOC.steps.map(x=>[x.id,{ok:x.ok,fix:x.fix,connect:x.connect||''}]))};
+     out.watch=Object.keys(WATCH);""", tmp)
+            check(out["idle"]["stage"] == "ready" and out["idle"]["seen"] == 2, "page: set up and idle, earlier job ends noted but not announced")
+            check(out["ms"] < 3000 and out["toasts"] and out["toasts"][0] == out["said"] and out["said"],
+                  f"page: the sentence is shown within 3 s of pressing Refresh ({out['ms']} ms: {out['toasts'][:1]})")
+            check(any(l.startswith("refresh finished rc=1") for l in out["con"]), f"page: a Console line says the refresh ended ({out['con']})")
+            rows = out["after"]["rows"]
+            signin = messages.say("needs_signin", ai="Claude")
+            check(out["after"]["stage"] == "connect" and rows["login"]["connect"] == "login" and not rows["login"]["ok"],
+                  "page: the re-check brings the checklist back with its Sign in button")
+            check(not rows["self"]["ok"] and rows["self"]["fix"] == signin, f"'Knows who you are on Slack' is not ticked while signed out ({rows['self']})")
+            check(not rows["channel"]["ok"] and rows["channel"]["fix"] == signin, f"'At least one source' says sign in first ({rows['channel']['fix']!r})")
+            check(out["watch"] == [], "page: back to the slow poll once the job's end was seen")
+            (tmp / "bin" / "signed_out").unlink()
+            out = page_js(port, {}, """
+     await boot();await loop();
+     await realFetch(BASE+'/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // not by this page
+     const end=Date.now()+10000;while(Date.now()<end){const s=await (await realFetch(BASE+'/api/state')).json();if(!s.jobs.refresh.running&&s.jobs.refresh.seq>SEEN.refresh)break;await sleep(100)}
+     out.between=CON.filter(l=>/refresh (started|finished)/.test(l));await loop();
+     out.after=CON.filter(l=>/refresh finished/.test(l));out.toasts=TOASTS.slice();""", tmp)
+            check(out["between"] == [] and any(l.startswith("refresh finished rc=0") for l in out["after"])
+                  and any(x.startswith("Refresh done") for x in out["toasts"]),
+                  f"page: a job that started and ended between two polls is still announced ({out['after']}, {out['toasts']})")
+    finally:
+        stop(srv)
+    # Claude missing: "At least one source" says install it first (the checker on its own, no claude anywhere on PATH)
+    bare = os.pathsep.join(d for d in ("/usr/bin", "/bin", "/usr/sbin", "/sbin") if not shutil.which("claude", path=d))
+    r = subprocess.run([sys.executable, "-m", "openloops.doctor"], cwd=tmp, env=isolated_env(tmp, PATH=bare),
+                       capture_output=True, text=True, timeout=120)
+    rows = {s["id"]: s for s in json.loads(r.stdout.strip().splitlines()[-1])["steps"]}
+    check(not rows["channel"]["ok"] and rows["channel"]["fix"] == messages.say("needs_install", ai="Claude")
+          and not rows["self"]["ok"], f"Claude missing: 'At least one source' says install Claude first ({rows['channel']['fix']!r})")
     shutil.rmtree(tmp, ignore_errors=True)
 
 # ---------------------------------------------------------------- 4. the installers

@@ -523,6 +523,17 @@ def schedule_step(logs=None, root=None):
     return r
 
 
+def blocker(steps):
+    """The sentence for a row that cannot be ticked because the AI itself is not ready (#49): "Install Claude first"
+    while it is missing, "Sign in to Claude first" (Codex: ChatGPT) while signed out, else "" (nothing in the way)."""
+    ok = {s["id"]: s["ok"] for s in steps}
+    if ok.get("claude") is False:
+        return say("needs_install", ai=agent.display_name())
+    if ok.get("login") is False:
+        return say("needs_signin", ai="ChatGPT" if agent.name() == "codex" else agent.display_name())
+    return ""
+
+
 def main(detect=False, recheck=False):
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig")) if CONFIG.exists() else {}
     out = {"steps": [], "agent": agent.name()}
@@ -539,8 +550,9 @@ def main(detect=False, recheck=False):
     out["miro_source"] = miro_source or cfg.get("miro_source") or ""
 
     # Sources are pluggable: any ONE of them is enough to be useful
+    first = blocker(out["steps"])   # the AI missing or signed out: that is what to do first, not "connect a source"
     out["steps"].append({"id": "channel", "ok": slack or gmail, "title": "At least one source connected (Slack or Gmail)",
-                         "fix": say("no_source") if not (slack or gmail) else ""})
+                         "fix": (first or say("no_source")) if not (slack or gmail) else ""})
 
     # Who am I on Slack (needed to find your own messages - Slack only)
     sid = cfg.get("slack_self_id") or ""
@@ -561,10 +573,13 @@ def main(detect=False, recheck=False):
             sid = m.group(0)
             cfg["slack_self_id"] = sid
             _save({"slack_self_id": sid})
-    out["steps"].append({"id": "self", "ok": bool(sid), "optional": not slack,
-                         "title": f"Knows who you are on Slack{(' (' + sid + ')') if sid else ''}",
+    # a remembered id is not a tick while the AI is missing or signed out (#49): no job could use it, and the row
+    # would claim Slack works; it says what to do first instead, and comes back by itself once signed in again
+    known = bool(sid) and not first
+    out["steps"].append({"id": "self", "ok": known, "optional": not slack,
+                         "title": f"Knows who you are on Slack{(' (' + sid + ')') if known else ''}",
                          # Slack ticked but no id: the lookup ran (the page always asks with --detect) and failed
-                         "fix": (say("slack_id_unknown") if slack else "Only needed if you connect Slack.") if not sid else ""})
+                         "fix": "" if known else first or (say("slack_id_unknown") if slack else "Only needed if you connect Slack.")})
 
     # Mac only: the weekday morning refresh runs from launchd, and a failure there is otherwise silent (#24).
     # Optional, so a broken schedule never sends a set-up user back to the connection steps.
