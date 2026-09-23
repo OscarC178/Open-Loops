@@ -4,7 +4,7 @@
 :root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f24;--mut:#6b7280;--line:#e5e7eb;--g:#16a34a;--a:#d97706;--r:#dc2626;--b:#2563eb}
 @media(prefers-color-scheme:dark){:root{--bg:#111318;--card:#1a1d24;--ink:#e6e7ea;--mut:#9aa0a8;--line:#2a2f38}}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
-header{display:flex;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
 h1{font-size:18px;margin:0 6px 0 0}header .meta{color:var(--mut);font-size:12px;margin-left:auto}
 .tabs{display:flex;gap:2px}.tabs button{border:none;background:none;padding:6px 12px;border-radius:6px;color:var(--mut)}.tabs button.on{background:var(--bg);color:var(--ink);font-weight:600}
 /* Fitts: every control is at least 36px tall; keyboard users always see where focus is */
@@ -16,7 +16,10 @@ input,select,textarea{min-height:36px}textarea{min-height:0}
 .chip{display:inline-flex;align-items:center;font-size:11px;padding:0 0 0 8px;border-radius:10px;border:1px solid var(--line);color:var(--b);text-decoration:none;margin:3px 4px 0 0;max-width:260px;overflow:hidden;white-space:nowrap;vertical-align:bottom}.chip span{overflow:hidden;text-overflow:ellipsis}
 .chip button{min-height:0;height:22px;width:26px;padding:0;border:0;background:none;color:var(--mut);font-size:14px;line-height:1}.chip button:hover{color:var(--r)}
 /* toasts: every action is acknowledged, undo where it is cheap */
-#toasts{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:30;max-width:min(560px,calc(100vw - 32px))}
+/* a full-width line of the sticky header itself (#50, #52 review): always in view, and it takes its own room, so a
+   toast never lies over a checklist row or the save bar; at most 3 at once (toast()) */
+#toasts{flex-basis:100%;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0}#toasts:empty{display:none}
+#toasts .toast{max-width:min(560px,100%)}
 .toast{background:var(--ink);color:var(--bg);border-radius:8px;padding:10px 14px;font-size:13px;display:flex;gap:12px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .toast.err{background:#7f1d1d;color:#fff}.toast button{min-height:28px;padding:2px 10px;background:transparent;color:inherit;border-color:currentColor;font-size:12px}
 /* one dialog for every "type something" moment: snooze, note, link, closing a vault item */
@@ -74,6 +77,7 @@ details.cfg.danger{border-color:var(--r)}details.cfg>.body>.card:last-child,deta
 select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink)}select.pri.high{color:var(--r);font-weight:600}
 #con{max-height:260px;margin:0 0 12px;user-select:text}
 @media(max-width:720px){.person{grid-template-columns:1fr auto}.person .sum{grid-column:1/-1}.blocks{max-width:none}}
+#st_connect.no_agent_btn .agent_btn_help{display:none}   /* the help never names a button the page has hidden (#50) */
 #savebar{position:sticky;bottom:0;background:var(--card);border-top:1px solid var(--line);margin:8px -24px 0;padding:10px 24px;display:flex;gap:10px;align-items:center;z-index:2}
 /* Set-up (#28): three cards, each with its state and one action; the AI picker is three big targets (Fitts) */
 .su-head{display:flex;align-items:center;gap:12px;margin:0 0 4px}.su-head h3{margin:0;flex:1;font-size:16px}
@@ -95,7 +99,8 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 <button id="uslack" onclick="refresh(true)" title="quick pass: Slack only, skips email" style="display:none">Update Slack</button>
 <span class="pill" id="gmail" style="display:none"></span>
 <span class="pill" id="isolated_pill" style="display:none" title="An isolated test copy: it reads no to-do file and starts no scan by itself">Test copy: no automatic scans</span>
-<span class="meta" id="meta"></span></header>
+<span class="meta" id="meta"></span>
+<div id="toasts" aria-live="polite"></div></header>
 <main>
 <div id="banner"></div>
 <div id="sched_warn" role="alert"></div>
@@ -135,15 +140,15 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 
  <!-- stage: connect -->
  <div id="st_connect" class="box" style="display:none">
-  <h3>1 · Let's get you connected</h3>
-  <div class="sub" style="margin-bottom:10px">Open Loops reads the messages <i>you</i> send on Slack and email, and reminds you when someone hasn't replied. It needs to see those accounts — a one-off. The ticks below update by themselves; you don't need to press anything to refresh them.</div>
+  <h3 id="st_connect_h">1 · Let's get you connected</h3>
+  <div class="sub" style="margin-bottom:10px" id="st_connect_intro">Open Loops reads the messages <i>you</i> send on Slack and email, and reminds you when someone hasn't replied. It needs to see those accounts — a one-off. The ticks below update by themselves; you don't need to press anything to refresh them.</div>
   <div id="setup_steps"></div>
   <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
    <button class="primary" id="agent_btn" onclick="openClaude()">Open Claude</button>
    <button onclick="doctor(true)">Check again</button>
    <span class="sub" id="setup_msg"></span>
   </div>
-  <div class="sub" style="margin-top:10px" id="agent_help">Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens. <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can't do.</div>
+  <div class="sub" style="margin-top:10px" id="agent_help">Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can't do.</span></div>
  </div>
 
  <!-- stage: people -->
@@ -260,7 +265,6 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <button type="button" onclick="dlgClose()">Cancel</button>
   </div>
 </form></dialog>
-<div id="toasts" aria-live="polite"></div>
 <!-- the one step the app cannot do for you: clicking Allow in the browser. Closes by itself once that row goes green (#28) -->
 <dialog id="allow_dlg" aria-labelledby="allow_title"><div class="box" style="padding:16px 18px;margin:0;border:0">
   <h3 id="allow_title"></h3>
@@ -336,8 +340,8 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   <select id="cfg_agent" style="margin:6px 0 0;font:inherit;padding:4px" onchange="agentFormUI(this.value)"><option value="claude">Claude (Claude Code)</option><option value="grok">Grok (Grok CLI)</option><option value="codex">Codex (ChatGPT)</option></select>
   <div id="cfg_model_wrap" style="margin-top:10px">
    <label>Model <select id="cfg_model" style="font:inherit;padding:4px"><option value="sonnet">Sonnet (recommended)</option><option value="haiku">Haiku (cheapest)</option><option value="opus">Opus</option><option value="">Claude Code's default</option></select></label>
-   <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="xhigh">xhigh (recommended with Sonnet)</option><option value="max">max</option><option value="high">high</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
-   <div class="sub" id="cfg_model_note">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
+   <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="high">high (recommended with Sonnet)</option><option value="xhigh">xhigh</option><option value="max">max</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
+   <div class="sub" id="cfg_model_note">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at high or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
   </div>
   <div class="sub" id="cfg_codex_note" style="margin-top:8px;display:none"><b>Before you schedule a daily refresh:</b> Codex runs on your ChatGPT plan, which only allows so much Codex use every 5 hours and every week, shared with ChatGPT's other Codex tools. Every scan, refresh and chase uses some of it. If it runs out, Open Loops can't read anything until it comes back. Gmail and Slack are the ones connected in your ChatGPT account (chatgpt.com/apps), and Miro isn't available with Codex.</div>
   <div class="sub" id="cfg_slack_src" style="margin-top:6px"></div>
@@ -390,7 +394,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <details class="cfg danger" id="cs_app" ontoggle="cfgRemember(this)"><summary><b>App</b><span class="sub">quit · start over</span></summary><div class="body">
  <div class="box">
   <h3>Quit</h3>
-  <div class="sub">Closing this tab stops the app by itself a few seconds later (after any running job). This button does the same without closing the tab. To start again, double-click the Open Loops icon.</div>
+  <div class="sub">Closing this tab stops the app by itself a few seconds later (after any running job). This button does the same without closing the tab. <span id="quit_again">To start again, double-click the Open Loops icon.</span></div>
   <button id="quitbtn" onclick="quitApp()" style="margin-top:6px">Quit Open Loops</button>
  </div>
  <div class="box">
@@ -430,6 +434,8 @@ const PAGE=Math.random().toString(36).slice(2)+Date.now().toString(36);let stopp
 const MSG=/*OL_MESSAGES*/{};
 const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
 function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
+function msgFollow(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_follow&&f&&f.row?' '+fill(m.fix_follow,f):''):''}   // "what" + "follow the <row> row": for a row with no button
+function msgBusy(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_busy?' '+fill(m.fix_busy,f):''):''}   // "what" + "please wait": that row's step is under way
 // A fetch that throws never reached the app (it is not running); an HTTP error did, and carries its status and body.
 const api=async(u,b,signal)=>{let r;try{r=await fetch(u,Object.assign(b?{method:'POST',headers:{'Content-Type':'application/json','X-OL-Page':PAGE},body:JSON.stringify(b)}:{headers:{'X-OL-Page':PAGE}},signal?{signal}:{}))}catch(e){clog('no answer from '+u+': '+e.message);e.offline=true;throw e}
  if(!r.ok){const t=await r.text(),m=u+' -> '+r.status+' '+t.slice(0,300);clog(m);const e=new Error(m);e.status=r.status;try{e.body=JSON.parse(t)}catch(x){}throw e}return r.json()};
@@ -449,7 +455,7 @@ const stamp=(d=new Date())=>{const p=n=>String(n).padStart(2,'0');return `${d.ge
 function clog(msg){const line=stamp()+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);if(CON.length>CON_MAX)CON=CON.slice(-CON_MAX);
  try{localStorage.setItem(CON_KEY,JSON.stringify(CON))}catch(e){}conPaint()}
 function conPaint(){const p=$('#con');if(!p)return;p.textContent=CON.join('\n')||'(nothing yet)';p.scrollTop=p.scrollHeight;
- $('#con_meta').textContent=CON.length?`${CON.length} lines · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
+ $('#con_meta').textContent=CON.length?`${CON.length} line${CON.length===1?'':'s'} · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
 function conClear(){CON=[];try{localStorage.removeItem(CON_KEY)}catch(e){}conPaint();conSay('cleared')}
 function conSay(m){$('#con_msg').textContent=m;setTimeout(()=>{if($('#con_msg').textContent===m)$('#con_msg').textContent=''},4000)}
 function conShow(){const d=cfgShow('console_wrap');if(d)d.scrollIntoView({behavior:'smooth',block:'start'});return false}
@@ -460,9 +466,15 @@ async function conCopy(all){let t=CON.join('\n');
 window.addEventListener('error',e=>clog('script error: '+e.message+' ('+(e.filename||'').split('/').pop()+':'+e.lineno+')'));
 window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e.reason.message)||e.reason)));
 // ---------- feedback: a toast for every action (Doherty), with Undo where it is cheap (Postel) ----------
+const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
 function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
- $('#toasts').appendChild(t);setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
+ // The header grows by the toast; with the page scrolled, the browser's scroll anchoring would keep the rows where they
+ // were, i.e. under the grown header. Off for this one layout, the rows move down with it and stay in view (#52 review).
+ const box=$('#toasts'),de=document.documentElement;de.style.overflowAnchor='none';
+ while(box.children.length>=TOAST_MAX)box.firstElementChild.remove();
+ box.appendChild(t);requestAnimationFrame(()=>requestAnimationFrame(()=>{de.style.overflowAnchor=''}));
+ setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
 // ---------- one dialog for snooze / note / link / vault close ----------
 let dlgOk=null;
 function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textContent=o.sub||'';$('#dlg_err').textContent='';$('#dlg_ok').textContent=o.ok||'OK';$('#dlg_ok').disabled=false;
@@ -504,18 +516,18 @@ function agentUI(){if(!$('#agent_btn'))return;
  if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=grok?'':'none';
  $('#agent_help').innerHTML=grok
   ?((C&&C.use_slack)
-    ?'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.'
-    :'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.')
+    ?'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.</span>'
+    :'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.</span>')
   :(C&&C.agent)==='codex'
-  ?'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens. <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.'
-  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens. <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can\'t do.';}
+  ?'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.</span>'
+  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can\'t do.</span>';}
 // Model and effort per AI. Claude keeps "model" / "effort", Codex has "codex_model" / "codex_effort" (agent.py), so
 // switching AI never hands one CLI the other's model. Grok takes neither.
 const MODELS={
- claude:{keys:['model','effort'],def:['sonnet','xhigh'],
+ claude:{keys:['model','effort'],def:['sonnet','high'],
   model:[['sonnet','Sonnet (recommended)'],['haiku','Haiku (cheapest)'],['opus','Opus'],['',"Claude Code's default"]],
-  effort:[['xhigh','xhigh (recommended with Sonnet)'],['max','max'],['high','high'],['medium','medium (recommended with Opus)'],['low','low'],['',"Claude Code's default"]],
-  note:'Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code\'s default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.'},
+  effort:[['high','high (recommended with Sonnet)'],['xhigh','xhigh'],['max','max'],['medium','medium (recommended with Opus)'],['low','low'],['',"Claude Code's default"]],
+  note:'Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at high or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code\'s default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.'},
  codex:{keys:['codex_model','codex_effort'],def:['gpt-5.6-sol','low'],
   model:[['gpt-5.6-sol','GPT-5.6 Sol (recommended)'],['gpt-6-astra','GPT-6 Astra'],['',"Codex's default"]],
   effort:[['low','low (recommended)'],['medium','medium'],['high','high'],['xhigh','xhigh'],['',"Codex's default"]],
@@ -569,19 +581,34 @@ async function notNow(){if(choiceBusy)return;if(!await saveChoice('later')){pain
  goRemember('later');clog('first scan: not now');tick()}
 function retryChoice(){return choiceFailed==='later'?notNow():startScan()}
 function paintStart(){$('#st_start').style.display='';$('#start_said').textContent=msg('first_scan',{days:histDays(),sources:scanSources()});
- $('#start_ask').textContent=msg('first_scan_ask');$('#start_retry').style.display=choiceFailed?'':'none';
+ $('#start_ask').textContent=srcOk('slack')?msg('first_scan_ask_slack'):msg('first_scan_ask');$('#start_retry').style.display=choiceFailed?'':'none';   // the Slack-id check ran only with Slack connected
  $('#start_msg').textContent=choiceFailed?msg('first_scan_not_saved'):GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
 const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone'],['scan','First scan'],['ready','Ready']];
+// Setup finished once (setup_done) and the checklist is back (a sign-out, a source that stopped answering): not setup
+// starting over, so no "1 · Connect, 2 · Who's who…" bar, and one line on top of the checklist says so (#50).
+const setupDone=()=>!!(S&&S.setup_done);
+// The instruction comes from the row that needs it: its own button's label when it has one (setupBtn, as connectBtn
+// draws it), otherwise "follow the <row> row" (Grok's Open Grok, a Codex keyring sign-in, no installer here).
+function paintSetupDone(){const h=$('#st_connect_h'),intro=$('#st_connect_intro');if(!h)return;if(h.dataset.first===undefined)h.dataset.first=h.textContent;
+ const done=setupDone(),steps=(DOC&&DOC.steps)||[],row=id=>steps.find(x=>x.id===id),inst=row('claude'),login=row('login');
+ const bad=(inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.connect||x.alert)))||null;
+ if(done&&!bad){h.textContent='';h.style.display='none';if(intro)intro.style.display='none';return}   // set up and nothing failing: no line at all (#52 review)
+ h.style.display='';if(!bad){h.textContent=h.dataset.first;if(intro)intro.style.display='';return}   // not set up yet: the plain heading
+ const id=bad===inst?'setup_done_install':bad===login?'setup_done_signin':'setup_done_other';
+ const f={ai:bad===login&&(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),button:setupBtn(bad),row:bad.title||''};
+ const busy=!!(bad.connect&&CONN[bad.connect]&&CONN[bad.connect].busy);   // its button is a spinner now: nothing to press
+ h.textContent=!done?h.dataset.first:busy?msgBusy(id,f):f.button?msg(id,f):msgFollow(id,f);
+ if(intro)intro.style.display=done?'none':''}
 async function tick(){
  const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step
- $('#steps').innerHTML=st==='ready'?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
+ $('#steps').innerHTML=st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
  for(const k of ['connect','checkfail','people','auto','start'])$('#st_'+k).style.display='none';
  if(st!==lastStage)clog('stage: '+st);
  // Hick / Prägnanz: while setting up, the page is the setup - the lists, Day log and Roadmap wait until "ready"
  $('#lists').style.display=st==='ready'?'':'none';
- if(lastStage&&!['ready','checking','checkfail'].includes(lastStage)&&st==='ready'&&!schedBad())toast(`All set. Open Loops now refreshes itself every weekday morning at ${(C&&C.refresh_time)||'09:15'}; press Refresh any time for a fresh pass.`,{ms:10000});
+ if(lastStage&&!['ready','checking','checkfail'].includes(lastStage)&&st==='ready'&&!schedBad()&&!setupDone())toast(`All set. Open Loops now refreshes itself every weekday morning at ${(C&&C.refresh_time)||'09:15'}; press Refresh any time for a fresh pass.`,{ms:10000});
  lastStage=st;
  if(st==='connect')paintConnect();
  else if(st==='checkfail'){$('#st_checkfail').style.display='';$('#checkfail_said').textContent=msg('check_failed');$('#checkfail_msg').textContent=docFails>1?`tried ${docFails} times`:''}
@@ -594,7 +621,7 @@ function paintConnect(){$('#st_connect').style.display='';
  const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
  $('#setup_steps').innerHTML=DOC.steps.map(s=>checkRow(s,s.connect===first)).join('')}
 // One checklist row: tick or cross, the title, and while red its sentence and button. The Set-up cards use it too (#28).
-const checkRow=(s,primary)=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
+const checkRow=(s,primary)=>`<div class="row" style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
 
 // ---------- Setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
 // and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.
@@ -608,6 +635,7 @@ const pageStep=step=>(C&&C.agent)==='codex'&&!!SRC_NAME[step];   // Codex: Gmail
 const CONN={};   // step -> {busy, url, msg, agent, command}: kept here because the rows are repainted on every tick
 const AI_NAME={claude:'Claude',grok:'Grok',codex:'Codex'},aiName=a=>AI_NAME[a]||String(a||'the AI');   // the install names its AI from the row, never from cached settings
 const repaint=()=>{if(DOC&&stage()==='connect')paintConnect();if(DOC)paintSetup(stage())};   // never bring the checklist back once the page has moved on
+function setupBtn(s){return !s||!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect]?'':s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect]}   // the label connectBtn gives a row's button, '' when it draws none
 function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
  const shown=c.busy&&c.command?c.command:s.command;   // while it runs: the command the app captured for this run, not what the row says now
  // shown before the press (nothing runs unseen), folded away: a non-technical user needs the button, not the shell (#25)
@@ -664,7 +692,9 @@ setInterval(checkSchedule,60000);
 // function); rows are painted in DOC.steps order, so row i is step i.
 const paintConnectBase=paintConnect;
 paintConnect=function(){paintConnectBase();const rows=$('#setup_steps').children;
- const inst=DOC.steps.find(x=>x.id==='claude');$('#agent_btn').style.display=inst&&!inst.ok?'none':'';   // it would only say "command not found"
+ const inst=DOC.steps.find(x=>x.id==='claude'),noBtn=!!(inst&&!inst.ok);$('#agent_btn').style.display=noBtn?'none':'';   // it would only say "command not found"
+ $('#st_connect').classList.toggle('no_agent_btn',noBtn);   // ...and the help paragraph's sentence about it goes too (#50)
+ paintSetupDone();
  DOC.steps.forEach((s,i)=>{if(s.ok||!s.link||!rows[i])return;const b=document.createElement('button');b.textContent='Open the download page';b.style.marginTop='6px';
   b.onclick=()=>window.open(s.link,'_blank','noopener');(rows[i].lastElementChild||rows[i]).append(b)})};
 
@@ -708,7 +738,8 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  $('#lists').style.display='none';$('#gmail_later').style.display='none';   // while Set-up is up, it is the page
  if(!aiPending())paintConnect();   // Every check: the whole checklist, from this check, at every stage the view is up (not only while connecting)
  // Setup was done once and something needs fixing again: the checklist heading's one line (#52 writes it) goes on top
- const hh=$('#st_connect h3'),fix=S&&S.setup_done&&hh&&hh.dataset&&hh.dataset.first!==undefined&&hh.textContent!==hh.dataset.first?hh.textContent:'';
+ paintSetupDone();   // the line follows the checks now: a connection that recovered takes it away
+ const hh=$('#st_connect_h'),fix=S&&S.setup_done&&hh&&hh.dataset&&hh.dataset.first!==undefined&&hh.textContent!==hh.dataset.first?hh.textContent:'';
  $('#su_repair').textContent=fix;$('#su_repair').style.display=fix?'':'none';$('#su_intro').style.display=fix?'none':'';
  $('#setup_back').style.display=SETUP_OPEN&&!setupFirstRun(st)?'':'none';
  if(SETUP_OPEN&&!['connect','checking','checkfail'].includes(st)&&Date.now()-docAt>60000&&!suDoc){   // past setup nothing else re-checks
@@ -1145,7 +1176,10 @@ window.addEventListener('pagehide',()=>{if(stopped)return;const b=new Blob([JSON
 window.addEventListener('pageshow',e=>{if(e.persisted&&!stopped)fetch('/',{cache:'no-store'}).then(r=>{if(r.ok)location.reload();else loop()},()=>loop())});   // back/forward cache restore: say hello again before the grace runs out
 async function quitApp(){const b=$('#quitbtn');b.disabled=true;try{const r=await api('/api/quit',{});stopped=true;clearTimeout(loopT);
   const after=r.after_jobs&&r.after_jobs.length?' once the running '+r.after_jobs.join(', ')+' job finishes':'';
-  banner('Open Loops is stopping'+after+'. You can close this tab; double-click the Open Loops icon to start it again.')}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
+  banner('Open Loops is stopping'+after+'. You can close this tab. '+restartSaid())}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
+// How to start it again, as the offline banner says it: the icon on an install, the command on a test copy (#50)
+function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)||'To start again, double-click the Open Loops icon.'}
+$('#quit_again').textContent=restartSaid();
 setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a)allowFocus(a.step)});
 cfgRestore();
 // the to-do file example, as a path on this computer looks; and a name for the AI picker, which has no <label> of its own

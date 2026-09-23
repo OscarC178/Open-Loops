@@ -247,7 +247,9 @@ Manual equivalents, for support: `python -m openloops.doctor`, `python -m openlo
 
 ### Testing a fresh install
 
-To try the installer as a new user would, next to the copy you use every day and without touching it:
+To try the installer as a new user would, next to the copy you use every day and without touching it (8790 is only
+an example: any free port from 1024 to 65535 outside 8765–8784 will do; give each test copy its own and use the same
+number in the commands below):
 
 ```bash
 bash install.sh --dest ~/OpenLoops-test --isolated --port 8790 --name "Test"
@@ -266,7 +268,8 @@ its Settings is read, and written back when you press *done*.
   `config.json`;
 - no to-do file is read or written back, whatever `standing_file` / `vault_path` say;
 - the page never starts *Who's who*, *Learn my tone* or the first scan by itself, not even after a reload: each
-  page load waits for **Start the first scan** (the button still works, and so do **Refresh** / **Update Slack**);
+  page load waits for **Start the first scan** (the button still works, and so does **Update Slack** once Slack is
+  connected; **Refresh** only appears after the first scan);
 - the header shows a grey **Test copy: no automatic scans** pill;
 - the weekday refresh and auto-chase skip on it even if a scheduled job points at it, and `--isolated` removes that
   copy's own weekday job if it has one (a job for another copy is left alone);
@@ -284,8 +287,9 @@ bash install.sh --dest ~/OpenLoops-test --isolated --no-launch --port 8790 --nam
 cd ~/OpenLoops-test && python3 -m openloops.app --no-browser &   # answers on 8790
 ```
 
-Opening its page then runs only the connection checklist; nothing is scanned until you press **Start the first
-scan**, **Refresh** or **Update Slack**. Stop it with `python3 -m openloops.app --stop --port 8790`.
+Opening its page then runs only the connection checklist, which with Slack connected makes one quick call to find
+your Slack id; nothing is scanned until you press **Start the first scan** or **Update Slack** (**Refresh** appears
+once the first scan has run). Stop it with `python3 -m openloops.app --stop --port 8790`.
 
 The other flags:
 
@@ -297,9 +301,11 @@ The other flags:
 - `--port N` saves the port in the test copy's `config.json`, so it never competes with the installed copy on 8765.
   `app.py` takes `--port`, then `OPENLOOPS_PORT`, then `config.json` `port`, then 8765.
 - `--dest` together with `--no-app` and `--no-task` marks the copy as a test copy: `"test_copy": true` in its
-  `config.json` (Windows: `setup.ps1 -Dest … -NoApp -NoTask`). A test copy's morning-refresh row is grey and does not
-  tell you to download the installer, because the installer would update your everyday copy, not this one. Running
-  the installer on that folder again without those flags removes the mark.
+  `config.json` (Windows: `setup.ps1 -Dest … -NoApp -NoTask`). A test copy has no weekday refresh of its own, so its
+  checklist shows no morning-refresh row at all; if a scheduled refresh ever did fail for it, the row is grey and does
+  not tell you to download the installer, because the installer would update your everyday copy, not this one. Its
+  "Open Loops isn't running" banner says to start it again with `python3 -m openloops.app` in its folder, as it has no
+  icon. Running the installer on that folder again without those flags removes the mark.
 - `--no-launch` also skips starting it at the end.
 - `--isolated`, above.
 
@@ -443,8 +449,12 @@ state/logs/       one log per run
 5. **OneDrive / Dropbox folders** lock files while syncing. Install to the default `%LOCALAPPDATA%\OpenLoops`, not a
    synced folder.
 6. **Which model the jobs use.** Every job runs `claude -p` with `--model` and `--effort` from `model` and
-   `effort` in `config.json` (template: `sonnet` at `xhigh`; Settings → Preferences → Your AI). Sonnet at xhigh or Opus at medium
-   both do the job. Leave either blank and the jobs inherit whatever `claude` defaults to on that computer, which
+   `effort` in `config.json` (template: `sonnet` at `high`; Settings → Preferences → Your AI). Sonnet at high or Opus at medium
+   both do the job; each run counts against your Claude plan's allowance (an API-key sign-in is billed per run
+   instead), and `xhigh` uses much more of it even for a one-line answer (#50). The job logs' `usage ≈ $X at API
+   rates` is that equivalent, not a charge, on a Claude plan. The two small lookups, the
+   connection check's Slack lookup and *Who's who*, always run at `low`, whatever `effort` says. Leave either blank and
+   the jobs inherit whatever `claude` defaults to on that computer, which
    is usually the most expensive model available. Grok ignores both. Codex has its own pair, `codex_model` and
    `codex_effort` (template `gpt-5.6-sol` at `low`), so switching AI never hands Codex a Claude model name.
 7. **Jobs never clobber your clicks.** A refresh can run for minutes; anything you add or snooze meanwhile is kept

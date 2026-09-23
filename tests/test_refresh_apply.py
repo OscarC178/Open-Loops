@@ -337,4 +337,96 @@ check(not refresh.in_scope({"channel": "email", "status": "waiting"}, True, rece
 check(not refresh.in_scope({"channel": "note", "status": "needs_me", "manual": True}, False, recent), "typed note never goes to the agent")
 check(refresh.in_scope({"channel": "email", "status": "done", "closed_at": "2026-09-14T09:00"}, False, recent), "recently closed loop is re-checked")
 check(not refresh.in_scope({"channel": "email", "status": "done", "closed_at": "2026-08-01T09:00"}, False, recent), "old closed loop is not")
+
+# --- #51: a naive (timezone-less) or unreadable cursor never crashes the refresh
+import contextlib, io, json, os, shutil, subprocess  # noqa: E401,E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+aware = refresh.parse_when("2026-09-01T09:00+01:00")
+check(aware.utcoffset() == timedelta(hours=1) and aware.hour == 9, "parse_when: an aware cursor stays as it is")
+naive = refresh.parse_when("2026-09-01T09:00")
+check(naive.tzinfo is not None and naive.replace(tzinfo=None) == datetime(2026, 9, 1, 9, 0),
+      "parse_when: a naive cursor is taken as local time and comes back aware")
+check(min(naive, aware) in (naive, aware), "...so it compares with an aware one (was: TypeError)")
+fixed = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+for missing in (None, ""):
+    check(refresh.parse_when(missing, now=fixed, days=30) == fixed - timedelta(days=30),
+          f"parse_when({missing!r}): no cursor yet (a fresh state.json) reads back Settings > History, as before")
+for junk in ("yesterday", 12345, "2026-13-45"):
+    try:
+        refresh.parse_when(junk, now=fixed, days=30)
+        raised = False
+    except refresh.CursorUnreadable:
+        raised = True
+    check(raised, f"parse_when({junk!r}): a stored cursor that is not a date refuses (CursorUnreadable), never guesses a window")
+check(refresh.messages.say("cursor_unreadable") == "Open Loops can't read when it last checked. Press Start over in Settings, or fix state.json.",
+      "...with this plain sentence (messages.py)")
+check(refresh.messages.job_failure("refresh", 1, "x", failure={"failure": "cursor_unreadable"})
+      == ("cursor_unreadable", refresh.messages.say("cursor_unreadable")), "the page's toast shows that sentence, not 'didn't finish'")
+mixed = {"cursor": "2026-09-01T09:00", "slack_cursor": "2026-09-10T12:00+01:00", "gmail_cursor": "2026-08-20T09:00", "loops": []}
+p, _ = refresh.build_prompt(mixed, slack_only=False, slack_on=True)
+check('"in:sent after:2026/08/19"' in p and "after:2026-09-09" in p, "build_prompt: naive gmail_cursor + aware slack_cursor, no TypeError, dates unchanged")
+
+# end to end: `python -m openloops.refresh` on a state.json whose cursors are naive, against a fake claude (not Windows:
+# the fake is a #! script)
+if sys.platform != "win32":
+    from _helpers import fresh_install  # noqa: E402
+    e2e = fresh_install("openloops-naive-cursor-")
+    try:
+        (e2e / "bin").mkdir()
+        fake = e2e / "bin" / "claude"
+        block = json.dumps({"new_loops": [], "updates": [], "gmail_available": True, "slack_available": True})
+        fake.write_text(f"#!{sys.executable}\nimport json\nprint(json.dumps({{'type': 'result', 'subtype': 'success', "
+                        f"'is_error': False, 'result': '<<<OPENLOOPS>>>' + {block!r} + '<<<END>>>'}}))\n", encoding="utf-8")
+        fake.chmod(0o755)
+        cj = json.loads((e2e / "config.json").read_text(encoding="utf-8-sig"))
+        (e2e / "config.json").write_text(json.dumps(dict(cj, slack_self_id="U0TESTSELF0")), encoding="utf-8")   # Slack on
+        # a naive gmail_cursor beside an aware slack_cursor: the headline min() compared the two and raised TypeError
+        (e2e / "state.json").write_text(json.dumps({"cursor": "2026-09-01T09:00", "gmail_cursor": "2026-09-01T09:00",
+                                                    "slack_cursor": "2026-09-02T09:00+01:00", "last_refresh": "2026-09-01T09:00",
+                                                    "loops": []}), encoding="utf-8")
+        env = dict(os.environ, HOME=str(e2e / "home"), USERPROFILE=str(e2e / "home"), PATH=f"{e2e / 'bin'}:/usr/bin:/bin",
+                   OPENLOOPS_RUN_ID="0123456789abcdef0123456789abcdef")
+        env.pop("OPENLOOPS_ISOLATED", None)
+        r = subprocess.run([sys.executable, "-m", "openloops.refresh"], cwd=str(e2e), env=env, capture_output=True,
+                           text=True, timeout=60)
+        st = json.loads((e2e / "state.json").read_text(encoding="utf-8"))
+        check(r.returncode == 0 and "TypeError" not in r.stderr and datetime.fromisoformat(st["cursor"]).tzinfo is not None,
+              f"refresh with naive cursors in state.json runs and writes an aware cursor (rc {r.returncode}: {r.stderr.strip()[-300:]})")
+    finally:
+        shutil.rmtree(e2e, ignore_errors=True)
+
+# #52 review: the duplicate a guessed window made. An email loop closed ten days ago is outside the five days of
+# closed loops the prompt lists; with a corrupt cursor the old fallback read back 30 days, the AI found the same ask
+# again under another slug, and it came back as a new waiting loop. Now the refresh refuses before any AI run.
+if sys.platform != "win32":
+    e2e = fresh_install("openloops-bad-cursor-")
+    try:
+        (e2e / "bin").mkdir()
+        fake = e2e / "bin" / "claude"
+        again = json.dumps({"new_loops": [{"id": "ana-invoice-again", "owner": "Ana", "ask": "send the invoice", "channel": "email",
+                                           "thread": "Invoice", "link": "https://mail.google.com/x", "asked_at": "2026-09-10T09:00+01:00",
+                                           "status": "waiting"}], "updates": [], "gmail_available": True, "slack_available": True})
+        fake.write_text(f"#!{sys.executable}\nimport json, os\nopen(os.path.join(os.path.dirname(__file__), 'asked'), 'w').write('yes')\n"
+                        f"print(json.dumps({{'type': 'result', 'subtype': 'success', 'is_error': False, "
+                        f"'result': '<<<OPENLOOPS>>>' + {again!r} + '<<<END>>>'}}))\n", encoding="utf-8")
+        fake.chmod(0o755)
+        closed = (datetime.now().astimezone() - timedelta(days=10)).isoformat(timespec="minutes")
+        before = {"cursor": "not-a-date", "last_refresh": closed, "loops": [
+            {"id": "ana-invoice", "owner": "Ana", "ask": "send the invoice", "channel": "email", "thread": "Invoice",
+             "status": "done", "closed_at": closed, "asked_at": "2026-09-10T09:00+01:00"}]}
+        (e2e / "state.json").write_text(json.dumps(before), encoding="utf-8")
+        rid = "0123456789abcdef0123456789abcdef"
+        env = dict(os.environ, HOME=str(e2e / "home"), USERPROFILE=str(e2e / "home"), PATH=f"{e2e / 'bin'}:/usr/bin:/bin",
+                   OPENLOOPS_RUN_ID=rid)
+        env.pop("OPENLOOPS_ISOLATED", None)
+        r = subprocess.run([sys.executable, "-m", "openloops.refresh"], cwd=str(e2e), env=env, capture_output=True, text=True, timeout=60)
+        after = json.loads((e2e / "state.json").read_text(encoding="utf-8"))
+        rec = json.loads((e2e / "state" / "jobs" / f"refresh.{rid}.failure.json").read_text(encoding="utf-8"))
+        check(r.returncode == 1 and refresh.messages.say("cursor_unreadable") in r.stdout and "Traceback" not in r.stderr,
+              f"corrupt cursor: the refresh refuses with the plain sentence, exit 1 (rc {r.returncode}: {r.stdout.strip()[-200:]} {r.stderr.strip()[-200:]})")
+        check(not (e2e / "bin" / "asked").exists() and after == before,
+              "...before asking the AI anything: the loop closed ten days ago is not brought back as a new one, state.json untouched")
+        check(rec["failure"] == "cursor_unreadable" and rec["run_id"] == rid, "...and records why, so the page says that sentence")
+    finally:
+        shutil.rmtree(e2e, ignore_errors=True)
 say("ALL OK")

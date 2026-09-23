@@ -44,10 +44,10 @@ US = ("color", "authoriz", "cancele", "recogniz", "organiz", "behavior", "center
 BUTTONS = set(agent.CONNECT_STEPS) | {agent.INSTALL_STEP}
 check(len(FAILURES) >= 40, f"the inventory is there ({len(FAILURES)} entries)")
 for fid, m in FAILURES.items():
-    check(set(m) <= {"what", "fix", "fix_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
+    check(set(m) <= {"what", "fix", "fix_win", "fix_follow", "fix_busy", "fix_test", "fix_test_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
           f"{fid}: has a non-empty what and fix")
     check(m.get("button") is None or m["button"] in BUTTONS, f"{fid}: button is a real checklist step or none")
-    for part in ("what", "fix", "fix_win"):
+    for part in ("what", "fix", "fix_win", "fix_follow", "fix_busy", "fix_test", "fix_test_win"):
         text = m.get(part)
         if not text:
             continue
@@ -107,11 +107,14 @@ for m in re.finditer(r"""\bmsg\('([a-z_]+)'(?:,\{([^}]*)\})?\)""", page_src):
     line_no = page_src.count("\n", 0, m.start()) + 1
     calls.append(({m.group(1)}, set(re.findall(r"(\w+)\s*(?::|,|$)", m.group(2) or "")), f"index.html:{line_no}"))
 from openloops import app  # noqa: E402  (importing app writes config/state into the throwaway install only)
+src_app_ = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
 # ids reached through tables rather than a literal call, and what their callers fill in
 TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entries below say what these are filled with
           **{i: {"ai", "limit", "vendor"} for i in app.INSTALL_WHY.values()},
           **{i: {"job", "ai"} for i, _ in messages.AI_SIGNS}, "job_failed": {"job"}, "job_start_failed": {"job", "job_lower"},
-          **{i: {"store", "limit"} for i in messages.CODEX_JOB_IDS}}   # agent.py .format(store=, limit=)
+          **{i: {"store", "limit"} for i in messages.CODEX_JOB_IDS},   # agent.py .format(store=, limit=)
+          # index.html paintSetupDone() picks one of these by the row that needs attention, with {ai, button, row}
+          **{i: {"ai", "button", "row"} for i in ("setup_done_signin", "setup_done_install", "setup_done_other")}}
 for i, keys in TABLES.items():
     asked.add(i)
     calls.append(({i}, keys, f"table:{i}"))
@@ -125,13 +128,14 @@ check(not unused, f"every FAILURES entry is used somewhere (unused: {unused})")
 # Render every entry as its callers do, with realistic values, and scan what a person would actually read
 SAMPLE = {"ai": "Claude", "vendor": "Anthropic", "tools": "curl", "email": "sam@example.com", "service": "Slack",
           "party": "Google", "limit": "10 minutes", "job": "The refresh", "job_lower": "the refresh", "port": "8791",
-          "store": "the Mac keychain", "days": "30", "sources": "Slack and Gmail"}
+          "store": "the Mac keychain", "days": "30", "sources": "Slack and Gmail",
+          "button": "Sign in", "row": "Signed in to Grok"}
 import string as _string  # noqa: E402
 
 
 def holes_of(fid):
     m = FAILURES[fid]
-    return {f for part_ in ("what", "fix", "fix_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
+    return {f for part_ in ("what", "fix", "fix_win", "fix_follow", "fix_busy", "fix_test", "fix_test_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
 
 
 def short_calls(cs):
@@ -169,9 +173,27 @@ check(say("install_timeout", ai="Claude", limit="10 minutes") ==
 check(say("install_timeout", ai="Claude").startswith("The install took longer than {limit}"), "an unfilled placeholder stays as it is")
 check(say("server_offline", win=False).endswith("on your Desktop or in Applications.")
       and say("server_offline", win=True).endswith("on your Desktop or in the Start menu."), "server_offline: Mac and Windows wording")
+# #50: a test copy (no Desktop or Applications icon) is told the command that starts it, per platform
+check(messages.part("server_offline", "fix", win=False, test=True) == "Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder."
+      and messages.part("server_offline", "fix", win=True, test=True) == "Start it again by typing python -m openloops.app in PowerShell, in this copy's folder."
+      and messages.part("server_error", "fix", win=False, test=True) == messages.part("server_error", "fix", win=False),
+      "server_offline on a test copy names the command (Mac: python3 in Terminal; Windows: python in PowerShell); other entries unchanged")
+tp = messages.for_page(win=False, test=True)
+check(tp["server_offline"]["fix"].startswith("Start it again by typing python3") and "icon" not in tp["server_offline"]["fix"]
+      and {k: v for k, v in tp.items() if k != "server_offline"} == {k: v for k, v in messages.for_page(win=False).items() if k != "server_offline"},
+      "for_page(test=True): only the 'not running' fix changes")
+check(say("setup_done_signin", ai="Claude", button="Sign in") == "Setup is done; Claude just needs signing in again. Press Sign in below.",
+      "after setup, a sign-out says setup is done and what to press (#50)")
+# #50, from the #48 fresh-install test
+check(say("first_scan_ask_slack").endswith("nothing runs until you do, apart from a quick check of who you are on Slack.")
+      and say("first_scan_ask").endswith("nothing runs until you do.") and "Slack" not in messages.part("first_scan_ask", "fix")
+      and "srcOk('slack')?msg('first_scan_ask_slack'):msg('first_scan_ask')" in (REPO / "openloops" / "index.html").read_text(encoding="utf-8"),
+      "the first-scan box owns up to the one Slack-id lookup only when Slack is connected (no Slack: no Slack sentence)")
+check(say("first_scan_later").startswith("Not started; Open Loops remembers that"), "after Not now the box says the choice is remembered")
 page = messages.for_page(win=True)
 check(page["server_offline"]["fix"].endswith("Start menu.") and set(page) == set(FAILURES)
-      and all(set(v) == {"what", "fix", "button", "recheck"} for v in page.values()), "for_page(): the whole table, fix chosen for the platform")
+      and all({"what", "fix", "button", "recheck"} <= set(v) <= {"what", "fix", "button", "recheck", "fix_follow", "fix_busy"} for v in page.values())
+      and page["setup_done_signin"]["fix_follow"] == "Follow the ‘{row}’ row below.", "for_page(): the whole table, fix chosen for the platform")
 needs_list = sorted(k for k, v in FAILURES.items() if (k.startswith("job_") or k in messages.CODEX_JOB_IDS)
                     and ("connection checklist" in v["fix"] or v.get("button") == "login" or k in ("codex_keyring", "codex_link")))
 check(needs_list == sorted(messages.RECHECK_AFTER_JOB) and all(page[k]["recheck"] for k in needs_list),
@@ -254,6 +276,10 @@ check(agent.CODEX_REFUSE["unlisted"] == say("codex_unlisted") and "{store}" in a
 check("OPENLOOPS_FAILURE" not in "".join(SOURCES[f] for f in SOURCES if f.endswith(".py")) + "".join(
       (REPO / "openloops" / f).read_text(encoding="utf-8") for f in ("people.py", "voice.py")), "no stdout failure protocol is left")
 
+check(app._ended("refresh_slack", 1, "x", ai="Claude", failure={"failure": "job_signed_out"})["said"].startswith("The Slack update stopped because Claude")
+      and app._ended("refresh_slack", 1, "x")["said"].startswith("The Slack update didn't finish.")
+      and 'said_as = "refresh_slack" if name == "refresh" and "--slack-only" in (extra or []) else name' in src_app_,
+      "a failed Update Slack is named as the button pressed: 'The Slack update stopped…', not 'The refresh…' (#50)")
 e = app._ended("refresh", 1, "x", ai="Claude", failure={"failure": "job_signed_out", "ai": "Claude"})
 check(e["failure"] == "job_signed_out" and e["said"].startswith("The refresh stopped because Claude") and e["rc"] == 1,
       "app: a failed job carries its failure id and sentence for the page")
@@ -385,6 +411,19 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 m = re.search(r"^const MSG=(.*);$", html, re.M)
 check(m and "/*OL_MESSAGES*/" not in html, "the app fills in the page's failure table as it serves it")
+# #50: the table is per install: a test copy's page names the command that starts it, not the icon it does not have
+for how, conf, extra in (("test_copy", {"test_copy": True}, {}), ("isolated (env)", {}, {"OPENLOOPS_ISOLATED": "1"})):
+    tc = fresh_install("openloops-messages-tc-", conf)
+    srv_tc = None
+    try:
+        srv_tc, port_tc = start_app(tc, isolated_env(tc, BROWSER="true", **extra))
+        with urllib.request.urlopen(f"http://127.0.0.1:{port_tc}/", timeout=10) as r:
+            tc_msg = json.loads(re.search(r"^const MSG=(.*);$", r.read().decode("utf-8"), re.M).group(1))
+    finally:
+        stop(srv_tc)
+        shutil.rmtree(tc, ignore_errors=True)
+    check(tc_msg == messages.for_page(sys.platform == "win32", test=True) and "openloops.app" in tc_msg["server_offline"]["fix"],
+          f"{how}: the served table says to start it with python -m openloops.app in its folder")
 served = json.loads(m.group(1))
 check(cache == "no-store", "the page is served with Cache-Control: no-store, so a cached copy never keeps old wording")
 check(served == messages.for_page(sys.platform == "win32"), "...with exactly messages.for_page() for this platform")
@@ -411,6 +450,91 @@ check("'▫️'" not in html and "'⬜'" not in html and "!s.optional||s.connect
 check("02-Research" not in html and "C:\\\\Users\\\\you\\\\Documents\\\\to-do.md" in html and "/Users/you/Documents/to-do.md" in html,
       "the to-do file example is per platform and names no developer folder")
 check("black window" not in html.split("id=\"agent_help\"")[1].split("</div>")[0], "Home copy no longer promises a black window with /mcp")
+# #50 wording round 2
+check(html.count("<b>Open Claude (advanced)</b>") == 2 and html.count('<span class="agent_btn_help"> <b>Open Claude (advanced)</b>') == 2
+      and '<span class="agent_btn_help"> <b>Open Codex (advanced)</b>' in html and html.count('<span class="agent_btn_help"><b>Open Grok</b>') == 2
+      and "#st_connect.no_agent_btn .agent_btn_help{display:none}" in html
+      and "$('#st_connect').classList.toggle('no_agent_btn',noBtn)" in html,
+      "the help paragraph's 'Open <AI>' sentence is hidden whenever that button is (the AI not installed)")
+check("${CON.length} lines" not in html and "${CON.length} line${CON.length===1?'':'s'}" in html, "Console: '1 line', not '1 lines'")
+check(re.search(r'<header>.*<div id="toasts" aria-live="polite"></div></header>', html, re.S)
+      and "#toasts{flex-basis:100%" in html and "position:" not in html.split("#toasts{")[1].split("}")[0]
+      and "while(box.children.length>=TOAST_MAX)box.firstElementChild.remove()" in html and "const TOAST_MAX=3;" in html,
+      "toasts are a full-width line of the sticky header (in the flow, not over the page), at most 3 at once")
+check("double-click the Open Loops icon to start it again" not in html and "$('#quit_again').textContent=restartSaid();" in html
+      and "You can close this tab. '+restartSaid())" in html and "function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)" in html,
+      "Settings > Quit says how to start again as the offline banner does (the command on a test copy, #50)")
+check("<b>${esc(s.title)}</b>" in html, "a checklist row's title is escaped (it can hold a Slack display name)")
+check("st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
+      "after setup, a sign-out brings back no numbered setup bar and no second 'All set' toast")
+
+# #52 review: toasts never lie over a checklist row, at 400 px and at 1280 px, even with more arriving than the cap.
+# Layout needs a real browser: headless Chrome renders the served page from a file (the app is not needed: the check
+# paints the checklist itself), then measures every .row against every toast.
+import pwd  # noqa: E402
+def find_chrome():
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir) if hasattr(os, "getuid") else Path.home()   # HOME is a temp folder here
+    names = [os.environ.get("CHROME_BIN") or ""] + [shutil.which(n) or "" for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")]
+    names += ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"]
+    names += [str(x) for x in sorted((home / ".agent-browser" / "browsers").glob("**/Google Chrome for Testing"))]
+    return next((n for n in names if n and Path(n).is_file() and os.access(n, os.X_OK)), "")
+chrome = find_chrome()
+if not chrome:
+    show("SKIP the toast layout check: no Chrome or Chromium found (set CHROME_BIN)")
+else:
+    LAYOUT = r"""<script>
+window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=true;clearTimeout(loopT);banner('');
+ C={agent:'claude'};S={setup_done:true};$('#steps').innerHTML='';   // after setup: no intro, no bar, the rows start high up
+ DOC={all_ok:false,steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:false,title:'Signed in to Claude',fix:MSG.signin_needed.what+' '+MSG.signin_needed.fix,connect:'login'},
+  {id:'slack',ok:false,optional:true,title:'Slack connected (optional)',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected (optional)',fix:'Sign in to Claude first (the row above).'},
+  {id:'channel',ok:false,title:'At least one source connected (Slack or Gmail)',fix:'Sign in to Claude first (the row above).'},{id:'self',ok:false,optional:true,title:'Knows who you are on Slack',fix:'Sign in to Claude first (the row above).'}]};
+ // the set-up page as #28 builds it: its cards (checkRow rows) and, opened, "Every check" holding the whole checklist
+ document.querySelectorAll('#page_home>div').forEach(e=>{if(e.id!=='setup'&&e.id!=='steps')e.style.display='none'});
+ try{paintSetup('connect')}catch(e){r.setupErr=String(e)}$('#setup').style.display='';$('#su_all').open=true;$('#st_connect').style.display='';paintConnect();
+ const frames=n=>new Promise(res=>{const f=()=>--n<=0?res():requestAnimationFrame(f);requestAnimationFrame(f)});
+ const box=e=>e.getBoundingClientRect(),hdr=document.querySelector('header');
+ // what of each row can be seen: the part below the sticky header (a row scrolled under the header was hidden before
+ // any toast), inside the window
+ const seen=()=>{const hb=box(hdr).bottom;return [...document.querySelectorAll('.row')].map(e=>{const b=box(e);return {el:e,left:b.left,right:b.right,top:Math.max(b.top,hb),bottom:Math.min(b.bottom,innerHeight)}}).filter(b=>b.bottom>b.top)};
+ const measure=()=>{const rows=seen(),ts=[...document.querySelectorAll('#toasts .toast')].map(box);
+  return {rows:rows.length,toasts:ts.length,hit:ts.some(a=>rows.some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom))}};
+ const burst=()=>{for(let i=0;i<5;i++)toast('Toast '+i+': a long sentence that wraps over two or three lines on a narrow phone screen, so it takes real room.',{err:i%2===1,ms:600000})};
+ // 1. at the top of the page
+ burst();await frames(2);r={...r,w:innerWidth,...measure(),cards:document.querySelectorAll('#su_ai_rows .row,#su_src_rows .row').length,total:document.querySelectorAll('.row').length,first:(document.querySelector('#toasts .toast')||{}).textContent||''};
+ // 2. scrolled: a row sits just below the sticky header when the toasts arrive; it must still be below it after
+ document.querySelectorAll('#toasts .toast').forEach(e=>e.remove());const pad=document.createElement('div');pad.style.height='3000px';document.querySelector('main').append(pad);
+ await frames(2);const row=document.querySelectorAll('.row')[3];scrollTo(0,box(row).top+scrollY-box(hdr).height-4);await frames(2);
+ const before=box(row).top,full=seen().filter(b=>b.top===box(b.el).top&&b.bottom===box(b.el).bottom).map(b=>b.el);burst();await frames(3);
+ const hb=box(hdr).bottom;
+ r.scrolled={y:Math.round(scrollY),...measure(),hdrBottom:Math.round(hb),rowTop:Math.round(box(row).top),rowBefore:Math.round(before),
+  fullBefore:full.length,stillClear:full.filter(e=>box(e).top>=hb).length};
+ }catch(e){r={error:String(e&&e.stack||e)}}
+ document.body.setAttribute('data-layout',JSON.stringify(r))},300));
+</script>"""
+    node_ = shutil.which("node")
+    for w_ in (400, 1280) if node_ else ():
+        work = Path(tempfile.mkdtemp(prefix="openloops-layout-"))
+        try:
+            (work / "page.html").write_text(html.replace("</body>", LAYOUT + "</body>"), encoding="utf-8")
+            wait_ = ("new Promise(r=>{const f=()=>document.body.getAttribute('data-layout')?r(document.body.getAttribute('data-layout'))"
+                     ":setTimeout(f,100);f()})")
+            rc_ = subprocess.run([node_, str(REPO / "tests" / "_chrome_layout.js"), chrome, (work / "page.html").as_uri(), str(w_), wait_],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        try:
+            lay = json.loads(json.loads(rc_.stdout.strip().splitlines()[-1]))
+        except (ValueError, IndexError, TypeError):
+            lay = {"error": (rc_.stdout + rc_.stderr)[-300:]}
+        check(not lay.get("error") and lay["w"] == w_ and lay["total"] >= 6 and lay["cards"] >= 2 and not lay.get("setupErr") and lay["toasts"] == 3 and lay["first"].startswith("Toast 2")
+              and lay["hit"] is False,
+              f"at {w_} px: five toasts leave the newest three (the oldest go), and none overlaps a checklist row ({lay})")
+        sc = lay.get("scrolled") or {}
+        check(sc.get("y", 0) > 0 and sc.get("toasts") == 3 and sc.get("hit") is False and sc.get("rowTop", -1) >= sc.get("hdrBottom", 1e9)
+              and sc.get("fullBefore", 0) >= 1 and sc.get("stillClear") == sc.get("fullBefore"),
+              f"at {w_} px, scrolled: toasts arriving while a row sits just below the sticky header neither cover it nor push it under the header ({sc})")
+    if not node_:
+        show("SKIP the toast layout check: node not installed")
 
 # the table goes into an inline <script>: a sentence holding </script>, quotes, backslashes or U+2028 must survive
 from html.parser import HTMLParser  # noqa: E402
@@ -488,6 +612,51 @@ check(out["offline"] == {"display": "block", "text": want},
 check(out["error"]["display"] == "block" and out["error"]["text"] == say("server_error") and out["status"] == 500
       and out["body"] == {"error": "boom"}, "app answered with an error: a different sentence, and the error carries status and body")
 check(out["cleared"] == "none", "banner('') hides it again")
+tc_line = "const MSG=" + messages.page_json(False, test=True) + ";"
+r4 = subprocess.run([node, "-e", JS.replace(grab("const MSG="), tc_line)], capture_output=True, text=True, timeout=30)
+tc_out = json.loads(r4.stdout.strip().splitlines()[-1])
+check(tc_out["offline"] == {"display": "block", "text": "Open Loops isn't running on this computer. Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder."},
+      f"on a test copy the banner says how to start it again, in its folder (#50) ({tc_out['offline']})")
+# #50 review: after setup, the heading's instruction comes from the row itself, never a button the row does not have
+SD = "\n".join([grab("const MSG="), grab("const fill="), grab("function msg("), grab("function msgFollow("), grab("const agentLabel="),
+                grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("), grab("const setupDone="),
+                grab("function msgBusy("), "const CONN=" + json.dumps({}) + ";",
+                html[html.index("function paintSetupDone("):html.index("\nasync function tick(){")]])
+SD_CASES = {
+    "claude signed out": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Claude", "connect": "login"}],
+                          "Setup is done; Claude just needs signing in again. Press Sign in below."),
+    "grok signed out": ("grok", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Grok", "connect": "login"}],
+                        "Setup is done; Grok just needs signing in again. Follow the ‘Signed in to Grok’ row below."),
+    "codex keyring": ("codex", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to ChatGPT"}],
+                      "Setup is done; ChatGPT just needs signing in again. Follow the ‘Signed in to ChatGPT’ row below."),
+    "codex api key": ("codex", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to ChatGPT", "connect": "login"}],
+                      "Setup is done; ChatGPT just needs signing in again. Press Sign in below."),
+    "no installer": ("claude", [{"id": "claude", "ok": False, "title": "Claude is installed"}, {"id": "login", "ok": False, "title": "Signed in to Claude"}],
+                     "Setup is done; Claude just needs installing again. Follow the ‘Claude is installed’ row below."),
+    "install button": ("claude", [{"id": "claude", "ok": False, "title": "Claude is installed", "connect": "install", "agent": "claude"}],
+                       "Setup is done; Claude just needs installing again. Press Install Claude below."),
+    "sign-in under way": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Claude", "connect": "login"}],
+                          "Setup is done; Claude just needs signing in again. Please wait while that finishes."),
+    "slack stopped": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": False, "optional": True, "title": "Slack connected (optional)", "connect": "slack"}],
+                      "Setup is done; one connection just needs attention. Press Connect Slack below."),
+}
+for name_, (ai_, steps_, want_) in SD_CASES.items():
+    js = ("const els={};const $=s=>els[s]||(els[s]={style:{},textContent:\"1 · Let's get you connected\",dataset:{}});"
+          f"let S={{setup_done:true}},C={{agent:{json.dumps(ai_)}}},DOC={{steps:{json.dumps(steps_)}}};\n" + SD +
+          ("\nCONN.login={busy:true};" if name_ == "sign-in under way" else "") +
+          "\npaintSetupDone();const a=$('#st_connect_h').textContent,i=$('#st_connect_intro').style.display;S.setup_done=false;paintSetupDone();"
+          "console.log(JSON.stringify([a,i,$('#st_connect_h').textContent,$('#st_connect_intro').style.display]))")
+    r6 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    got = json.loads(r6.stdout.strip().splitlines()[-1]) if r6.returncode == 0 else [r6.stderr.strip()[-300:]]
+    check(got == [want_, "none", "1 · Let's get you connected", ""], f"after setup, {name_}: {got[0]!r}")
+check("$('#st_connect_h')" in html and "$('#st_connect_intro')" in html and "#st_connect h3" not in html
+      and 'id="st_connect_h"' in html and 'id="st_connect_intro"' in html, "the heading and intro are found by id, not by markup position")
+CP = "\n".join([grab("function conPaint("), next(lines[i + 1] for i, l in enumerate(lines) if l.startswith("function conPaint("))])
+for n, want_ in ((1, "1 line · last"), (2, "2 lines · last")):
+    js = ("const els={};const $=s=>els[s]||(els[s]={textContent:'',scrollTop:0,scrollHeight:0});let CON=" +
+          json.dumps(["2026-09-23 10:00:0%d  x" % i for i in range(n)]) + ";\n" + CP + "\nconPaint();console.log($('#con_meta').textContent)")
+    r5 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    check(r5.returncode == 0 and r5.stdout.strip().startswith(want_), f"Console header with {n} line(s): {r5.stdout.strip()!r} {r5.stderr.strip()[-150:]}")
 PS = grab("window.addEventListener('pageshow'")
 for ok_, want_ in ((True, "reload"), (False, "loop")):
     js = ("let did=[];const location={reload:()=>did.push('reload')};const loop=()=>did.push('loop');let stopped=false;const H={};"

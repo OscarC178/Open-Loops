@@ -5,6 +5,10 @@ Each entry has:
   "fix"     what to do about it, in one sentence (a button's name where the page has one)
   "button"  the checklist step whose button fixes it (doctor.py's "connect" value), or None
   "fix_win" optional: the fix as Windows says it, where the Mac wording names Mac places
+  "fix_follow" optional: the fix when the row has no button to press, pointing at the row itself ({row}, its title)
+  "fix_busy" optional: the fix while that row's own step is already under way (its button shows a spinner instead)
+  "fix_test", "fix_test_win" optional: the fix on a test copy (config.json "test_copy" or "isolated", #50), which has
+            no Desktop or Applications icon; part() / for_page() take test=True for it
 
 The rules (#25): name who did it (Google, Slack, Claude, your Mac's privacy settings), never "the agent"; no exit
 codes, file paths, tracebacks or tool names; UK English. The developer detail (the CLI's last line, the log
@@ -29,6 +33,9 @@ FAILURES = {
         "what": "Open Loops isn't running on this computer.",
         "fix": "Open it from the Open Loops icon on your Desktop or in Applications.",
         "fix_win": "Open it from the Open Loops icon on your Desktop or in the Start menu.",
+        # a test copy (install.sh --dest --no-app / --isolated) has no icon to open it from (#50)
+        "fix_test": "Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder.",
+        "fix_test_win": "Start it again by typing python -m openloops.app in PowerShell, in this copy's folder.",
         "button": None},
     "server_error": {
         "what": "Open Loops couldn't answer this page just now.",
@@ -125,6 +132,14 @@ FAILURES = {
     "slack_id_unknown": {
         "what": "Slack is connected, but Open Loops couldn't work out which Slack account is yours.",
         "fix": "Press Check again: it asks Slack again.",
+        "button": None},
+
+    # ---- a refresh reading state.json (refresh.parse_when, #51): a stored cursor that is not a date. The refresh
+    # refuses (reading back a guessed window would bring closed email loops back as new ones, #52 review); the job
+    # prints this and records it (report_refusal), so the page's toast says it.
+    "cursor_unreadable": {
+        "what": "Open Loops can't read when it last checked.",
+        "fix": "Press Start over in Settings, or fix state.json.",
         "button": None},
 
     # ---- the Mac's weekday morning refresh (doctor.schedule_step, #24 / #31)
@@ -340,6 +355,29 @@ FAILURES = {
         "fix": "Open Terminal, type codex mcp login miro, press Enter and follow what it says, then press Check again.",
         "button": None},
 
+    # ---- setup finished once, then a connection needs attention again (a sign-out, #50): the page shows only the
+    # checklist under this one line, not the whole setup stepper again. {ai} is the one to sign in to (Codex: ChatGPT).
+    # The page picks the fix from the row itself: "fix" names the row's button ({button}, as the page labels it), and
+    # "fix_follow" points at the row when it has none (Grok's Open Grok, a Codex keyring sign-in, no installer here).
+    "setup_done_signin": {
+        "what": "Setup is done; {ai} just needs signing in again.",
+        "fix": "Press {button} below.",
+        "fix_follow": "Follow the ‘{row}’ row below.",
+        "fix_busy": "Please wait while that finishes.",
+        "button": None},
+    "setup_done_install": {
+        "what": "Setup is done; {ai} just needs installing again.",
+        "fix": "Press {button} below.",
+        "fix_follow": "Follow the ‘{row}’ row below.",
+        "fix_busy": "Please wait while that finishes.",
+        "button": None},
+    "setup_done_other": {
+        "what": "Setup is done; one connection just needs attention.",
+        "fix": "Press {button} below.",
+        "fix_follow": "Follow the ‘{row}’ row below.",
+        "fix_busy": "Please wait while that finishes.",
+        "button": None},
+
     # ---- the first scan (index.html's setup, #38): not a failure, but said once, here, like the rest.
     # {days} is Settings > History (history_days), {sources} "Slack and Gmail", "Slack" or "Gmail": what is connected.
     "first_scan": {
@@ -349,6 +387,10 @@ FAILURES = {
     "first_scan_ask": {
         "what": "Open Loops is ready to read your own messages, read-only, to see who you talk to, how you write and what is still open.",
         "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do.",
+        "button": None},
+    "first_scan_ask_slack": {   # the same, with Slack connected: the checklist has looked up who you are on Slack once
+        "what": "Open Loops is ready to read your own messages, read-only, to see who you talk to, how you write and what is still open.",
+        "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do, apart from a quick check of who you are on Slack.",
         "button": None},
     "scheduled_isolated": {
         "what": "This copy is an isolated test copy, so the scheduled refresh did not read anything.",
@@ -363,7 +405,7 @@ FAILURES = {
         "fix": "Press Retry.",
         "button": None},
     "first_scan_later": {
-        "what": "Not started.",
+        "what": "Not started; Open Loops remembers that, so nothing reads your messages until you choose.",
         "fix": "Press Start the first scan when you're ready.",
         "button": None},
 
@@ -383,7 +425,8 @@ FAILURES = {
 }
 
 # What each job is called in a sentence (the page's toasts and app.py's job_failure()).
-JOBS = {"refresh": "The refresh", "chase": "The chase", "people": "Looking at who you talk to",
+# "refresh_slack": the refresh started by Update Slack (--slack-only), named as the button the person pressed (#50).
+JOBS = {"refresh": "The refresh", "refresh_slack": "The Slack update", "chase": "The chase", "people": "Looking at who you talk to",
         "voice": "Learning your tone", "daylog": "The day log", "roadmap": "The roadmap step",
         "standing": "Closing the to-do item"}
 
@@ -398,11 +441,16 @@ def _fill(text, fmt):
     return string.Formatter().vformat(text, (), _Keep(fmt))
 
 
-def part(id_, which, win=None, **fmt):
-    """One part ("what" or "fix") of a failure, placeholders filled from fmt. win=True picks "fix_win" if there is one."""
+def part(id_, which, win=None, test=False, **fmt):
+    """One part ("what" or "fix") of a failure, placeholders filled from fmt. win=True picks "fix_win" if there is one;
+    test=True (a test copy) picks "fix_test" / "fix_test_win" if there is one."""
     m = FAILURES[id_]
     win = sys.platform == "win32" if win is None else win
-    text = m.get("fix_win") if which == "fix" and win and m.get("fix_win") else m[which]
+    text = m[which]
+    if which == "fix":
+        keys = (("fix_test_win", "fix_test") if win else ("fix_test",)) if test else ()
+        keys += ("fix_win",) if win else ()
+        text = next((m[k] for k in keys if m.get(k)), text)
     return _fill(text, fmt)
 
 
@@ -417,18 +465,20 @@ RECHECK_AFTER_JOB = ("job_signed_out", "codex_signin", "codex_expired", "codex_k
                      "codex_stale", "codex_start")
 
 
-def for_page(win=None):
-    """The table as the page gets it: {id: {"what", "fix", "button", "recheck"}}, fix already chosen for this platform,
-    placeholders left for the page to fill. "recheck": a failed job with this id re-runs the connection check."""
-    return {k: {"what": part(k, "what", win), "fix": part(k, "fix", win), "button": v.get("button"),
-                "recheck": k in RECHECK_AFTER_JOB} for k, v in FAILURES.items()}
+def for_page(win=None, test=False):
+    """The table as the page gets it: {id: {"what", "fix", "button", "recheck"[, "fix_follow", "fix_busy"]}}, fix already chosen for this platform
+    (and, test=True, for a test copy: app.py passes it per install), placeholders left for the page to fill.
+    "recheck": a failed job with this id re-runs the connection check."""
+    return {k: {"what": part(k, "what", win), "fix": part(k, "fix", win, test), "button": v.get("button"),
+                "recheck": k in RECHECK_AFTER_JOB, **{x: v[x] for x in ("fix_follow", "fix_busy") if v.get(x)}}
+            for k, v in FAILURES.items()}
 
 
-def page_json(win=None, table=None):
+def page_json(win=None, table=None, test=False):
     """for_page() as JSON that is safe inside an inline <script>: "<", ">" and "&" become \\u escapes (a sentence
     holding "</script>" or "<!--" cannot end or change the script element), and so do U+2028 / U+2029 (line breaks
     to older JavaScript). JSON.parse and a JavaScript literal read them back as the same characters."""
-    text = json.dumps(for_page(win) if table is None else table, ensure_ascii=False)
+    text = json.dumps(for_page(win, test) if table is None else table, ensure_ascii=False)
     for ch, esc in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
         text = text.replace(ch, esc)
     return text
@@ -505,7 +555,12 @@ def report(p, job, ai=None):
         lead = FAILURES[fid]["what"].split("{")[0].strip()
         first = ((p.stdout or "").strip().splitlines() or [""])[0].strip()
         rec["said"] = first if lead and first.startswith(lead) else say(fid, limit="the time allowed", store="your system keychain")
-    try:  # written whole, then renamed into place: a reader never sees half a record
+    _write_failure(job, rec)
+
+
+def _write_failure(job, rec):
+    """This run's failure_file(job) = rec, written whole, then renamed into place: a reader never sees half a record."""
+    try:
         FAILURE_DIR.mkdir(parents=True, exist_ok=True)
         f = failure_file(job)
         tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
@@ -513,6 +568,18 @@ def report(p, job, ai=None):
         os.replace(tmp, f)
     except OSError:
         pass  # the page falls back to "didn't finish"
+
+
+# Failures a job finds itself, before any AI run, whose sentence job_failure() shows as it is (no {job}, no {ai})
+JOB_OWN_IDS = ("cursor_unreadable",)
+
+
+def report_refusal(job, fid):
+    """For a job about to exit 1 without running the AI, for a reason of its own (a JOB_OWN_IDS id): record it as
+    report() does, so the page says this sentence rather than the plain "didn't finish"."""
+    rid = os.environ.get("OPENLOOPS_RUN_ID", "")
+    _write_failure(job, {"run_id": rid if RUN_ID_RE.fullmatch(rid) else "scheduled", "failure": fid, "ai": "",
+                         "at": datetime.now().astimezone().isoformat(timespec="seconds")})
 
 
 def job_failure(name, rc, log, ai="Claude", failure=None):
@@ -528,4 +595,6 @@ def job_failure(name, rc, log, ai="Claude", failure=None):
         return fid, rec.get("said") or say(fid, limit="the time allowed", store="your system keychain")
     if fid in ("job_signed_out", "job_usage_limit", "job_network"):
         return fid, say(fid, job=job, ai=ai)
+    if fid in JOB_OWN_IDS:
+        return fid, say(fid)
     return "job_failed", say("job_failed", job=job)
