@@ -66,9 +66,22 @@ today = time.strftime("%Y-%m-%d")
                "asked_at": "2026-02-01T10:00", "status": "done", "closed_at": f"{today}T10:00", "chases": 0, "snooze_until": None}],
 }), encoding="utf-8")
 
+# #33: the path a blank standing_file used to fall back to, seeded inside the isolated HOME. It must be ignored.
+legacy_todo = tmp / "home" / "ClaudeCloud" / "02-Research" / "standing-items.md"
+legacy_todo.parent.mkdir(parents=True)
+legacy_todo.write_text("- [ ] A6 | Dev vault | a developer's own item | added 2026-08-28\n", encoding="utf-8")
 env = isolated_env(tmp)  # HOME inside the temp install: nothing is read from the developer's own files
 srv, PORT = start_app(tmp, env)
 try:
+    # ---- #33: blank standing_file reads nothing, even with the old ~/ClaudeCloud file present
+    first = api("/api/state")[1]["state"]["loops"]
+    check(sorted(l["id"] for l in first) == ["alice-report", "bob-deck", "cat-quote"] and not any(l.get("channel") == "vault" for l in first),
+          "first /api/state: only the seeded loops, no card from ~/ClaudeCloud/02-Research/standing-items.md")
+    code, err = api("/api/standing/create", {})
+    check(code == 400 and err.get("error") == "No to-do file is selected. Choose a file in Settings → Connections.",
+          f"starter file refused with no path set, in plain words (got {code} {err!r})")
+    check(legacy_todo.read_text(encoding="utf-8").count("\n") == 1, "...and the old fallback file is left as it was")
+
     # ---- snooze: zero-padded, bad dates refused
     code, _ = api("/api/action", {"id": "alice-report", "action": "snooze", "until": "2099-1-5"})
     alice = next(l for l in api("/api/state")[1]["state"]["loops"] if l["id"] == "alice-report")
