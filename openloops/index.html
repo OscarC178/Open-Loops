@@ -477,7 +477,8 @@ function paintSchedule(st){const w=$('#sched_warn'),s=schedBad()?schedStep():nul
  if(s.detail!==schedSaid){schedSaid=s.detail;clog('morning refresh did not start: '+(s.detail||s.kind))}}   // the developer detail goes to the Console only
 // Past the connection step the connection check no longer runs every minute, so re-read the schedule's logs on their own
 // (file reads on the server, no CLI): a morning failure shows, and a recovery clears, without a reload.
-async function checkSchedule(){const st=stage();if(['connect','checking','checkfail'].includes(st))return;try{SCHED=(await api('/api/schedule/status')).step||null;paintSchedule(stage())}catch(e){}}
+let schedSeq=0;   // only the newest poll may set SCHED: an older, slower answer must not undo a newer one
+async function checkSchedule(){const st=stage();if(['connect','checking','checkfail'].includes(st))return;const seq=++schedSeq;try{const r=await api('/api/schedule/status');if(seq!==schedSeq)return;SCHED=r.step||null;paintSchedule(stage())}catch(e){}}
 setInterval(checkSchedule,60000);
 // The download button in the setup checklist too. Wraps paintConnect instead of editing it (#21 rewrites that
 // function); rows are painted in DOC.steps order, so row i is step i.
