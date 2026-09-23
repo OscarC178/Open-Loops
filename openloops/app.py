@@ -236,19 +236,10 @@ def _connect_one(step, argv, log, deadline):
 
 
 def run_connect(step):
-    """Start a setup step in the background -> (started, error). One run per step at a time. "install" installs the
-    selected AI's CLI, whichever AI that is; the other steps are Claude's sign-ins."""
+    """Start a Claude setup step in the background -> (started, error). One run per step at a time."""
     from . import agent
-    install = step == agent.INSTALL_STEP
-    if install:
-        ic = agent.install_cmd()
-        if not ic:
-            return False, "no installer known for " + agent.display_name()
-        cmds = lambda: [ic["argv"]]  # the command doctor.py showed on the row, nothing else
-    elif agent.name() != "claude" or step not in agent.CONNECT_STEPS:
+    if agent.name() != "claude" or step not in agent.CONNECT_STEPS:
         return False, "no such setup step for " + agent.display_name()
-    else:
-        cmds = lambda: agent.login_cmd(step) or []
     with connect_lock:  # check and claim in one go
         if (connects.get(step) or {}).get("running"):
             return False, "already running"
@@ -258,26 +249,62 @@ def run_connect(step):
     log.write_text("", encoding="utf-8")
 
     def go():
-        rc, deadline, why = -1, time.time() + (INSTALL_TIMEOUT_S if install else CONNECT_TIMEOUT_S), ""
+        rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
-            for argv in cmds():
+            for argv in agent.login_cmd(step) or []:
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
-                    why = "timeout" if time.time() >= deadline else "install"
                     break
         except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"
-            why = "start"
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
         finally:
-            if install:
-                add_install_dirs()  # before the page's re-check, which runs with this process's PATH
             doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
             doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
-            connects[step].update(running=False, rc=rc, why=why)
+            connects[step].update(running=False, rc=rc)
 
     threading.Thread(target=go, daemon=True).start()
     return True, ""
+
+
+def run_install(body):
+    """Start the selected AI's installer in the background -> (started, error, HTTP code). Works for any AI; shares the
+    sign-in steps' one-run-at-a-time claim, process tracking and log. Runs only what the page showed: the press sends the
+    "agent" and "command_id" from the checklist row, and if either no longer matches (another tab changed the AI in
+    Settings since) nothing runs. The run keeps its own agent and command, which the status reports while it runs."""
+    from . import agent
+    step, ic = agent.INSTALL_STEP, agent.install_cmd()
+    if not ic:
+        return False, "no installer known for " + agent.display_name(), 400
+    if body.get("agent") != ic["agent"] or body.get("command_id") != ic["id"]:
+        return False, "changed", 409
+    with connect_lock:  # check and claim in one go
+        if (connects.get(step) or {}).get("running"):
+            return False, "already running", 200
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
+                          "why": "", "agent": ic["agent"], "command": ic["command"], "command_id": ic["id"]}
+    log = connect_log(step)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("", encoding="utf-8")
+
+    def go():
+        rc, deadline, why = -1, time.time() + INSTALL_TIMEOUT_S, ""
+        try:
+            rc = _connect_one(step, ic["argv"], log, deadline)
+            if rc != 0:
+                why = "timeout" if time.time() >= deadline else "install"
+        except Exception as e:  # bash or PowerShell missing, pty refused: say so in the log rather than hang as "running"
+            why = "start"
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\ncould not run the installer: {type(e).__name__}: {e}\n")
+        finally:
+            add_install_dirs()  # before the page's re-check, which runs with this process's PATH
+            doctor_gen["n"] += 1  # a check already running started before this install: do not cache what it says
+            doctor_cache["at"] = 0
+            connects[step].update(running=False, rc=rc, why=why)
+
+    threading.Thread(target=go, daemon=True).start()
+    return True, "", 200
 
 
 def connect_status(step):
@@ -287,10 +314,13 @@ def connect_status(step):
     c["last"] = next((x for x in reversed(lines) if x), "")[:300]
     c["step"] = step
     from . import agent
-    if step == agent.INSTALL_STEP:  # what the button runs, so the page can show it before anyone presses it
-        c["command"] = (agent.install_cmd() or {}).get("command", "")
+    if step == agent.INSTALL_STEP:
+        ran = c.get("agent")  # the AI the last run installed, if there was one
+        if not c.get("running"):  # idle: what the button would run now, so the page can show it before the press.
+            ic = agent.install_cmd() or {}  # A running install keeps reporting its own agent and command instead.
+            c.update(agent=ic.get("agent", ""), command=ic.get("command", ""), command_id=ic.get("id", ""))
         if c.get("why"):  # the page shows this sentence, never the installer's raw last line ("last", for the Console)
-            c["said"] = agent.INSTALL_SAID.get(c["why"], agent.INSTALL_SAID["install"]).format(ai=agent.display_name())
+            c["said"] = agent.INSTALL_SAID.get(c["why"], agent.INSTALL_SAID["install"]).format(ai=agent.display_name(ran or c["agent"]))
     return c
 
 
@@ -473,7 +503,12 @@ class H(BaseHTTPRequestHandler):
                     doctor_cache = {"at": _t.time(), "result": res}
                 return self._json(res)
             return self._json(doctor_cache["result"])
-        if self.path.startswith("/api/connect/"):  # a setup button: install the AI, sign in, install Slack, connect a source
+        if self.path == "/api/connect/install":  # the Install button: {"agent", "command_id"} as the row showed them
+            from . import agent
+            started, why, code = run_install(body)
+            said = agent.INSTALL_SAID["changed"] if why == "changed" else ""
+            return self._json({"started": started, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
+        if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
             return self._json({"started": started, **({"error": why} if why else {})},

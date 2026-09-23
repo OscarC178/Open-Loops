@@ -8,7 +8,7 @@ Grok: Slack is opt-in (config.json "use_slack"). Off, the Slack plugin is not st
 doctor does not probe it. Vercel is never started. Jobs pass --effort low because the Grok
 CLI defaults to xhigh. Gmail is the bundled gmail_mcp.py server (not Claude's connector).
 """
-import json, os, re, shlex, shutil, subprocess, sys
+import hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 from .paths import ROOT
@@ -215,7 +215,8 @@ def prereq(win=None):
 
 
 def install_cmd(agent=None, win=None):
-    """How to install an agent's CLI (default: the selected one) -> {"argv", "command", "needs", "source", "vendor"}, or None
+    """How to install an agent's CLI (default: the selected one) -> {"argv", "command", "needs", "source", "vendor",
+    "agent", "id"}, or None
     for an agent with no known installer. "command" is what the page shows before the button is pressed; "needs"
     the tools "argv" cannot run without (doctor.py says so, and offers no button, when one is missing)."""
     win = WIN if win is None else win
@@ -225,10 +226,15 @@ def install_cmd(agent=None, win=None):
     unix, ps, src, vendor = got
     if win:
         argv = _PS + [ps]
-        return {"argv": argv, "command": subprocess.list2cmdline(argv), "needs": ["powershell"], "source": src, "vendor": vendor}
-    # pipefail: a download that fails would otherwise hand bash an empty script, which "succeeds" with exit 0
-    argv = ["bash", "-o", "pipefail", "-c", unix]
-    return {"argv": argv, "command": shlex.join(argv), "needs": ["curl", "bash"], "source": src, "vendor": vendor}
+        out = {"argv": argv, "command": subprocess.list2cmdline(argv), "needs": ["powershell"], "source": src, "vendor": vendor}
+    else:
+        # pipefail: a download that fails would otherwise hand bash an empty script, which "succeeds" with exit 0
+        argv = ["bash", "-o", "pipefail", "-c", unix]
+        out = {"argv": argv, "command": shlex.join(argv), "needs": ["curl", "bash"], "source": src, "vendor": vendor}
+    # "agent" + "id" name exactly what the page showed; app.py refuses a press whose pair no longer matches
+    out["agent"] = (agent or name()).strip().lower()
+    out["id"] = hashlib.sha256((out["agent"] + "\0" + out["command"]).encode("utf-8")).hexdigest()[:16]
+    return out
 
 
 # What the checklist says when an install ends badly, by what went wrong (app.py records which). Plain words as
@@ -239,6 +245,8 @@ INSTALL_SAID = {
                "command below into Terminal (Windows: PowerShell) and press Enter.",
     "timeout": "The install took longer than 10 minutes, so Open Loops stopped it. Press Install {ai} to try again.",
     "start":   "Open Loops couldn't start {ai}'s installer. Press Install {ai} to try again.",
+    "changed": "The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. "
+               "Press Check again.",
 }
 
 
