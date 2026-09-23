@@ -200,6 +200,55 @@ check(refresh.ask_ts({"thread": "#ops C0OPSCH001 1757000000.000100", "ask_ts": "
 check(refresh.slack_conv({"thread": ""}) is None and refresh.slack_conv({"thread": "#General  chat"}) == "#general chat" and refresh.ask_ts({"thread": "#ops C0OPSCH001"}) is None,
       "slack_conv / ask_ts: no thread -> None; no id -> the thread text; no ts -> None")
 
+# --- Slack ask identity across runs: message ts first, wording only as a fallback (Codex second pass)
+def inb(id, owner, ask, thread, **kw):
+    return {"id": id, "owner": owner, "ask": ask, "channel": "slack", "thread": thread, "inbound": True, **kw}
+
+
+def run(loops, new, updates=()):
+    s = base(); s["loops"] += loops
+    n = refresh.apply(s, {"new_loops": new, "updates": list(updates)}, slack_only=True, now=NOW)
+    return s, [l["id"] for l in s["loops"]], n
+
+
+s, ids, _ = run([inb("jo-a", "Jo", "sign off the budget", f"DM Jo {JO_DM} 1757800000.000100", status="needs_me")],
+                [inb("jo-b", "Jo", "approve the Q4 budget", f"DM Jo {JO_DM} 1757800000.000100")])
+check("jo-b" not in ids, "the same message reworded between runs is the same ask (ts, never wording)")
+s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me")],
+                [inb("jo-b", "Jo", "Send the numbers", f"DM Jo {JO_DM} 1757800000.000100")])
+check("jo-b" not in ids and next(l for l in s["loops"] if l["id"] == "jo-a")["ask_ts"] == "1757800000.000100",
+      "a ts appearing between runs upgrades the existing loop (takes the ts) instead of adding one")
+s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM} 1757800000.000100", status="needs_me")],
+                [inb("jo-b", "Jo", "send the numbers", f"DM Jo {JO_DM}")])
+check("jo-b" not in ids, "a ts disappearing between runs is still the same ask (same asker + wording, open)")
+s, ids, _ = run([inb("sam-j", "Sam Jones", "can you review?", "#ops C0OPSCH001", status="needs_me", owner_id="U0SAMJONES")],
+                [inb("sam-l", "Sam Lee", "can you review?", "#ops C0OPSCH001", owner_id="U0SAMLEE01")])
+check("sam-l" in ids, "two askers with the same first name and wording (no ts) are two asks (Slack user ids)")
+s, ids, _ = run([inb("sam-j", "Sam Jones", "can you review?", "#ops C0OPSCH001", status="needs_me")],
+                [inb("sam-l", "Sam Lee", "can you review?", "#ops C0OPSCH001"), inb("sam-j2", "sam  jones", "Can you review?", "#ops C0OPSCH001")])
+check("sam-l" in ids and "sam-j2" not in ids, "...and without ids the full names tell them apart (and match the same person)")
+s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001 1757800000.000100", status="done", closed_at="2026-09-14T09:00")],
+                [inb("kit-b", "Kit", "review the rota pls", "#ops C0OPSCH001 1757800000.000100"),
+                 inb("kit-c", "Kit", "review the rota", "#ops C0OPSCH001 1757900000.000200")])
+check("kit-b" not in ids, "a closed message rediscovered with the same ts is not a second (needs_me) row")
+check("kit-c" in ids, "a newer message after it closed is a fresh ask")
+s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001", status="done", closed_at="2026-09-14T09:00")],
+                [inb("kit-old", "Kit", "review the rota", "#ops C0OPSCH001 1757800000.000100"),     # 2025-09-13: before it closed
+                 inb("kit-new", "Kit", "review the rota", "#ops C0OPSCH001 1789500000.000100")])    # 2026-09-15: after it closed
+check("kit-old" not in ids, "a closed loop with no ts takes a ts sent before it closed: same message")
+check("kit-new" in ids, "...and the same words sent after it closed are a fresh ask")
+s, ids, _ = run([{"id": "sam-deck", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757800000.000500", "status": "waiting"}],
+                [inb("sam-q", "Sam", "which format?", "DM Sam D0SAMDM001 1757950000.000900")],
+                [{"id": "sam-deck", "status": "needs_me", "reply_snippet": "which format?", "reply_ts": "1757900000.000700"}])
+check("sam-q" in ids, "a new message repeating (quoting) the reply's words but with its own ts is kept")
+s, ids, n = run([], [{"id": "ro-plan", "owner": "Ro", "ask": "send the plan", "channel": "slack", "thread": "DM Ro D0RODM0001 1757800000.000100", "status": "waiting"},
+                     inb("ro-q", "Ro", "which plan?", "DM Ro D0RODM0001 1757900000.000200")],
+                [{"id": "ro-plan", "status": "needs_me", "reply_snippet": "which plan?", "reply_ts": "1757900000.000200"}])
+check("ro-q" not in ids and next(l for l in s["loops"] if l["id"] == "ro-plan")["status"] == "needs_me",
+      "a loop created and replied to in one run is one Needs me row (its reply is not a second, inbound one)")
+s, ids, n = run([], [inb("ty-a", "Ty", "call me", "DM Ty D0TYDM0001 1757900000.000100")], [{"id": "ty-a", "status": "done"}])
+check(n == (1, 1) and next(l for l in s["loops"] if l["id"] == "ty-a")["status"] == "done", "an update to a Slack ask created in the same run still applies")
+
 # --- closing: a done update stamps closed_at (re-check window + day log); reopening clears it
 s = base()
 s["loops"].append({"id": "old-done", "owner": "Uma", "ask": "x", "channel": "slack", "status": "done", "closed_at": "2026-09-14T09:00"})
