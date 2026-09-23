@@ -5,7 +5,8 @@ Which AI it checks comes from config.json "agent" (claude by default - see agent
     python doctor.py            -> JSON
     python doctor.py --detect   -> also asks the agent for the user's Slack id and saves it to config.json
 """
-import json, re, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
+from datetime import datetime
 from pathlib import Path
 
 from . import agent
@@ -209,49 +210,50 @@ def _save(updates, names=None):
     update_json(CONFIG, mutate)
 
 
-# What the page says when the Mac's weekday morning refresh (launchd, scripts/run-refresh.sh) did not start.
-# Plain words (issue #25): what happened in one sentence, what to do in one sentence, no jargon.
+# What the page says about the Mac's weekday morning refresh (launchd, scripts/run-refresh.sh).
+# Plain words (issue #25): what happened in one sentence, one thing to do, no jargon, no paths.
 SCHEDULE_MSG = {
-    "blocked": {"title": "The morning refresh was blocked by your Mac's privacy settings, so Open Loops only refreshes while this page is open.",
-                "fix": "Download and run the latest Open Loops installer: it keeps your list and settings, and moves Open Loops to a folder your Mac lets it use."},
-    "failed": {"title": "The morning refresh could not start on its own, so Open Loops only refreshes while this page is open.",
-               "fix": "Download and run the latest Open Loops installer; if this message comes back, press Copy all in the Console at the bottom of the page and send it to whoever set Open Loops up."},
+    "blocked": {"title": "Your Mac's privacy settings stopped the automatic morning refresh, so your list only updates when you press Refresh.",
+                "fix": "Download and run the latest Open Loops installer."},
+    "failed": {"title": "The automatic morning refresh could not start, so your list only updates when you press Refresh.",
+               "fix": "Download and run the latest Open Loops installer."},
+    "started": {"title": "The automatic morning refresh last started by itself on {when}.", "fix": ""},
 }
-# where "the latest installer" is: the page shows it as a link under the red row (the installer migrates old installs)
+# where "the latest installer" is: the page shows it as a button under the red row (the installer moves old installs)
 DOWNLOAD_URL = "https://github.com/OscarC178/Open-Loops/releases/latest"
+RUN_REFRESH_RE = re.compile(r":\s(/[^:]*/scripts/run-refresh\.sh)")
 
 
 def schedule_step(logs=None, root=None):
-    """Did the weekday morning refresh start last time? Returns a red checklist step, or None when there is
-    nothing wrong to report (no log yet = never due yet; the page's own timer is not proof either way).
+    """The weekday morning refresh, as far as its logs show. Returns a checklist step or None (no evidence yet).
 
-    launchd writes to state/logs/launchd.err.log when it cannot start the job at all; the classic case (#24) is
-    `/bin/bash: .../scripts/run-refresh.sh: Operation not permitted`, the Mac refusing a background job to read
-    ~/Documents. A job that did start leaves state/logs/runner-<date>.log, so a runner log newer than the error
-    log means it has recovered. Lines naming a run-refresh.sh that is neither this copy's nor still on disk are
-    ignored: an install moved out of ~/Documents by install.sh carries its old log along, and those lines are
-    about a path that no longer exists."""
+    - Red ("blocked" / "failed"): launchd.err.log has a start failure for THIS install's run-refresh.sh and no
+      runner-<date>.log is newer. launchd writes that log only when it cannot start the job at all; the case
+      from #24 is `/bin/bash: .../scripts/run-refresh.sh: Operation not permitted` (a background job may not
+      read ~/Documents). The LATEST such line decides which, not any older one.
+    - Green ("started"): a runner-<date>.log exists and is newer than any failure. That proves the script
+      started (it writes that log first), not that the refresh inside it succeeded - the title says "started".
+    Lines naming any other install's script are ignored: a moved install carries its old log along."""
     logs, root = Path(logs or LOGS), Path(root or ROOT)
+    mine = os.path.realpath(root / "scripts" / "run-refresh.sh")  # the plist may name it via a symlink (/var -> /private/var)
     err = logs / "launchd.err.log"
     try:
         text, err_at = err.read_text(encoding="utf-8", errors="replace"), err.stat().st_mtime
     except OSError:
-        return None
-    mine = str(root / "scripts" / "run-refresh.sh")
-    lines = []
-    for ln in text.splitlines():
-        m = re.search(r":\s(/[^:]*/scripts/run-refresh\.sh)", ln)
-        if ln.strip() and (not m or m.group(1) == mine or Path(m.group(1)).exists()):
-            lines.append(ln)
-    if not lines:
-        return None
-    ran = [f.stat().st_mtime for f in logs.glob("runner-*.log")]
-    if ran and max(ran) >= err_at:
-        return None  # a later run got going: the error is history
-    kind = "blocked" if any("operation not permitted" in ln.lower() for ln in lines) else "failed"
-    return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
-            "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
-            "detail": lines[-1][-300:]}  # developer detail for the console / diag, never shown in the sentence
+        text, err_at = "", 0.0
+    lines = [ln for ln in text.splitlines() if (m := RUN_REFRESH_RE.search(ln)) and os.path.realpath(m.group(1)) == mine]
+    ran = max((f.stat().st_mtime for f in logs.glob("runner-*.log")), default=0.0)
+    if lines and err_at > ran:
+        last = lines[-1]
+        kind = "blocked" if "operation not permitted" in last.lower() else "failed"
+        return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
+                "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
+                "detail": last[-300:]}  # developer detail for the Console / diag, never shown in the sentence
+    if ran:
+        when = datetime.fromtimestamp(ran).strftime("%a %-d %b at %H:%M")
+        return {"id": "schedule", "ok": True, "optional": True, "kind": "started",
+                "title": SCHEDULE_MSG["started"]["title"].format(when=when), "fix": ""}
+    return None
 
 
 def main(detect=False):

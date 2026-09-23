@@ -347,6 +347,9 @@ class H(BaseHTTPRequestHandler):
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
                         "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
                         "launchd_err_log": le.read_text(encoding="utf-8", errors="replace")[-2000:] if le.exists() else ""})
+        elif self.path == "/api/schedule/status":  # the morning refresh's last start, from its logs only (#24)
+            from . import doctor
+            self._json({"step": doctor.schedule_step() if MAC else None})
         elif self.path.split("?")[0] == "/api/daylog":
             from . import daylog
             q = self._query()
