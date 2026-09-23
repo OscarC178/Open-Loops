@@ -70,6 +70,11 @@ For people whose AI subscription is ChatGPT (Plus, Pro, Business, Enterprise). C
    the browser can't hand the sign-in back (it answers on `localhost:1455`), run `codex login --device-auth` in Terminal
    instead and press **Check again**. A Codex signed in with an **API key** shows red: OpenAI's connectors need a ChatGPT
    sign-in ("Some plugins aren't available with API key authentication", [learn.chatgpt.com/docs/plugins](https://learn.chatgpt.com/docs/plugins)).
+   **Keychain sign-ins are not supported yet.** Open Loops runs Codex with its own settings folder and links your
+   `~/.codex/auth.json` into it; if Codex keeps the sign-in in the Mac keychain (Windows Credential Manager) instead
+   (`cli_auth_credentials_store = "keyring"` or `"auto"` in `~/.codex/config.toml`), there is no file to link, and Open
+   Loops refuses to run rather than fall back to your own Codex settings. Fix: set `cli_auth_credentials_store = "file"`
+   in `~/.codex/config.toml`, run `codex logout`, then `codex login` ([learn.chatgpt.com/docs/auth](https://learn.chatgpt.com/docs/auth)).
 3. **Gmail / Slack connected**: these are ChatGPT connectors, set up once in your ChatGPT account, not in Open Loops or
    the CLI. **Connect Gmail** / **Connect Slack** open [chatgpt.com/apps](https://chatgpt.com/apps); connect there, come
    back and press **Check again**. The connectors read whichever Google and Slack accounts that ChatGPT account connected,
@@ -81,19 +86,34 @@ For people whose AI subscription is ChatGPT (Plus, Pro, Business, Enterprise). C
    support dynamic client registration and does not list Codex as a client ([docs.slack.dev](https://docs.slack.dev/ai/slack-mcp-server/)).
 
 **How a Codex job runs.** One `codex exec` per job: the prompt on stdin, `--sandbox read-only`, `--ephemeral`, the
-shell tool off, `codex_model` / `codex_effort` from `config.json` (template `gpt-5.6-sol` at `low`; `gpt-5.5` leaves
-Codex on 2026-10-14). It runs under a job-local `CODEX_HOME` in `state/codex-home/`: a link to your `~/.codex/auth.json`
-and a generated `config.toml`, so your own Codex plugins, skills, memories and AGENTS.md are not loaded (measured on
-2026-09-23: a run under a full `~/.codex` took about 190k input tokens; the checklist's check in the job home, 27k). `codex exec` has no tool allow-list like Claude's
-`--allowedTools`, so each run's prompt starts with the connector tools that job may use and a ban on everything else,
-and the read-only sandbox keeps files safe. Each job log in `state/logs/` ends with the tools the run actually used and
-its token count, and flags any tool that was not on the job's list. Email chases are Gmail drafts
-(`gmail.create_draft`); with a *Send* box ticked they are sent with `gmail.send_email` as a reply in the thread.
+shell tool off, `codex_model` / `codex_effort` from `config.json` (the template's `gpt-5.6-sol` at `low` is Open Loops'
+choice, not a Codex default; blank uses Codex's built-in default, never your own Codex settings; `gpt-5.5` leaves Codex
+on 2026-10-14 per OpenAI's changelog). A job may run for `codex_timeout_s` (900 s) before it is stopped. Each run gets a
+fresh settings folder of its own under `state/codex-home/<account>/` (one per ChatGPT account, so two accounts never
+share anything): a link to your `~/.codex/auth.json` and a generated `config.toml`, so your own Codex plugins, skills,
+memories and AGENTS.md are not loaded (measured on 2026-09-23: about 190k input tokens under a full `~/.codex`, 13k to
+40k here). The first run for an account is a short warm-up with every connector off, so Codex can load its list of
+ChatGPT connector tools.
+
+**Only the tools a job lists can be called.** Each run's `config.toml` switches every ChatGPT connector off
+(`[apps._default] enabled = false`), switches on only the connectors the job needs (`[apps.<connector id>] enabled =
+true`) and switches off each of their tools the job did not list (`[apps.<id>.tools.<tool>] enabled = false`). Those
+tools are then not there to call: tested on 2026-09-23 with real runs, a run allowed only `gmail.get_profile` and told
+to create a draft could not find a draft tool. So with both *Send* boxes off, `gmail.send_email` and
+`slack.slack_send_message` are switched off, and chases are drafts (`gmail.create_draft`, `slack.slack_send_message_draft`);
+with a *Send* box ticked, the chase gets the send tool and replies in the thread. As a second line, a run that calls any
+tool off its list fails and saves nothing ("Codex used a tool this job did not allow, so nothing was saved"). Two things
+did **not** work and are not used: `default_tools_approval_mode` / `approval_mode = "approve"` (ignored by `codex exec`:
+drafts were still created) and the app name `gmail` in place of the connector id.
 
 **The checklist asks Codex once.** Whether Gmail and Slack answer can only be found out by asking Codex, which is a run
-against your allowance. The answer is kept in `state/codex-probe.json`: a day while at least one source works,
-15 minutes while none does. **Check again** asks afresh (at most every 30 seconds). The same run reads your Slack
-user id.
+against your allowance. Every attempt is kept in `state/codex-probe.json`: a day while at least one source works,
+15 minutes while none does, 5 minutes after a failed attempt. **Check again** asks afresh, but never more often than
+every 30 seconds. A source ticks only when Codex's own call to it succeeded, not just because the answer says so. The
+same run reads your Slack user id, which replaces a stored one that differs.
+
+**Windows is not verified yet.** The Codex route was built and tested on a Mac. On Windows, the sign-in link falls
+back to a hard link when symlinks are not allowed, and the fake-CLI tests are skipped; expect rough edges.
 
 **The ChatGPT plan's limits.** Codex on a ChatGPT plan is metered per 5-hour window and per week, shared with
 ChatGPT's other Codex tools ([help.openai.com](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan)).

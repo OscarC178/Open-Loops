@@ -427,7 +427,7 @@ const MODELS={
  codex:{keys:['codex_model','codex_effort'],def:['gpt-5.6-sol','low'],
   model:[['gpt-5.6-sol','GPT-5.6 Sol (recommended)'],['gpt-6-astra','GPT-6 Astra'],['',"Codex's default"]],
   effort:[['low','low (recommended)'],['medium','medium'],['high','high'],['xhigh','xhigh'],['',"Codex's default"]],
-  note:'Codex only. Which OpenAI model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. GPT-5.6 Sol at low does the job and uses the least of your ChatGPT plan\'s Codex allowance; higher effort uses more. "Codex\'s default" uses whatever <code>codex</code> is set to on this computer.'}};
+  note:'Codex only. Which OpenAI model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. GPT-5.6 Sol at low does the job and uses the least of your ChatGPT plan\'s Codex allowance; higher effort uses more. "Codex\'s default" is Codex\'s own built-in choice: Open Loops runs Codex with settings of its own, not the ones in your Codex app.'}};
 function modelUI(a){const m=MODELS[a];$('#cfg_model_wrap').style.display=m?'':'none';$('#cfg_codex_note').style.display=a==='codex'?'':'none';if(!m)return;
  const pick=(i,list)=>{const v=C&&C[m.keys[i]]!==undefined?String(C[m.keys[i]]):m.def[i];   // a hand-typed model id keeps its own option
   return [list.some(o=>o[0]===v)?list:list.concat([[v,v]]),v]};

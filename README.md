@@ -76,7 +76,8 @@ sound like you rather than like a reminder bot. Every action gives instant feedb
 - **It reads your own sent messages and the threads they sit in. Nothing else.** Other people's messages
   are read only to check for a reply on a loop you already have.
 - **Drafts by default.** It sends only if you tick *Send to internal* / *Send to external*. The send tools
-  are handed to the AI run only when those boxes are ticked, so with both off it cannot send.
+  are handed to the AI run only when those boxes are ticked, so with both off it cannot send. (With Codex, which has
+  no allow-list flag, each run's Codex settings switch the send tools off instead; see INSTALL.md, Codex (ChatGPT).)
 - **No API key costs and no new accounts.** It drives the Claude, Codex or Grok CLI you are already signed in to.
   Jobs run on Sonnet by default; the model and effort are a picker in Settings, so a scan never quietly
   burns your best model.
