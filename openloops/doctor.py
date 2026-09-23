@@ -238,16 +238,26 @@ PROBE_KEEP_BAD_S = 15 * 60
 PROBE_KEEP_FAIL_S = 5 * 60
 PROBE_MIN_GAP_S = 30
 PROBE_WARMING_MAX = 3  # attempts that found no connector list before the rows give up waiting and offer Connect
-PROBE_PROMPT = """Check which of this ChatGPT account's connections answer. Make these calls, one each, and no others:
-1. gmail.get_profile with no arguments.
-2. slack.slack_read_user_profile with no user id (it returns your own profile). If that fails, slack.slack_list_user_channels once.
-{miro}Then reply with exactly these lines and nothing else:
-GMAIL: CONNECTED or NOT-CONNECTED
-SLACK: CONNECTED or NOT-CONNECTED
-SLACK_ID: <the Slack user id from step 2, which starts with U> or NONE
-{miro_line}A connection is CONNECTED only if its call returned data. It is NOT-CONNECTED if the tool is not there, fails,
-or asks to connect or sign in."""
-PROBE_TOOLS = ["gmail.get_profile", "slack.read_user_profile", "slack.list_user_channels"]
+PROBE_STEP = {"gmail": "gmail.get_profile with no arguments.",
+              "slack": ("slack.slack_read_user_profile with no user id (it returns your own profile). If that fails, "
+                        "slack.slack_list_user_channels once."),
+              "miro": "one read-only call on the miro MCP server (for example, list the boards you can see)."}
+PROBE_LINES = {"gmail": ["GMAIL: CONNECTED or NOT-CONNECTED"],
+               "slack": ["SLACK: CONNECTED or NOT-CONNECTED", "SLACK_ID: <the Slack user id you read, which starts with U> or NONE"],
+               "miro": ["MIRO: CONNECTED or NOT-CONNECTED"]}
+PROBE_SRC_TOOLS = {"gmail": ["gmail.get_profile"], "slack": ["slack.read_user_profile", "slack.list_user_channels"],
+                   "miro": ["miro.*"]}
+PROBE_TOOLS = PROBE_SRC_TOOLS["gmail"] + PROBE_SRC_TOOLS["slack"]
+
+
+def probe_prompt(srcs):
+    """The probe's prompt for the sources it asks about (gmail / slack / miro, in that order)."""
+    steps = "\n".join(f"{i}. {PROBE_STEP[x]}" for i, x in enumerate(srcs, 1))
+    lines = "\n".join(ln for x in srcs for ln in PROBE_LINES[x])
+    return ("Check which of this ChatGPT account's connections answer. Make these calls, one each, and no others:\n"
+            f"{steps}\nThen reply with exactly these lines and nothing else:\n{lines}\n"
+            "A connection is CONNECTED only if its call returned data. It is NOT-CONNECTED if the tool is not there, "
+            "fails, or asks to connect or sign in.")
 PROBE_PROOF = {"gmail": ("gmail.get_profile",), "slack": ("slack.slack_read_user_profile", "slack.slack_list_user_channels")}
 # What the Gmail / Slack / Miro rows say when the probe itself could not answer (#25: what happened, what to do)
 CODEX_SAID = {
@@ -256,10 +266,8 @@ CODEX_SAID = {
               "It comes back by itself, usually within a few hours. Press Check again then."),
     "expired": "Your ChatGPT sign-in has run out. Press Sign in to sign in again.",
     "failed": "Couldn't ask Codex about your connections just now. Press Check again.",
-    "warming": "Codex is getting your ChatGPT connections ready for the first time. Press Check again in a minute.",
+    "warming": "Codex is still getting ready (loading your ChatGPT connections). Press Check again in a minute.",
 }
-_LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota", re.I)
-_EXPIRED_RE = re.compile(r"\b401\b|unauthori[sz]ed|refresh token|token (?:is )?expired|sign in again|log in again|login again", re.I)
 _codex_found = {}  # what the probe learnt that main() uses: the Slack user id, and which account it was
 
 
@@ -302,24 +310,30 @@ def codex_probe(sig, want_miro, recheck=False, now=None):
     old = read_json(CODEX_PROBE) or {}
     if old.get("sig") == sig and old.get("miro_asked") == want_miro and _probe_keep(old, recheck, now):
         return old
-    miro = ("3. One read-only call on the miro MCP server (for example, list the boards you can see).\n" if want_miro else "")
-    p = agent.codex_run(PROBE_PROMPT.format(miro=miro, miro_line="MIRO: CONNECTED or NOT-CONNECTED\n" if want_miro else ""),
-                        PROBE_TOOLS + (["miro.*"] if want_miro else []), timeout=PROBE_TIMEOUT_S, effort_="low")
+    # Ask only about the sources whose tools are in the connector list Codex last fetched: one that is not there is
+    # not connected in ChatGPT (that is where the list comes from), so it gets Connect without a question, and a
+    # Gmail-only account is never held up waiting for Slack. With no list yet, ask about both: the run warms up first.
+    listed = {t for names in agent.codex_connectors(agent.codex_home(sig.split(":", 1)[0])).values() for t in names}
+    srcs = [x for x in ("gmail", "slack") if not listed or set(agent._qualify(PROBE_SRC_TOOLS[x])) & listed]
+    srcs += ["miro"] if want_miro else []
+    if not srcs:
+        res = {"gmail": False, "slack": False, "miro": None, "slack_id": "", "why": "", "tries": 0,
+               "account": sig.split(":", 1)[0], "at": now, "sig": sig, "miro_asked": want_miro}
+        write_json(CODEX_PROBE, res)
+        return res
+    p = agent.codex_run(probe_prompt(srcs), [t for x in srcs for t in PROBE_SRC_TOOLS[x]],
+                        timeout=PROBE_TIMEOUT_S, effort_="low")
     got = parse_probe(p.stdout)
-    failed = "\n".join(getattr(p, "errors", []) or []) + "\n" + (getattr(p, "codex_stderr", "") or "")
+    for x in ("gmail", "slack"):
+        if x not in srcs:
+            got[x] = False  # not in Codex's list: not connected in ChatGPT
     ok = set(getattr(p, "tools_ok", []) or [])
     refused = getattr(p, "refused", "") or ""
-    why = ""
-    if refused:
-        why = {"cold": "warming", "unlisted": "failed"}.get(refused, refused)  # keyring / signin / link: the sign-in row
-    elif p.returncode == 124:
-        why = "timeout"
-    elif _LIMIT_RE.search(failed):
-        why = "limit"
-    elif _EXPIRED_RE.search(failed):
-        why = "expired"
-    elif p.returncode != 0 or (got["gmail"] is None and got["slack"] is None):
-        why = "failed"
+    if refused:  # not run, or failed: keyring / signin / link go on the sign-in row; a warm-up's failure is its own
+        why = {"cold": "warming", "unlisted": "failed", "start": "failed", "notools": "failed"}.get(refused, refused)
+    else:  # the same order as agent.codex_failure: a failed run beats whatever text came back
+        why = agent.codex_failure(p.returncode, getattr(p, "errors", []), getattr(p, "codex_stderr", "")) or (
+            "failed" if all(got[x] is None for x in srcs if x in ("gmail", "slack")) else "")
     if why:
         got.update(gmail=None, slack=None, miro=None, slack_id="")
     else:
@@ -328,10 +342,18 @@ def codex_probe(sig, want_miro, recheck=False, now=None):
         got["miro"] = bool(want_miro and got["miro"] and any(u.startswith("miro/") for u in getattr(p, "tools_used", [])))
         if not got["slack"]:
             got["slack_id"] = ""
-    tries = (int(old.get("tries") or 0) + 1) if (why == "warming" and old.get("why") == "warming" and old.get("sig") == sig) else 1
-    if why == "warming" and tries >= PROBE_WARMING_MAX:
-        why, got = "", dict(got, gmail=False, slack=False, miro=False if want_miro else None)  # stop waiting: offer Connect
-    res = {**got, "why": why, "tries": tries, "at": now, "sig": sig, "miro_asked": want_miro}
+    # Warming attempts are counted per account and the count is kept through any other outcome (a timeout, a spent
+    # allowance): only a probe that answered, or another account, starts it again. From the third on, the rows stop
+    # saying "getting ready" and offer Connect, and stay that way.
+    account = sig.split(":", 1)[0]
+    tries = int(old.get("tries") or 0) if old.get("account") == account else 0
+    if why == "warming":
+        tries += 1
+        if tries >= PROBE_WARMING_MAX:
+            why, got = "", dict(got, gmail=False, slack=False, miro=False if want_miro else None)
+    elif not why:
+        tries = 0
+    res = {**got, "why": why, "tries": tries, "account": account, "at": now, "sig": sig, "miro_asked": want_miro}
     try:
         LOGS.mkdir(parents=True, exist_ok=True)
         (LOGS / "codex-probe-last.log").write_text(
