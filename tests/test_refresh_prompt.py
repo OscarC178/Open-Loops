@@ -56,6 +56,7 @@ check("first ignore bots" in ib and "Oscar's own messages" in ib and "has not an
 check("<ask ts>" in ib and "Several asks in one" in ib, "Slack inbound asks for the ts of the asking message: one loop per ask")
 check("slack://" not in p and "#<channel> <channel id> <thread ts> <ask ts>" in p.split("## Output", 1)[1], "the output example matches: channel id + thread ts + ask ts, permalink")
 check("requests people\nmade of them" in p, "the opening definition covers asks of the owner too")
+check('"slack_available"' in p and '"reply_ts"' in p, "the output asks whether Slack worked and for the ts of a reported reply")
 check('channel "slack"' in ib and "<DM channel id>" in ib, "Slack inbound loops are told their channel + thread id")
 check(ib.count('"status": "needs_me" and "inbound": true') == 1 and "same exclusions" in ib, "one shared needs_me/inbound sentence (the JSON and apply() stay the same)")
 check("Zed" in p and "payroll" in p, "exclude_people / exclude_topics still reach the prompt")

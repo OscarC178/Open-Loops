@@ -80,10 +80,10 @@ Reply with ONLY a JSON object between the markers, nothing else:
                   "priority": "high|normal|low", "theme": "2-4 words",
                   "links": [{{"url": "https://...", "label": "short label"}}]}}],
   "updates": [{{"id": "<existing id>", "status": "waiting|needs_me|done", "last_reply_at": "ISO or null",
-                "reply_snippet": "<=120 chars", "asked_at": "ISO (only if a new ask by {name})",
+                "reply_snippet": "<=120 chars", "reply_ts": "Slack ts of that reply, or null", "asked_at": "ISO (only if a new ask by {name})",
                 "priority": "high|normal|low (only if it changed)", "theme": "2-4 words (only if missing)",
                 "links": [{{"url": "https://...", "label": "short label"}}]}}],
-  "gmail_available": true
+  "gmail_available": true, "slack_available": "true if the Slack searches worked, false if they failed"
 }}
 <<<END>>>
 """
@@ -119,10 +119,15 @@ def slack_key(l):
     return cid.group(1) + "/" + (ts[0] if ts else first_name(l)), ask
 
 
-def exchange(l):
-    """Who is talking where: the DM, or the channel thread plus the person (several people share one)."""
+def words(v):
+    return " ".join(str(v or "").lower().split())
+
+
+def reply_keys(l, u):
+    """The reply an update reports on the owner's Slack loop l, as the keys an inbound loop for that same
+    message would have: (conversation, reply ts) and (conversation, reply words)."""
     conv = slack_key(l)[0]
-    return conv, "" if conv.startswith("D") else first_name(l)
+    return {(conv, v) for v in (str(u.get("reply_ts") or "").strip(), words(u.get("reply_snippet"))) if v}
 
 
 def in_scope(l, slack_only, recent):
@@ -165,7 +170,8 @@ def build_prompt(s, slack_only, slack_on):
             "does not cancel it). Slack loops: channel \"slack\", "
             'thread "DM <asker> <DM channel id> <ask ts>" or "#<channel> <channel id> <thread ts> <ask ts>" '
             "(<ask ts> = the ts of the message that asks), link = that message's permalink. Several asks in one "
-            "DM/thread are separate loops.".format(n=name, u=SELF_ID, d=slack_date))
+            "DM/thread are separate loops; a message you report as a reply in updates is not also a new loop."
+            .format(n=name, u=SELF_ID, d=slack_date))
     inbound = ("1b. ASKS OF {n} (inbound). Search what others sent {n}:\n{parts}\n   These become new loops with "
                '"status": "needs_me" and "inbound": true - owner is the person asking; ask = one line on what they '
                "need from {n}. The same exclusions (excluded people as askers too) and duplicate rule apply.").format(n=name, parts="\n".join(inbound)) if inbound else ""
@@ -207,16 +213,18 @@ def merge_links(loop, links):
 
 def apply(s, out, slack_only, now, slack_on=True):
     """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated).
-    slack_on: whether this run searched Slack at all (a full run with Slack off did not)."""
+    slack_on: whether this run searched Slack at all (a full run with Slack off did not); an agent
+    that reports "slack_available": false (the searches failed) leaves the Slack cursor where it was."""
     by_id = {l["id"]: l for l in s["loops"]}
     # Slack asks of the owner still open once this run's updates land (an ask closed now no longer counts):
     # the same ask (conversation + ask ts) seen again under a new id is not added twice. And a reply this
     # run reports on one of the owner's loops (an update to needs_me) is that loop's news, not a second
-    # Needs me row from the inbound search: same DM, or same thread + same person -> dropped.
-    ups = {u.get("id"): u.get("status") for u in out.get("updates", []) or [] if isinstance(u, dict)}
+    # Needs me row from the inbound search: the same message (its ts, else its words) -> dropped; any
+    # other ask in that conversation is kept.
+    ups = {u.get("id"): u for u in out.get("updates", []) or [] if isinstance(u, dict)}
     slack = [l for l in s["loops"] if l.get("channel") == "slack" and slack_key(l)]
-    inbound_open = {slack_key(l) for l in slack if l.get("inbound") and (ups.get(l["id"]) or l["status"]) in ("waiting", "needs_me")}
-    replied = {exchange(l) for l in slack if ups.get(l["id"]) == "needs_me"}
+    inbound_open = {slack_key(l) for l in slack if l.get("inbound") and (ups.get(l["id"], {}).get("status") or l["status"]) in ("waiting", "needs_me")}
+    replied = set().union(*[reply_keys(l, ups[l["id"]]) for l in slack if ups.get(l["id"], {}).get("status") == "needs_me"])
     n_new = n_upd = 0
     for nl in out.get("new_loops", []) or []:
         nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
@@ -225,7 +233,7 @@ def apply(s, out, slack_only, now, slack_on=True):
         if slack_only and nl.get("channel") != "slack":
             continue  # belt and braces: the prompt says no email, the merge enforces it
         key = slack_key(nl) if nl.get("inbound") and nl.get("channel") == "slack" else None
-        if key and (key in inbound_open or exchange(nl) in replied):
+        if key and (key in inbound_open or key in replied or (key[0], words(nl.get("ask"))) in replied):
             continue
         links = nl.pop("links", None)
         nl.setdefault("status", "needs_me" if nl.get("inbound") else "waiting")
@@ -258,13 +266,15 @@ def apply(s, out, slack_only, now, slack_on=True):
         elif l["status"] == "done" and was != "done":
             l["closed_at"] = now
         n_upd += 1
+    searched = slack_on and out.get("slack_available") is not False   # missing -> trust the run, as before
     if slack_only:
-        s["slack_cursor"] = now
-        s["last_slack_refresh"] = now
+        if searched:
+            s["slack_cursor"] = now
+            s["last_slack_refresh"] = now
     else:
-        # Slack's cursor moves only when Slack was searched; with Slack off it stays where Slack coverage
-        # stopped (first time: the old shared cursor), so turning Slack on later catches up from there
-        s["slack_cursor"] = now if slack_on else (s.get("slack_cursor") or s.get("cursor"))
+        # Slack's cursor moves only when Slack was searched; with Slack off (or failing) it stays where Slack
+        # coverage stopped (first time: the old shared cursor), so the next working run catches up from there
+        s["slack_cursor"] = now if searched else (s.get("slack_cursor") or s.get("cursor"))
         s["cursor"] = now
         s["last_refresh"] = now
         s["gmail_available"] = bool(out.get("gmail_available"))

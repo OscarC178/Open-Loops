@@ -92,6 +92,12 @@ check(s["cursor"] == "2026-09-15T15:00+01:00" and s["slack_cursor"] == "2026-09-
 s = base(); del s["slack_cursor"]
 refresh.apply(s, out, slack_only=False, now="2026-09-15T15:00+01:00", slack_on=False)
 check(s["slack_cursor"] == "2026-09-01T09:00+01:00", "...and with no Slack cursor yet, pins it at the old shared cursor")
+s = base()
+refresh.apply(s, {**out, "slack_available": False}, slack_only=False, now="2026-09-15T15:00+01:00")
+check(s["cursor"] == "2026-09-15T15:00+01:00" and s["slack_cursor"] == "2026-09-10T12:00+01:00", "full run whose Slack search failed (slack_available false) keeps the Slack cursor")
+s = base()
+refresh.apply(s, {"new_loops": [], "slack_available": False}, slack_only=True, now="2026-09-15T15:00+01:00")
+check(s["slack_cursor"] == "2026-09-10T12:00+01:00" and "last_slack_refresh" not in s, "slack-only run whose Slack search failed moves nothing")
 
 # --- Slack inbound: asks OF the owner from DMs and @-mentions, one loop per ask (conversation + ask ts)
 JO_DM, NOW = "D0JODM0001", "2026-09-15T17:00+01:00"
@@ -160,12 +166,18 @@ s["loops"].append({"id": "sam-thread", "owner": "Sam", "ask": "pick a date", "ch
 n = refresh.apply(s, {"new_loops": [
         {"id": "sam-format", "owner": "Sam Jones", "ask": "which format?", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757900000.000700", "inbound": True},
         {"id": "sam-date", "owner": "Sam", "ask": "Tue or Wed?", "channel": "slack", "thread": "#plan C0PLANCH01 1757800000.000600 1757900000.000800", "inbound": True},
-        {"id": "viv-date", "owner": "Viv", "ask": "can I join?", "channel": "slack", "thread": "#plan C0PLANCH01 1757800000.000600 1757900000.000900", "inbound": True}],
-    "updates": [{"id": "sam-deck-dm", "status": "needs_me", "reply_snippet": "which format?"},
-                {"id": "sam-thread", "status": "needs_me", "reply_snippet": "Tue or Wed?"}]}, slack_only=True, now=NOW)
+        {"id": "viv-date", "owner": "Viv", "ask": "can I join?", "channel": "slack", "thread": "#plan C0PLANCH01 1757800000.000600 1757900000.000900", "inbound": True},
+        # a later, separate ask from Sam in the same DM, same run (CodeRabbit round 2)
+        {"id": "sam-lunch", "owner": "Sam", "ask": "lunch friday?", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757900300.000750", "inbound": True},
+        # no ask ts, but the same words as the reply snippet: the same message
+        {"id": "sam-format-nots", "owner": "Sam", "ask": "Which format?", "channel": "slack", "thread": "DM Sam D0SAMDM001", "inbound": True}],
+    "updates": [{"id": "sam-deck-dm", "status": "needs_me", "reply_snippet": "which format?", "reply_ts": "1757900000.000700"},
+                {"id": "sam-thread", "status": "needs_me", "reply_snippet": "Tue or Wed?", "reply_ts": "1757900000.000800"}]}, slack_only=True, now=NOW)
 ids = [l["id"] for l in s["loops"]]
 check("sam-format" not in ids and "sam-date" not in ids, "REGRESSION: a reply already reported on my loop is not a second, inbound Needs me row")
+check("sam-format-nots" not in ids, "...also matched by its words when the agent gave no ask ts")
 check("viv-date" in ids, "someone else's ask in that same thread still is")
+check("sam-lunch" in ids, "REGRESSION: a later, separate ask in that DM in the same run is kept")
 s = base()
 s["loops"].append({"id": "sam-deck-dm", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001", "status": "waiting"})
 refresh.apply(s, {"new_loops": [{"id": "sam-lunch", "owner": "Sam", "ask": "lunch?", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757900000.000700", "inbound": True}]},
