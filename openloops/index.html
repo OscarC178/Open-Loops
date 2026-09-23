@@ -885,7 +885,8 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
  else{if(docFails)clog('connection check ran fine again');docFails=0;DOC=r;
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
-let loopT=null,inLoop=false,offline=false,runSeen=new Set();
+let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set();
+const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job>:<seq>"): never handled twice at once
 // A job's end is noticed by its "seq" (app.py _ended: one number per job end, always going up), never by seeing it
 // running and then not (#49): a job that fails within a second is over before the next poll, and was never seen
 // running. SEEN holds the last seq handled per job, for the server SEEN_INST (null until the first poll, which only
@@ -899,7 +900,7 @@ function pollSoon(){if(inLoop||stopped)return;clearTimeout(loopT);loopT=setTimeo
 function newlyEnded(){const out=[];if(!J)return out;
  if(SEEN===null){SEEN={};SEEN_INST=INST;for(const k of Object.keys(J))SEEN[k]=J[k].seq||0;return out}
  if(SEEN_INST!==INST){SEEN={};SEEN_INST=INST}   // another server: its seq numbers are its own
- for(const k of Object.keys(J)){const j=J[k];if(j&&!j.running&&j.seq&&j.seq!==(SEEN[k]||0))out.push(k)}
+ for(const k of Object.keys(J)){const j=J[k];if(j&&!j.running&&j.seq&&j.seq!==(SEEN[k]||0)&&!CLAIMED.has(INST+':'+k+':'+j.seq))out.push(k)}
  for(const k of Object.keys(WATCH))if(!out.includes(k)&&Date.now()-WATCH[k]>15000&&!running(k))delete WATCH[k];   // never started after all
  return out}
 function ack(keys,seqs){keys.forEach((k,i)=>{SEEN[k]=seqs[i];delete WATCH[k]})}
@@ -915,17 +916,22 @@ function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.
  else if(k==='roadmap')toast('Roadmap step done - see the result in the Roadmap section');
  else if(k==='voice')toast('Tone learned - chases will sound like you');
  else if(k==='people')toast('People suggested - pick their seniority');}}
-async function loop(){clearTimeout(loopT);inLoop=true;try{
+// One pass at a time, whoever asks (timer, a job start, the tab coming back, Start over): a call during a pass only
+// asks for one more pass once it is done (review of #48, P2 2).
+async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inLoop=true;try{
   await loadState();
   for(const k of Object.keys(J))if(J[k].running&&!runSeen.has(k))clog(k+' started');runSeen=new Set(Object.keys(J).filter(k=>J[k].running));
   const ended=newlyEnded();
-  if(ended.length){const seqs=ended.map(k=>J[k].seq);   // a job just ended: pick up new people/voice/config/day log/roadmap, say what happened
-   await loadCfg();await loadDaylog(true);await loadRm(true);finished(ended);ack(ended,seqs)}   // a load that throws skips the ack: next poll tries again
+  if(ended.length){const seqs=ended.map(k=>J[k].seq),keys=ended.map((k,i)=>INST+':'+k+':'+seqs[i]);   // a job just ended: pick up new people/voice/config/day log/roadmap, say what happened
+   keys.forEach(x=>CLAIMED.add(x));   // claimed before anything is awaited
+   try{await loadCfg();await loadDaylog(true);await loadRm(true);finished(ended);ack(ended,seqs)}   // a load that throws skips the ack: next poll tries again
+   finally{keys.forEach(x=>CLAIMED.delete(x))}}
   const st=stage();
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
   await tick();banner('');offline=false;
  }catch(e){offline=true;appDown(e)}   // not answering: no fast polls until it does (below)
- inLoop=false;if(stopped)return;const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
+ inLoop=false;if(stopped)return;if(pendingLoop){pendingLoop=false;return loop()}   // asked for during this pass: once more, now
+ const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
  loopT=setTimeout(loop,offline?60000:Object.keys(WATCH).length?1500:(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped)loop()});
 window.addEventListener('pagehide',()=>{if(stopped)return;const b=new Blob([JSON.stringify({page:PAGE})],{type:'application/json'});if(!(navigator.sendBeacon&&navigator.sendBeacon('/api/bye',b)))fetch('/api/bye',{method:'POST',body:b,keepalive:true}).catch(()=>{})});

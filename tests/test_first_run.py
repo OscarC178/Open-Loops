@@ -328,7 +328,7 @@ else:
                                                          "people": {"Sam Lee": {"level": "peer", "aliases": ["Sam"], "email": None}},
                                                          "voice_sample_people": ["Sam Lee"]})
     (tmp / "voice.json").write_text(json.dumps({"general": "x", "people": {"Sam Lee": {"level": "peer"}}}), encoding="utf-8")
-    (tmp / "state.json").write_text(json.dumps({"cursor": "2026-09-01T00:00", "last_refresh": "2026-09-22T09:00", "loops": []}),
+    (tmp / "state.json").write_text(json.dumps({"cursor": "2026-09-01T00:00+00:00", "last_refresh": "2026-09-22T09:00+00:00", "loops": []}),
                                     encoding="utf-8")
     srv, port = start_app(tmp, env_for(tmp))
     try:
@@ -391,6 +391,13 @@ else:
      await loop();out.restart={toasts:TOASTS.length,inst:SEEN_INST===INST};""", tmp)
             check(out["failed"] == {"toasts": 0, "seen": True} and out["retried"] == {"toasts": 1, "seen": True},
                   f"page: a follow-up load that fails does not use up the job's end; the next poll announces it ({out})")
+            out2 = page_js(port, {}, """
+     await boot();await loop();await endElsewhere();await Promise.all([loop(),loop(),loop()]);
+     out.toasts=TOASTS.filter(x=>x.startsWith('Refresh done')).length;out.pending=pendingLoop;out.inLoop=inLoop;
+     await endElsewhere();CLAIMED.add(INST+':refresh:'+(J.refresh.seq+1));await loop();out.claimedSkipped=TOASTS.filter(x=>x.startsWith('Refresh done')).length;""", tmp)
+            check(out2["toasts"] == 1 and out2["pending"] is False and out2["inLoop"] is False,
+                  f"page: three overlapping polls announce one job end exactly once ({out2})")
+            check(out2["claimedSkipped"] == 1, "page: a job end claimed by a pass in progress is not handled by another")
             check(out["restart"] == {"toasts": 2, "inst": True},
                   f"page: a new server instance starts SEEN afresh, so a seq it had already seen is still announced ({out['restart']})")
         inst1 = api(port, "/api/state")["instance"]
