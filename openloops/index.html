@@ -682,8 +682,13 @@ async function connectWatch(step,row){const inst=step==='install';
 // app about each step and pick up any still running, as if its button had just been pressed here. One GET per step:
 // app.py has no "all steps" call, and six answers from this computer cost nothing. -> false if the app did not answer.
 const CONNECT_ALL=['install','login','slack_install','slack','gmail','miro'];   // app.py agent.CONNECT_STEPS + INSTALL_STEP
-async function connectReattach(){for(const step of CONNECT_ALL){if(CONN[step]&&CONN[step].busy)continue;   // this page is watching it already
+// Never while the AI is being changed (the cards hide the old AI's rows then), nor with an answer that arrives after a
+// change: the app's status does not say which AI a sign-in is for, so the AI asked about must still be the one chosen.
+const aiGate=()=>suBusy==='agent'||aiPending();
+async function connectReattach(){if(aiGate())return false;const was=(C&&C.agent)||'claude';
+ for(const step of CONNECT_ALL){if(CONN[step]&&CONN[step].busy)continue;   // this page is watching it already
   let s;try{s=await api('/api/connect/'+step)}catch(e){return false}
+  if(aiGate()||((C&&C.agent)||'claude')!==was)return false;   // the AI changed meanwhile: not this AI's run; asked again later
   if(!s.running||(CONN[step]&&CONN[step].busy))continue;   // finished (or never ran): the row stays as the check paints it
   const inst=step==='install';clog('setup: '+step+' still running, picked up again');
   CONN[step]={busy:true,msg:connectWaitSaid(step,s.agent),url:s.url||'',...(inst?{agent:s.agent,command:s.command}:{})};repaint();

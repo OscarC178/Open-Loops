@@ -969,7 +969,15 @@ if NODE:
   link:$('#allow_link').innerHTML,rows:$('#su_src_rows').innerHTML,state:$('#su_src_state').textContent};
  await loop();out.n2=n;offline=true;await loop();await sleep(300);out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
  fs.writeFileSync(BIN+'/allow','');await until(()=>!$('#allow_dlg').open,30000);
- out.done={busy:!!(CONN.slack&&CONN.slack.busy),ok:DOC.steps.find(x=>x.id==='slack').ok,toasts:TOASTS.slice(),rows:$('#su_src_rows').innerHTML};""", tmp)
+ out.done={busy:!!(CONN.slack&&CONN.slack.busy),ok:DOC.steps.find(x=>x.id==='slack').ok,toasts:TOASTS.slice(),rows:$('#su_src_rows').innerHTML};
+ // review of #58: an answer that arrives while the AI is being changed, or after it changed, restores nothing
+ const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login'};
+ const quiet=()=>({busy:!!(CONN.login&&CONN.login.busy),open:$('#allow_dlg').open});
+ HOLD['/api/connect/login']={body:run};let sw=real();await until(()=>HOLD['/api/connect/login'].release,5000);
+ aiSwitching='codex';HOLD['/api/connect/login'].release();out.gated={ok:await sw,...quiet()};aiSwitching='';
+ HOLD['/api/connect/login']={body:run};sw=real();await until(()=>HOLD['/api/connect/login'].release,5000);
+ C.agent='codex';HOLD['/api/connect/login'].release();out.changed={ok:await sw,...quiet()};C.agent='claude';
+ aiSwitching='codex';out.during=await real();aiSwitching='';""", tmp)
         check(out["before"] == {"slack": None, "open": False}, "a fresh page knows nothing of the sign-in the app is running")
         a = out["after"]
         check(a["n"] == 1 and a["busy"] is True and a["url"] == "https://example.invalid/authorize?state=abc"
@@ -986,6 +994,9 @@ if NODE:
         d = out["done"]
         check(d["busy"] is False and d["ok"] is True and "Slack connected." in d["toasts"] and "spin" not in d["rows"],
               f"clicking Allow finishes it as if pressed on this page: the row turns green and the pop-up closes ({d['toasts']})")
+        check(out["gated"] == {"ok": False, "busy": False, "open": False} and out["changed"] == {"ok": False, "busy": False, "open": False}
+              and out["during"] is False,
+              f"a reattach answer arriving during an AI change, or after one, restores no busy row and no pop-up, and is asked again later ({out['gated']}, {out['changed']})")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
