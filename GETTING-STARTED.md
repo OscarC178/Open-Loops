@@ -17,8 +17,8 @@ computer only. It never sends anything unless you turn that on.
 2. Run it. **Windows** may warn that the publisher is unknown — click **More info**, then **Run anyway**.
    **Mac** may say it can't check the app — right-click it and choose **Open** (macOS 15 and later: close the
    warning, then **System Settings → Privacy & Security → Open Anyway**), just this once.
-3. A window appears. It may ask for your first name. Let it finish (1–3 minutes). It installs two
-   helper programs if you don't have them (Python and Claude), puts **Open Loops.app** (the orange loop)
+3. A window appears. It may ask for your first name. Let it finish (1–3 minutes). It installs Python
+   if you don't have it, puts **Open Loops.app** (the orange loop)
    on your Desktop and in the Dock, and opens the app.
 
 ## 2. Connect your accounts (one-off)
@@ -28,6 +28,7 @@ Each row that isn't ticked has a button: press it, your browser opens a sign-in 
 
 | Tick | What to do |
 |---|---|
+| **Claude is installed** | If Claude isn't on your computer yet, press **Install Claude**. The commands it runs are shown underneath first; it takes a minute or two. (Using Grok instead? Choose it in ⚙ Settings → Preferences → *Your AI* first; the button then says **Install Grok**.) |
 | **Signed in to Claude** | Press **Sign in**. Your browser opens the Claude sign-in page: sign in with your **work Google account**. |
 | **Slack connected** *(optional)* | Press **Install Slack plugin** if the row shows it (about half a minute), then **Connect Slack** → click **Allow** in the browser. |
 | **Gmail connected** *(optional)* | Press **Connect Gmail** → **Allow**. No button? Add Gmail at claude.ai → Settings → Connectors first, then press **Check again**. |

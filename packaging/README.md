@@ -5,6 +5,10 @@ source zip of a GitHub ref (a `v*` tag for releases, a branch for test builds), 
 to the repo's own installer (`setup.ps1` on Windows, `install.sh` on Mac). That keeps one copy of the
 install logic and means the installer rarely needs rebuilding.
 
+Neither installs an AI CLI. They install Python if it is missing and the app; the app's checklist then offers
+**Install Claude** (or the AI chosen in Settings) on its first row, and that button is the
+only place an AI is installed from (download to a file, check it, run it, check `--version`; see INSTALL.md §1).
+
 | File | Built by | Built from | Runs |
 |---|---|---|---|
 | `OpenLoops-Setup.exe` | Inno Setup 6.3+ (`ISCC.exe`) | `windows/OpenLoops.iss` | wizard → download → `tar -xf` → `setup.ps1 -Dest "{app}" -Name … -At … -NoLaunch` |

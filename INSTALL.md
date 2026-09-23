@@ -26,7 +26,10 @@ doesn't do it, *Open Claude (advanced)* opens a terminal running `claude`, where
 Open Loops stores no tokens for this: the sign-ins stay wherever the Claude CLI keeps them.
 A second Claude account needs its own Claude settings folder; for a second Slack workspace or Gmail inbox, see [More than one account](#8-more-than-one-account-work--personal).
 
-**Installing the AI CLI: one button.** Apart from Python, nothing needs installing first. When the selected
+**Installing the AI CLI: one button.** Apart from Python, nothing needs installing first, and the installers
+(`OpenLoops-Setup.exe`, `OpenLoops.dmg`, the zip's `setup.ps1` / `install.sh`) never install an AI themselves: a
+missing AI never stops them, they just say "No AI is installed yet. Open Loops will offer to install one on its
+first screen." When the selected
 AI's CLI is missing (or is there but won't start), the checklist's first row shows **Install Claude** (or Grok) with
 every command it will run underneath; nothing downloads until you press it. The app saves the vendor's own installer
 to `state/install/`, checks the download is complete, runs it, then checks the CLI answers `--version`; only then
@@ -95,19 +98,22 @@ below, so the two routes end up identical.
   and runs `install.sh`. It is not signed with a Developer ID, so macOS 14 and earlier need *right-click → Open*, and
   macOS 15+ needs *System Settings → Privacy & Security → Open Anyway* once.
 
+Neither installs an AI. When the app first opens, choose the AI in ⚙ Settings → Preferences → *Your AI* if it is
+not Claude, then press **Install Claude** (or **Install Grok**) on the checklist's first row.
+
 Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see `packaging/README.md`).
 
 **Alternative: the zip.**
 
 1. Unzip anywhere (Downloads is fine).
-   - **Windows**: double-click **`Open Loops.cmd`**. It runs `setup.ps1`, which installs Python / Claude Code via
-     winget if missing, copies the app to `%LOCALAPPDATA%\OpenLoops` (no admin rights), asks for the user's first
+   - **Windows**: double-click **`Open Loops.cmd`**. It runs `setup.ps1`, which installs Python via winget if
+     missing, copies the app to `%LOCALAPPDATA%\OpenLoops` (no admin rights), asks for the user's first
      name, writes a fresh `config.json` from `config.template.json` and an empty `state.json`, creates the Desktop
      icon (→ `pythonw.exe app.py` in that folder), registers the weekday task (default 09:15) via Task Scheduler,
      and opens the app.
    - **Mac**: double-click **`Open Loops.command`** (right-click → **Open** the first time, to get past the
-     unidentified-developer warning). It runs `install.sh`, which does the same but installs Python / Claude Code
-     via Homebrew / the official installer if missing, copies the app to
+     unidentified-developer warning). It runs `install.sh`, which does the same but installs Python via Homebrew if
+     missing (with no Homebrew it points to python.org and stops), copies the app to
      `~/Library/Application Support/OpenLoops`, creates **Open Loops.app** (logo icon) on the Desktop and in
      `~/Applications` and pins it to the Dock, and registers
      the weekday refresh as a `launchd` agent (`com.openloops.refresh`, default 09:15).
@@ -120,9 +126,12 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
      left out and listed. If the new place already has a list, nothing is copied again. See gotcha 8 for why.
      With Grok, open Grok once in the new folder and trust it.
 
+   Neither script installs an AI (Claude, Codex or Grok); if none is found they say so in one line and carry on.
    The downloaded folder can be deleted afterwards either way.
-2. On first open the app shows the **connection checklist** (`doctor.py`, re-checked every minute) until Claude is
-   signed in and Slack + Gmail are connected. The Slack user id is detected automatically.
+2. On first open the app shows the **connection checklist** (`doctor.py`, re-checked every minute) until the AI is
+   installed and signed in and Slack + Gmail are connected. With no AI on the computer the first row is
+   **Install Claude** (or the AI chosen in ⚙ Settings), with the commands it will run shown underneath. The Slack
+   user id is detected automatically.
 3. When green it shows **Who's who?** (`people.py`): the 12–15 people the user messages most, each with a sample
    line and a guessed *senior / peer / junior / external* to correct with radio buttons. Saving writes
    `config.people`, then runs *Learn my tone* (`voice.py`) and the first refresh automatically.

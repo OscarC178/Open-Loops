@@ -86,13 +86,14 @@ sound like you rather than like a reminder bot. Every action gives instant feedb
 ## Install (1–3 minutes)
 
 1. Download and run the installer: **[Windows – OpenLoops-Setup.exe](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops-Setup.exe)** · **[Mac – OpenLoops.dmg](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops.dmg)**.
-   It fetches the latest Open Loops from this repo, installs Python and Claude Code if you don't have them,
-   and puts an **Open Loops** icon on your Desktop. Windows may show a SmartScreen warning and macOS an
+   It fetches the latest Open Loops from this repo, installs Python if you don't have it,
+   and puts an **Open Loops** icon on your Desktop. It does not install an AI: the app does that. Windows may show a SmartScreen warning and macOS an
    unidentified-developer warning, because the installers are not code-signed: choose *More info → Run anyway*
    (Windows) or *right-click → Open* / *Privacy & Security → Open Anyway* (Mac).
    No installer? Download the zip of this repo instead and double-click `Open Loops.cmd` (Windows) or
    `Open Loops.command` (Mac).
-2. Tick the checklist: sign in, connect Slack and/or Gmail (one is enough). Miro is optional and only
+2. Tick the checklist: press **Install Claude** if you don't have it yet (or pick Grok in Settings first),
+   sign in, connect Slack and/or Gmail (one is enough). Miro is optional and only
    needed for the Roadmap section.
 3. Open **Open Loops** from the Desktop each morning (Mac: orange-loop app — drag it to the Dock).
 
