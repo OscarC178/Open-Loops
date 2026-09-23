@@ -796,7 +796,7 @@ class H(BaseHTTPRequestHandler):
             # Config first: if it cannot be read, refuse before deleting anything, so an unreadable
             # config.json never leaves the user with no list AND stale people/Slack id (Codex review, #21).
             # first_scan "later": a brand-new user again, so the weekday task reads nothing until Start the first scan
-            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="", first_scan="later")) is False:
+            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="", slack_self_name="", first_scan="later")) is False:
                 return self._json({"ok": False, "error": messages.say("config_unreadable"),
                                    "detail": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
             for f in (STATE, VOICEF, PEOPLEF):

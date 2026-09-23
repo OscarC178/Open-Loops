@@ -239,7 +239,8 @@ PROBE_STEP = {"gmail": "gmail.get_profile with no arguments.",
                         "slack.slack_list_user_channels once."),
               "miro": "one read-only call on the miro MCP server (for example, list the boards you can see)."}
 PROBE_LINES = {"gmail": ["GMAIL: CONNECTED or NOT-CONNECTED"],
-               "slack": ["SLACK: CONNECTED or NOT-CONNECTED", "SLACK_ID: <the Slack user id you read, which starts with U> or NONE"],
+               "slack": ["SLACK: CONNECTED or NOT-CONNECTED", "SLACK_ID: <the Slack user id you read, which starts with U> or NONE",
+                         "SLACK_NAME: <that profile's display name, else its real name> or NONE"],
                "miro": ["MIRO: CONNECTED or NOT-CONNECTED"]}
 PROBE_SRC_TOOLS = {"gmail": ["gmail.get_profile"], "slack": ["slack.read_user_profile", "slack.list_user_channels"],
                    "miro": ["miro.*"]}
@@ -261,8 +262,24 @@ CODEX_SAID = {"timeout": say("codex_check_timeout"), "limit": say("codex_check_l
 _codex_found = {}  # what the probe learnt that main() uses: the Slack user id, and which account it was
 
 
+def slack_name(text):
+    """A "SLACK_NAME: ..." line's value made safe to show (#50): one line, no angle brackets or control characters, at
+    most 60 characters; "" for NONE or nothing. The page shows it in the checklist row's title (escaped there too);
+    apostrophes and the like stay: O'Brien is a name."""
+    v = re.sub(r"[<>\x00-\x1f\x7f]", "", str(text or "")).strip()
+    v = re.sub(r"\s+", " ", v)[:60].strip()
+    return "" if v.upper() in ("NONE", "NULL", "N/A", "") else v
+
+
+def slack_name_of(text):
+    """The display name in an answer's single "SLACK_NAME: ..." line -> str ("" without exactly one such line)."""
+    got = [ln.split(":", 1)[1] for ln in (text or "").splitlines() if ln.strip().upper().startswith("SLACK_NAME:")]
+    return slack_name(got[0]) if len(got) == 1 else ""
+
+
 def parse_probe(text):
-    """The probe's answer -> {"gmail", "slack", "miro": True | False | None (no such line), "slack_id": str}.
+    """The probe's answer -> {"gmail", "slack", "miro": True | False | None (no such line), "slack_id": str,
+    "slack_name": str (the display name, #50; "" when not given)}.
     Strict: only a whole line "GMAIL: CONNECTED" or "GMAIL: NOT-CONNECTED" counts (surrounding spaces allowed), so an
     answer that repeats the question ("GMAIL: CONNECTED or NOT-CONNECTED") says nothing."""
     got = {}
@@ -272,6 +289,7 @@ def parse_probe(text):
         got[key] = True if said == ["CONNECTED"] else False if said == ["NOT-CONNECTED"] else None
     ids = [m.group(1) for ln in lines if (m := re.fullmatch(r"SLACK_ID:\s*(U[0-9A-Z]{8,})", ln))]
     got["slack_id"] = ids[0] if len(ids) == 1 else ""
+    got["slack_name"] = slack_name_of(text) if got["slack_id"] else ""
     return got
 
 
@@ -307,7 +325,7 @@ def codex_probe(sig, want_miro, recheck=False, now=None):
     srcs = [x for x in ("gmail", "slack") if not listed or set(agent._qualify(PROBE_SRC_TOOLS[x])) & listed]
     srcs += ["miro"] if want_miro else []
     if not srcs:
-        res = {"gmail": False, "slack": False, "miro": None, "slack_id": "", "why": "", "tries": 0,
+        res = {"gmail": False, "slack": False, "miro": None, "slack_id": "", "slack_name": "", "why": "", "tries": 0,
                "account": sig.split(":", 1)[0], "at": now, "sig": sig, "miro_asked": want_miro}
         write_json(CODEX_PROBE, res)
         return res
@@ -334,13 +352,13 @@ def codex_probe(sig, want_miro, recheck=False, now=None):
                            for x in srcs):
             why = "failed"
     if why:
-        got.update(gmail=None, slack=None, miro=None, slack_id="")
+        got.update(gmail=None, slack=None, miro=None, slack_id="", slack_name="")
     else:
         for src_, tools_ in PROBE_PROOF.items():
             got[src_] = bool(got[src_]) and bool(ok.intersection(tools_))
         got["miro"] = bool(want_miro and got["miro"] and any(u.startswith("miro/") for u in getattr(p, "tools_used", [])))
         if not got["slack"]:
-            got["slack_id"] = ""
+            got["slack_id"] = got["slack_name"] = ""
     # Warming attempts are counted per account and the count is kept through any other outcome (a timeout, a spent
     # allowance): only a probe that answered, or another account, starts it again. From the third on, the rows stop
     # saying "getting ready" and offer Connect, and stay that way.
@@ -427,7 +445,8 @@ def codex_steps(steps, recheck=False):
     steps.append(miro)
     _codex_found.clear()
     if ok and not pwhy:  # a real answer: its Slack id (or none) is the truth for this account
-        _codex_found.update(account=auth["account"], slack_self_id=(probe.get("slack_id") or "") if slack_row["ok"] else "")
+        _codex_found.update(account=auth["account"], slack_self_id=(probe.get("slack_id") or "") if slack_row["ok"] else "",
+                            slack_self_name=(probe.get("slack_name") or "") if slack_row["ok"] else "")
     return auth["email"] if ok else "", slack_row["ok"], gmail_row["ok"], "", miro["ok"], "", {}
 
 
@@ -554,32 +573,45 @@ def main(detect=False, recheck=False):
     out["steps"].append({"id": "channel", "ok": slack or gmail, "title": "At least one source connected (Slack or Gmail)",
                          "fix": (first or say("no_source")) if not (slack or gmail) else ""})
 
-    # Who am I on Slack (needed to find your own messages - Slack only)
+    # Who am I on Slack (needed to find your own messages - Slack only). The display name comes from the same lookup
+    # (#50) and is only for the row's title; an id found before names were asked for simply shows none.
     sid = cfg.get("slack_self_id") or ""
+    sname = slack_name(cfg.get("slack_self_name")) if sid else ""
     if detect and agent.name() == "codex" and _codex_found.get("account"):
         # Codex: the probe itself read the Slack id. A different id replaces the stored one; so does a different ChatGPT
         # account (its Slack may be another person or workspace), with nothing if that account has no Slack.
         found, acct = _codex_found.get("slack_self_id") or "", _codex_found["account"]
-        new = found or (sid if cfg.get("codex_account") == acct else "")
-        if new != sid or cfg.get("codex_account") != acct:
-            sid = cfg["slack_self_id"] = new
-            _save({"slack_self_id": new, "codex_account": acct})
+        same = cfg.get("codex_account") == acct
+        new = found or (sid if same else "")
+        new_name = (_codex_found.get("slack_self_name") or "") if found else (sname if same else "")
+        if new != sid or new_name != sname or not same:
+            sid, sname = new, new_name
+            cfg.update(slack_self_id=new, slack_self_name=new_name)
+            _save({"slack_self_id": new, "slack_self_name": new_name, "codex_account": acct})
     if not sid and slack and detect and agent.name() != "codex":  # Codex asked already, in the probe: no second run
-        p = agent.run("Reply with ONLY the current logged-in user's Slack user id (it starts with U). "
-                      "The Slack search tool's description states it; if not, use slack_search_users with query 'me'.",
-                      ["slack.search_users"])
-        m = re.search(r"\bU[0-9A-Z]{8,}\b", p.stdout or "")
+        # a lookup, not a job: low effort whatever Settings say for the jobs (#50: a bare question cost ~£0.08 at xhigh)
+        p = agent.run("Reply with ONLY these two lines about the current logged-in Slack user:\n"
+                      "SLACK_ID: <their Slack user id, which starts with U>\n"
+                      "SLACK_NAME: <their display name as Slack shows it, else their real name> or NONE\n"
+                      "The Slack search tool's description states the id; if not, use slack_search_users with query 'me'.",
+                      ["slack.search_users"], effort_="low")
+        # the SLACK_ID line first (a name in capitals could look like an id), else any id in the answer, as before
+        m = re.search(r"SLACK_ID:\s*(U[0-9A-Z]{8,})\b", p.stdout or "") or re.search(r"\b(U[0-9A-Z]{8,})\b", p.stdout or "")
         if m:
-            sid = m.group(0)
-            cfg["slack_self_id"] = sid
-            _save({"slack_self_id": sid})
+            sid, sname = m.group(1), slack_name_of(p.stdout)
+            cfg.update(slack_self_id=sid, slack_self_name=sname)
+            _save({"slack_self_id": sid, "slack_self_name": sname})
     # a remembered id is not a tick while the AI is missing or signed out (#49): no job could use it, and the row
     # would claim Slack works; it says what to do first instead, and comes back by itself once signed in again
     known = bool(sid) and not first
-    out["steps"].append({"id": "self", "ok": known, "optional": not slack,
-                         "title": f"Knows who you are on Slack{(' (' + sid + ')') if known else ''}",
-                         # Slack ticked but no id: the lookup ran (the page always asks with --detect) and failed
-                         "fix": "" if known else first or (say("slack_id_unknown") if slack else "Only needed if you connect Slack.")})
+    # the title names the person (#50), never the raw id: that goes in "detail", for the Console and /api/diag
+    self_row = {"id": "self", "ok": known, "optional": not slack,
+                "title": "Knows who you are on Slack" + (f" ({sname})" if known and sname else ""),
+                # Slack ticked but no id: the lookup ran (the page always asks with --detect) and failed
+                "fix": "" if known else first or (say("slack_id_unknown") if slack else "Only needed if you connect Slack.")}
+    if sid:
+        self_row["detail"] = sid
+    out["steps"].append(self_row)
 
     # Mac only: the weekday morning refresh runs from launchd, and a failure there is otherwise silent (#24).
     # Optional, so a broken schedule never sends a set-up user back to the connection steps.
