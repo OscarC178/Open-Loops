@@ -1061,7 +1061,9 @@ def effort():
 
 
 def claude_args(tools):
-    args = ["claude", "-p", "--output-format", "text", "--allowedTools", ",".join(_qualify(tools))]
+    # json, not text (#46): one result object whose is_error flag says whether the CLI itself failed (signed out, usage
+    # limit, no network), so a failure is classified from that flag and never from prose mixed into the answer.
+    args = ["claude", "-p", "--output-format", "json", "--allowedTools", ",".join(_qualify(tools))]
     if model():
         args += ["--model", model()]
     if effort():
@@ -1087,5 +1089,124 @@ def run(prompt, tools, timeout=None):
         return subprocess.run(args, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", env=grok_job_env(), shell=WIN)
     # shell=True only on Windows, to resolve claude.cmd (npm shim) via PATH
-    return subprocess.run(claude_args(tools), input=prompt, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", shell=WIN)
+    p = subprocess.run(claude_args(tools), input=prompt, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", shell=WIN)
+    return claude_result(p)
+
+
+# Claude's structured failures (#46), in Codex's vocabulary (codex_failure): "expired" = signed out, "limit" = the plan's
+# usage limit, "network" = could not reach Anthropic, "failed" = anything else. Read only from a result the CLI marked
+# is_error (its own text: https://code.claude.com/docs/en/headless "When a failure happens inside the run, such as
+# missing authentication, Claude Code prints the failure as the result on stdout"), never from a normal answer.
+# Wording from https://code.claude.com/docs/en/errors ("Not logged in · Please run /login", "You've hit your session
+# limit", "Unable to connect to API", ...) plus the API status the result carries (api_error_status, seen on 2.1.280).
+# No bare "429"/"401" and no bare "request rejected": an error that merely quotes a number, or a 401 whose text says
+# "Request rejected", must not become a usage limit. The status numbers count only as api_error_status or "API Error: N".
+_CLAUDE_LIMIT_RE = re.compile(r"usage limit|rate.?limit|limit reached|hit your .{0,40}(?:limit|budget)|spend limit"
+                              r"|too many requests|api error: 429|credit balance", re.I)
+_CLAUDE_EXPIRED_RE = re.compile(r"not logged in|login expired|log(?:ged)? ?in again|invalid api key|/login|oauth token"
+                                r"|api error: 401|authentication|unauthori[sz]ed|re-?authenticate", re.I)
+_CLAUDE_NETWORK_RE = re.compile(r"unable to connect|connection (?:error|refused|dropped|lost|closed)|can't reach"
+                                r"|no internet|request timed out|getaddrinfo|econnrefused|etimedout|enotfound", re.I)
+_claude_text_warned = False  # the "not JSON" warning is printed once per process, not once per run
+
+
+def claude_failure(status, text):
+    """Why a Claude run the CLI marked is_error failed -> "limit" | "expired" | "network" | "failed". The API status
+    first: a 401 or 429 decides before any text is read (#47 review: "Request rejected: invalid authentication
+    credentials" with status 401 is a sign-out, not a limit). Only without one, the CLI's own error text."""
+    if status == 401:
+        return "expired"
+    if status == 429:
+        return "limit"
+    if _CLAUDE_LIMIT_RE.search(text or ""):
+        return "limit"
+    if _CLAUDE_EXPIRED_RE.search(text or ""):
+        return "expired"
+    if _CLAUDE_NETWORK_RE.search(text or ""):
+        return "network"
+    return "failed"
+
+
+def _claude_json(out):
+    """The result object in `claude -p --output-format json` stdout -> dict, or None when it is not there.
+
+    Every top-level JSON value in the output is decoded, in order (a value may span lines; a line that does not start
+    one, such as a plain-text warning, is skipped), and a list is read as a stream of events. The LAST object whose
+    "type" is "result" wins (the key is required): a JSON diagnostic printed before or after it that happens to carry a
+    "result" or "is_error" field is never taken for it (#47 second review). With no such object, a single object that
+    carries "is_error" or "subtype" is used; anything else is not JSON output."""
+    text = (out or "").strip()
+    dec, objs, pos = json.JSONDecoder(), [], 0
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        try:
+            v, pos = dec.raw_decode(text, pos)
+        except ValueError:  # not the start of a JSON value: skip the rest of this line
+            nl = text.find("\n", pos)
+            pos = len(text) if nl < 0 else nl + 1
+            continue
+        objs += [e for e in v if isinstance(e, dict)] if isinstance(v, list) else [v] if isinstance(v, dict) else []
+    results = [o for o in objs if o.get("type") == "result"]
+    if results:
+        return results[-1]
+    flagged = [o for o in objs if "is_error" in o or "subtype" in o]
+    return flagged[0] if len(flagged) == 1 else None
+
+
+def claude_result(p):
+    """A finished `claude -p --output-format json` -> the CompletedProcess the jobs expect: .stdout is the answer text
+    (the "result" field), so their <<<BLOCK>>> parsing is unchanged; "" when the run is an error. Extra attributes: agent ("claude"), is_error (True,
+    False, or None when the output was not JSON), error_text (the CLI's own error when is_error), refused (claude_failure's
+    reason when is_error, else ""), usage, cost_usd, session_id. A run marked is_error never exits 0 here.
+    Output with no result object in it is not parsed further. Exit 0: raw-output tolerance, the text is passed on as it
+    came (a CLI that printed plain text) with a warning once per process. Non-zero (a crash, or a Claude Code too old
+    for --output-format json rejecting the flag with its usage text): a plain failure, no stdout, refused "failed",
+    the output kept on stderr for the log. Nothing is retried."""
+    global _claude_text_warned
+    p.agent, p.is_error, p.error_text, p.refused, p.usage, p.cost_usd, p.session_id = "claude", None, "", "", None, None, ""
+    j = _claude_json(p.stdout)
+    if j is None:
+        raw = (p.stdout or "").strip()
+        if p.returncode != 0:
+            p.refused, p.stdout = "failed", ""
+            # the note and the output go BEFORE the CLI's own stderr: messages.ai_failure reads its last 40 lines
+            p.stderr = (f"claude: exited {p.returncode} without a JSON result (if this Claude Code is too old for"
+                        " --output-format json, update it)\n" + "".join(f"claude output: {ln}\n" for ln in raw.splitlines()[-40:])
+                        + (p.stderr or ""))
+        elif raw:
+            p.stderr = (p.stderr or "") + "claude: output was not JSON; used as plain text\n"
+            if not _claude_text_warned:
+                _claude_text_warned = True
+                print("open loops: claude did not answer in JSON (older CLI?); reading its output as plain text",
+                      file=sys.stderr)
+        return p
+    raw_err = j.get("errors")
+    errors = [str(e) for e in raw_err] if isinstance(raw_err, list) else ([str(raw_err)] if raw_err else [])
+    result = j.get("result")
+    result = result if isinstance(result, str) else ("" if result is None else json.dumps(result))
+    p.is_error = bool(j.get("is_error")) or str(j.get("subtype") or "success") != "success"
+    p.usage = j.get("usage") if isinstance(j.get("usage"), dict) else None
+    p.cost_usd, p.session_id = j.get("total_cost_usd"), str(j.get("session_id") or "")
+    # A failed run's text never reaches the job (#47 review): chase counts a DRAFT_CREATED line, people/refresh/voice
+    # save a block, doctor stores anything shaped like a Slack id - none of them checks the exit code first. So an
+    # is_error result leaves stdout empty; its text is in .error_text and on stderr, for the log.
+    p.stdout = "" if p.is_error else result
+    note = "claude: " + str(j.get("subtype") or "result")
+    if p.usage:
+        note += f"; tokens in {p.usage.get('input_tokens', '?')}, out {p.usage.get('output_tokens', '?')}"
+    if isinstance(p.cost_usd, (int, float)):
+        note += f"; cost ${p.cost_usd:.4f}"
+    if p.is_error:
+        status = j.get("api_error_status")
+        p.error_text = "\n".join(x for x in [result] + errors if x).strip() or str(j.get("subtype") or "error")
+        p.refused = claude_failure(status if isinstance(status, int) else None, p.error_text)
+        note += f"; FAILED: {p.refused}" + (f" (API status {status})" if status else "")
+        note += "\n" + "".join(f"claude error: {ln}\n" for ln in p.error_text.splitlines() if ln.strip()).rstrip("\n")
+        if p.returncode == 0:
+            p.returncode = 1
+    p.stderr = (p.stderr or "") + ("\n" if p.stderr and not p.stderr.endswith("\n") else "") + note + "\n"
+    return p
