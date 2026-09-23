@@ -222,7 +222,21 @@ check(names == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Ne
 check(not rows["miro"]["ok"] and not miro_ok and "connect" not in rows["miro"]
       and rows["miro"]["fix"] == messages.say("server_unsupported", service="Miro")
       and rows["miro"]["detail"] == "listed as plugin:miro:x & calc.exe" and "calc" not in rows["miro"]["fix"],
-      "a connected server under a name Open Loops won't use: red, unsupported in plain words, no button; the name goes to the Console only")
+      "a connected server under a name Open Loops won't use: unsupported in plain words, no button; the name goes to the Console only")
+# ...and it renders red: the page's own checkRow(), cut from index.html, run in node on the doctor's row
+NODE = shutil.which("node")
+if NODE:
+    page = (REPO / "openloops" / "index.html").read_text(encoding="utf-8").splitlines()
+    grab = lambda start: next(l for l in page if l.startswith(start))
+    js = "\n".join([grab("const esc="), "function connectBtn(){return ''}", grab("const checkRow="),
+                    f"console.log(checkRow({json.dumps(rows['miro'])}))"])
+    html = subprocess.run([NODE, "-e", js], capture_output=True, text=True, timeout=60).stdout
+    check('style="color:var(--r)" title="needs attention"' in html and "nothing to do here yet" not in html,
+          "the unsupported row renders as the red 'needs attention' cross, not the grey optional dash")
+elif os.environ.get("GITHUB_ACTIONS"):
+    raise SystemExit("FAIL: node is not on PATH in CI, so the unsupported row's rendering was not tested")
+else:
+    say("SKIP the unsupported row's rendering: node not installed")
 # persisted as doctor.main() does, through _save() into a real config.json that holds names from an earlier check
 _cfgdir = Path(tempfile.mkdtemp(prefix="openloops-doctor-names-"))
 _real_cfg, doctor.CONFIG = doctor.CONFIG, _cfgdir / "config.json"

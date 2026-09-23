@@ -154,6 +154,7 @@ def claude_steps(steps):
                 r["fix"], r["detail"] = say("listing_failed"), unlisted  # what the CLI said: Console / diag, not the sentence
             elif state == "unsupported":  # no button: signing in to it again would not change its name (#27)
                 r["fix"], r["detail"] = say("server_unsupported", service=service), "listed as " + odd[id_][:200]
+                r["alert"] = True   # red on the page (checkRow), not an optional row's grey "nothing to do yet" dash
             elif not state:
                 r["fix"], r["connect"] = fix_missing
             else:
