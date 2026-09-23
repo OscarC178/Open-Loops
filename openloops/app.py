@@ -141,10 +141,12 @@ def run_job(name, extra=None):
     return True
 
 
-# ---- Claude setup buttons: /api/connect/<step> runs agent.login_cmd(step) in the background ----
+# ---- Setup buttons: /api/connect/<step> runs agent.login_cmd(step) (Claude's sign-ins) or, for "install", the
+# selected AI's installer (agent.install_cmd, any agent) in the background ----
 # Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
 # The log (state/connect-<step>.log) holds what the CLI printed, minus the sign-in link's query, for the page and Console.
 CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
+INSTALL_TIMEOUT_S = 10 * 60  # an install downloads a few hundred MB: longer, but still not for ever
 URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 # On disk a link keeps its address but not its query: that is where an authorisation request's state and
 # challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
@@ -191,6 +193,17 @@ def connect_log(step):
     return ROOT / "state" / f"connect-{step}.log"
 
 
+def add_install_dirs():
+    """Append the folders the CLI installers use (agent.install_dirs) that exist to this process's PATH; the checks and
+    jobs it starts inherit it. Run at start (an app opened from a terminal that predates the install) and after an
+    install (the installer adds the folder to the user's shell profile, which this process never reads)."""
+    from . import agent
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    extra = [str(d) for d in agent.install_dirs() if d.is_dir() and str(d) not in parts]
+    if extra:
+        os.environ["PATH"] = os.pathsep.join(parts + extra)
+
+
 def _connect_one(step, argv, log, deadline):
     """Run one command of a setup step -> exit code. Off Windows it runs on a pseudo-terminal (stdlib pty):
     `claude mcp login` gives up at once when stdin is not a terminal, but on one it waits for the browser's
@@ -218,7 +231,8 @@ def _connect_one(step, argv, log, deadline):
         while True:
             if time.time() > deadline:
                 kill_tree(p)
-                tail = "\nstopped: no answer from the browser within 5 minutes\n"
+                tail = ("\nstopped: the install did not finish within 10 minutes\n" if step == "install"
+                        else "\nstopped: no answer from the browser within 5 minutes\n")
                 break
             if select.select([m], [], [], 0.5)[0]:
                 try:
@@ -231,7 +245,7 @@ def _connect_one(step, argv, log, deadline):
                 # the whole buffer each time: an escape code or the link can straddle two reads
                 text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
                 log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
-                u = URL_RE.search(text)
+                u = URL_RE.search(text) if step != "install" else None  # an installer's links are not sign-in pages
                 if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
                     connects[step]["url"] = u.group(0)
                     if "--no-browser" in argv:
@@ -248,10 +262,19 @@ def _connect_one(step, argv, log, deadline):
 
 
 def run_connect(step):
-    """Start a Claude setup step in the background -> (started, error). One run per step at a time."""
+    """Start a setup step in the background -> (started, error). One run per step at a time. "install" installs the
+    selected AI's CLI, whichever AI that is; the other steps are Claude's sign-ins."""
     from . import agent
-    if agent.name() != "claude" or step not in agent.CONNECT_STEPS:
+    install = step == agent.INSTALL_STEP
+    if install:
+        ic = agent.install_cmd()
+        if not ic:
+            return False, "no installer known for " + agent.display_name()
+        cmds = lambda: [ic["argv"]]  # the command doctor.py showed on the row, nothing else
+    elif agent.name() != "claude" or step not in agent.CONNECT_STEPS:
         return False, "no such setup step for " + agent.display_name()
+    else:
+        cmds = lambda: agent.login_cmd(step) or []
     with connect_lock:  # check and claim in one go
         if quit_requested:
             return False, "Open Loops is closing"
@@ -261,9 +284,9 @@ def run_connect(step):
     log = connect_log(step)
 
     def go():
-        rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
+        rc, deadline = -1, time.time() + (INSTALL_TIMEOUT_S if install else CONNECT_TIMEOUT_S)
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
-            for argv in agent.login_cmd(step) or []:
+            for argv in cmds():
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
                     break
@@ -271,6 +294,8 @@ def run_connect(step):
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
         finally:
+            if install:
+                add_install_dirs()  # before the page's re-check, which runs with this process's PATH
             doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
             doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
             connects[step].update(running=False, rc=rc)
@@ -294,6 +319,9 @@ def connect_status(step):
         lines = []
     c["last"] = next((x for x in reversed(lines) if x), "")[:300]
     c["step"] = step
+    from . import agent
+    if step == agent.INSTALL_STEP:  # what the button runs, so the page can show it before anyone presses it
+        c["command"] = (agent.install_cmd() or {}).get("command", "")
     return c
 
 
@@ -375,7 +403,7 @@ class H(BaseHTTPRequestHandler):
         elif self.path.split("?")[0].startswith("/api/connect/"):
             from . import agent
             step = self.path.split("?")[0].rsplit("/", 1)[1]
-            if step not in agent.CONNECT_STEPS:
+            if step not in agent.CONNECT_STEPS + (agent.INSTALL_STEP,):
                 return self._json({"error": "unknown setup step"}, 404)
             self._json(connect_status(step))
         elif self.path == "/api/roadmap":
@@ -482,7 +510,7 @@ class H(BaseHTTPRequestHandler):
                     doctor_cache = {"at": _t.time(), "result": res}
                 return self._json(res)
             return self._json(doctor_cache["result"])
-        if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
+        if self.path.startswith("/api/connect/"):  # a setup button: install the AI, sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
             return self._json({"started": started, **({"error": why} if why else {})},
@@ -707,6 +735,7 @@ if __name__ == "__main__":
         if "--no-browser" not in sys.argv:
             open_browser()
         sys.exit(0)
+    add_install_dirs()  # a CLI installed after this terminal (or Finder session) started is still found
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     print("Open Loops ->", url)
     if PORT != PREFERRED:
