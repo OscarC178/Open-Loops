@@ -358,6 +358,10 @@ FAILURES = {
         "what": "The first scan hasn't been started yet, so the scheduled refresh did not read anything.",
         "fix": "Open Open Loops and press Start the first scan.",
         "button": None},
+    "first_scan_not_saved": {
+        "what": "Open Loops couldn't save your choice, so nothing has changed.",
+        "fix": "Press Retry.",
+        "button": None},
     "first_scan_later": {
         "what": "Not started.",
         "fix": "Press Start the first scan when you're ready.",

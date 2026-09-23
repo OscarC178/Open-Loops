@@ -132,7 +132,7 @@ def page_js(port, session, scenario, tmp):
         "function paintSchedule(){}function schedBad(){return false}function paintConnect(){}function paintDaylog(){}function paintRm(){}",
         "async function loadDaylog(){}async function loadRm(){}function agentUI(){}const PAGE='t';let stopped=false;",
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
-        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("),
+        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
         grab("async function loadState("), grab("async function loadCfg("),
         grab("const running="), grab("const havePeople="), grab("const haveVoice="),
@@ -260,6 +260,33 @@ if NODE:
         shutil.rmtree(tmp, ignore_errors=True)
 
     # ------------------------------------------------------------ 3. isolated
+    say("2b. a choice that cannot be saved changes nothing: the box stays, says so, and offers Retry")
+    tmp = install_with_fake("openloops-firstrun-choice-")
+    srv, port = start_app(tmp, env_for(tmp))
+    try:
+        cfg0 = (tmp / "config.json").read_bytes()
+        out = page_js(port, {}, """
+ await boot();await tick();FAIL_ONCE.add('/api/config');await startScan();await tick();
+ out.failed=snap();out.retry=$('#start_retry').style.display;out.pressed=pressed;
+ FAIL_ONCE.add('/api/config');await notNow();await tick();out.failedLater=snap();
+ await retryChoice();await tick();out.later=snap();out.retryAfter=$('#start_retry').style.display;""", tmp)
+        f = out["failed"]
+        check(f["shown"] == ["start"] and f["jobs"] == [] and f["later"] == messages.say("first_scan_not_saved")
+              and out["retry"] == "" and out["pressed"] is False and out["SS"].get("ol.firstscan") == "later",
+              f"a failed save of Start: the box stays with the sentence and Retry, nothing starts ({f['later']!r})")
+        check(out["failedLater"]["jobs"] == [] and out["later"]["later"] == messages.say("first_scan_later") and out["retryAfter"] == "none",
+              "a failed Not now likewise; Retry saves it and the box says Not started")
+        check(json.loads((tmp / "config.json").read_text(encoding="utf-8")).get("first_scan") == "later",
+              "config.json holds only the choice that was saved")
+        (tmp / "config.json").write_bytes(cfg0)
+        out = page_js(port, {}, """
+ await boot();await tick();FAIL_ONCE.add('/api/config');await startScan();""", tmp)
+        check("first_scan" not in json.loads((tmp / "config.json").read_text(encoding="utf-8")) and out["SS"] == {},
+              "a failed save leaves config.json's first_scan and the tab's memory as they were")
+    finally:
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
     say("3. isolated: no to-do file, no scan by itself, the pill; by config.json and by OPENLOOPS_ISOLATED=1")
     tmp = install_with_fake("openloops-firstrun-iso-")
     todo = tmp / "home" / "Notes" / "to-do.md"

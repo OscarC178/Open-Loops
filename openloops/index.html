@@ -131,6 +131,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
    <button class="primary" id="start_go" onclick="startScan()">Start the first scan</button>
    <button id="start_later" onclick="notNow()">Not now</button>
+   <button id="start_retry" onclick="retryChoice()" style="display:none">Retry</button>
    <span class="sub" id="start_msg"></span>
   </div>
  </div>
@@ -492,12 +493,19 @@ const scanAllowed=()=>pressed||(!ISO&&GO==='go');
 const JOB_OF={people:'people',voice:'voice',scan:'refresh'};
 function waitsForGo(st){return !scanAllowed()&&!!JOB_OF[st]&&!kicked[st]&&!running(JOB_OF[st])&&!(st==='people'&&P)}
 function goRemember(v){GO=v;try{v?sessionStorage.setItem(GO_KEY,v):sessionStorage.removeItem(GO_KEY)}catch(e){}}
-// the choice also goes to config.json "first_scan", which the weekday task obeys (store.scheduled_skip)
-function saveChoice(v){api('/api/config',{first_scan:v}).catch(e=>clog('first scan choice not saved: '+errSaid(e)))}
-function startScan(){pressed=true;goRemember('go');saveChoice('go');clog('first scan: started by the button');tick()}
-function notNow(){goRemember('later');saveChoice('later');clog('first scan: not now');tick()}
+// The choice goes to config.json "first_scan" first, which the weekday task obeys (store.scheduled_skip); only once
+// that is saved does the page act on it. A failed save changes nothing: the box stays, says so, and offers Retry.
+let choiceFailed='',choiceBusy=false;
+async function saveChoice(v){choiceBusy=true;try{await api('/api/config',{first_scan:v});choiceFailed='';return true}
+ catch(e){choiceFailed=v;clog('first scan choice not saved: '+errSaid(e));return false}finally{choiceBusy=false}}
+async function startScan(){if(choiceBusy)return;if(!await saveChoice('go')){paintStart();return}
+ pressed=true;goRemember('go');clog('first scan: started by the button');tick()}
+async function notNow(){if(choiceBusy)return;if(!await saveChoice('later')){paintStart();return}
+ goRemember('later');clog('first scan: not now');tick()}
+function retryChoice(){return choiceFailed==='later'?notNow():startScan()}
 function paintStart(){$('#st_start').style.display='';$('#start_said').textContent=msg('first_scan',{days:histDays(),sources:scanSources()});
- $('#start_ask').textContent=msg('first_scan_ask');$('#start_msg').textContent=GO==='later'?msg('first_scan_later'):''}
+ $('#start_ask').textContent=msg('first_scan_ask');$('#start_retry').style.display=choiceFailed?'':'none';
+ $('#start_msg').textContent=choiceFailed?msg('first_scan_not_saved'):GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
 const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone'],['scan','First scan'],['ready','Ready']];
