@@ -114,6 +114,11 @@ check(app._install_one("t", [sys.executable, "-c", "import time; time.sleep(3)"]
 check("stopped: the install did not finish within 1 seconds" in lg.read_text(encoding="utf-8"), "Windows branch: the log says why")
 app.WIN = sys.platform == "win32"
 shutil.rmtree(_logdir, ignore_errors=True)
+_ic = agent.install_cmd()
+app.quit_requested = True  # #21's quit ownership covers the install too: once quitting, nothing new starts
+check(app.run_install({"agent": _ic["agent"], "command_id": _ic["id"]}) == (False, "Open Loops is closing", 400)
+      and "install" not in app.connects, "an Install pressed while the app is quitting starts nothing")
+app.quit_requested = False
 
 # ---------------------------------------------------------------- /api/connect/install
 if sys.platform == "win32":

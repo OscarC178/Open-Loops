@@ -308,8 +308,11 @@ def _install_one(step, argv, log, deadline):
         f.write("$ " + (subprocess.list2cmdline(argv) if WIN else shlex.join(argv)) + "\n")
         f.flush()
         how = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if WIN else {"start_new_session": True}
-        p = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, **how)
-        connect_procs[step] = p
+        # started and registered through _launch, as the sign-ins are, so a Quit either stops it or it never starts
+        p = _launch(step, argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, **how)
+        if p is None:
+            f.write("\nnot started: Open Loops is closing\n")
+            return -1, False
         try:
             return p.wait(max(1, deadline - time.time())), False
         except subprocess.TimeoutExpired:
@@ -317,7 +320,9 @@ def _install_one(step, argv, log, deadline):
             f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S} seconds\n")
             return -1, True
         finally:
-            connect_procs.pop(step, None)
+            with connect_lock:
+                if connect_procs.get(step) is p:
+                    connect_procs.pop(step)
 
 
 def run_install(body):
@@ -332,13 +337,13 @@ def run_install(body):
     if body.get("agent") != ic["agent"] or body.get("command_id") != ic["id"]:
         return False, "changed", 409
     with connect_lock:  # check and claim in one go
+        if quit_requested:
+            return False, "Open Loops is closing", 400
         if (connects.get(step) or {}).get("running"):
             return False, "already running", 200
         connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
                           "why": "", "agent": ic["agent"], "command": ic["command"], "command_id": ic["id"]}
     log = connect_log(step)
-    log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text("", encoding="utf-8")
 
     def go():
         rc, deadline, why, kind = -1, time.time() + INSTALL_TIMEOUT_S, "", "download"
@@ -369,7 +374,13 @@ def run_install(body):
             doctor_cache["at"] = 0
             connects[step].update(running=False, rc=rc, why=why)
 
-    threading.Thread(target=go, daemon=True).start()
+    try:  # as run_connect: anything failing between the claim and the worker would leave the install "running" for good
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
+        threading.Thread(target=go, daemon=True).start()
+    except Exception as e:
+        connects[step].update(running=False, rc=-1, why="start")
+        return False, f"could not start the install: {type(e).__name__}: {e}", 500
     return True, "", 200
 
 

@@ -84,7 +84,8 @@ rows = {}
 doctor.claude_steps(rows.setdefault("steps", []))
 rows = {r["id"]: r for r in rows["steps"]}
 check(rows["slack"].get("connect") == "slack_install", "an empty listing that ran fine still offers Install Slack plugin")
-doctor.run = lambda args, timeout=60: ((0, '{"loggedIn": true}') if args[1] == "auth"
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version"  # installed and starts (#16)
+                                       else (0, '{"loggedIn": true}') if args[1] == "auth"
                                        else (1, "claude.ai Gmail: https://g - ! Needs authentication\nError: timed out"))
 rows = {}
 doctor.claude_steps(rows.setdefault("steps", []))
