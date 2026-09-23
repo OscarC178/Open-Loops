@@ -224,36 +224,51 @@ DOWNLOAD_URL = "https://github.com/OscarC178/Open-Loops/releases/latest"
 RUN_REFRESH_RE = re.compile(r":\s(/[^:]*/scripts/run-refresh\.sh)")
 
 
-def schedule_step(logs=None, root=None):
-    """The weekday morning refresh, as far as its logs show. Returns a checklist step or None (no evidence yet).
+STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written by scripts/run-refresh.sh
+TAIL_BYTES = 256 * 1024   # the latest lines are what matter; a years-old log is not read whole every minute
 
-    - Red ("blocked" / "failed"): launchd.err.log has a start failure for THIS install's run-refresh.sh and no
-      runner-<date>.log is newer. launchd writes that log only when it cannot start the job at all; the case
-      from #24 is `/bin/bash: .../scripts/run-refresh.sh: Operation not permitted` (a background job may not
-      read ~/Documents). The LATEST such line decides which, not any older one.
-    - Green ("started"): a runner-<date>.log exists and is newer than any failure. That proves the script
-      started (it writes that log first), not that the refresh inside it succeeded - the title says "started".
-    Lines naming any other install's script are ignored: a moved install carries its old log along."""
+
+def schedule_step(logs=None, root=None):
+    """The weekday morning refresh, as far as launchd.err.log shows. Returns a checklist step or None (no evidence).
+
+    That log gets two kinds of line about an install: launchd's own start failures, e.g. #24's
+    `/bin/bash: .../scripts/run-refresh.sh: Operation not permitted` (a background job may not read ~/Documents),
+    and "openloops-refresh started <time> <root>", which run-refresh.sh writes to stderr as soon as it runs.
+    Only lines about THIS install count (script path or root, symlinks resolved), and the LAST of them decides,
+    by its position in the file - never the file's modified time, which a line about another install can move.
+    - last is a failure -> red ("blocked" for Operation not permitted, else "failed")
+    - last is a start   -> green "started" with its own time. It proves the script ran, not that the refresh
+      inside it succeeded, and says only that."""
     logs, root = Path(logs or LOGS), Path(root or ROOT)
     mine = os.path.realpath(root / "scripts" / "run-refresh.sh")  # the plist may name it via a symlink (/var -> /private/var)
+    home = os.path.realpath(root)
     err = logs / "launchd.err.log"
     try:
-        text, err_at = err.read_text(encoding="utf-8", errors="replace"), err.stat().st_mtime
+        with open(err, "rb") as f:
+            f.seek(max(0, err.stat().st_size - TAIL_BYTES))
+            text = f.read().decode("utf-8", errors="replace")
     except OSError:
-        text, err_at = "", 0.0
-    lines = [ln for ln in text.splitlines() if (m := RUN_REFRESH_RE.search(ln)) and os.path.realpath(m.group(1)) == mine]
-    ran = max((f.stat().st_mtime for f in logs.glob("runner-*.log")), default=0.0)
-    if lines and err_at > ran:
-        last = lines[-1]
-        kind = "blocked" if "operation not permitted" in last.lower() else "failed"
-        return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
-                "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
-                "detail": last[-300:]}  # developer detail for the Console / diag, never shown in the sentence
-    if ran:
-        when = datetime.fromtimestamp(ran).strftime("%a %-d %b at %H:%M")
+        return None
+    last = None
+    for ln in text.splitlines():
+        if (m := STARTED_RE.match(ln.strip())) and os.path.realpath(m.group(2)) == home:
+            last = ("started", m.group(1), ln)
+        elif (m := RUN_REFRESH_RE.search(ln)) and os.path.realpath(m.group(1)) == mine:
+            last = ("failed", None, ln)
+    if last is None:
+        return None
+    kind, when, ln = last
+    if kind == "started":
+        try:
+            when = datetime.strptime(when, "%Y-%m-%dT%H:%M:%S%z").strftime("%a %-d %b at %H:%M")
+        except ValueError:
+            pass  # keep the raw text rather than hide the row
         return {"id": "schedule", "ok": True, "optional": True, "kind": "started",
                 "title": SCHEDULE_MSG["started"]["title"].format(when=when), "fix": ""}
-    return None
+    kind = "blocked" if "operation not permitted" in ln.lower() else "failed"
+    return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
+            "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
+            "detail": ln[-300:]}  # developer detail for the Console / diag, never shown in the sentence
 
 
 def main(detect=False):

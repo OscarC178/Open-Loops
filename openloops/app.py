@@ -657,12 +657,13 @@ def pick_port(start=None):
     running=False -> the port is free, start there.
     Ports held by other programs are skipped, so the app is never confused with a stray server."""
     start = start or PORT
-    for p in range(start, start + 20):
+    stop = min(start + 20, 65536)  # never past the last port: 65535 + 1 would crash the scan
+    for p in range(start, stop):
         if not port_busy(p):
             return p, False
         if already_running(p):
             return p, True
-    raise SystemExit(f"Open Loops: no free port between {start} and {start + 19}; set OPENLOOPS_PORT")
+    raise SystemExit(f"Open Loops: no free port between {start} and {stop - 1}; set OPENLOOPS_PORT")
 
 
 def stop_running(now=False):
@@ -671,7 +672,8 @@ def stop_running(now=False):
     import urllib.request
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(20) as ex:  # probe the whole range at once: closed ports take the full timeout each
-        busy = [p for p, b in zip(range(PORT, PORT + 20), ex.map(port_busy, range(PORT, PORT + 20))) if b]
+        span = range(PORT, min(PORT + 20, 65536))
+        busy = [p for p, b in zip(span, ex.map(port_busy, span)) if b]
     for p in busy:
         if already_running(p):
             req = urllib.request.Request(f"http://127.0.0.1:{p}/api/quit", data=json.dumps({"now": now}).encode(),
