@@ -14,7 +14,7 @@
 #   4. Sets it to refresh every weekday morning (default 09:15) via launchd.
 #   5. Opens the app - which walks you through connecting Slack and email.
 #
-# Options: --at HH:MM (refresh time), --name <first name> (skips the question).
+# Options: --at HH:MM (refresh time), --name <first name> (skips the question), --help (this list, installs nothing).
 # Testing a fresh install beside the one you use, without touching it (INSTALL.md "Testing a fresh install"):
 #   bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "Test"
 #   --dest DIR    install there instead (or env OPENLOOPS_DEST); never reads an older ~/Documents install
@@ -39,17 +39,54 @@ NO_TASK=0
 NO_LAUNCH=0
 ISOLATED=0
 AT_SET=0
+USAGE="usage: bash install.sh [--at HH:MM] [--name NAME] [--dest DIR] [--port N] [--no-app] [--no-task] [--no-launch] [--isolated] [--help]"
+
+# --help: the header comment above is the flag list, so print it rather than keep a second copy that drifts (#55).
+# Everything from line 2 up to (not including) `set -e`, with the leading "# " taken off.
+show_help() {
+    echo "$USAGE"
+    echo ""
+    if [ -f "${BASH_SOURCE[0]}" ]; then
+        sed -n '2,/^set -e$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed -e 's/^# \{0,1\}//'
+    fi
+}
+# A bad option stops here, before anything is written, paused or started (#55): an unknown flag used to be dropped
+# silently and the installer carried on with a full default install.
+bad_option() {
+    echo "  $1" >&2
+    echo "  $USAGE" >&2
+    echo "  (bash install.sh --help lists what each option does)" >&2
+    exit 1
+}
+# A value-taking flag needs a value that is not itself a flag: `--dest --isolated` must not install into a folder
+# called "--isolated", and `--dest` given last must not fall back to the default place.
+# An explicitly empty value is refused too (an unset variable in `--dest "$X"` must not mean "the copy you use"),
+# except for --name, where `--name ""` has always meant "ask for the name" (the prompt further down).
+need_value() {   # need_value <flag> <number of arguments left> <the next argument>
+    if [ "$2" -lt 2 ] || { [ -z "$3" ] && [ "$1" != "--name" ]; } || [[ "$3" == -* ]]; then
+        local example
+        case "$1" in
+            --at) example="--at 09:15" ;;
+            --name) example="--name Sam" ;;
+            --dest) example="--dest ~/OpenLoops-test" ;;
+            *) example="--port 8790" ;;
+        esac
+        bad_option "$1 needs a value, for example: $example"
+    fi
+}
+# All option checks happen in this loop and the --at / --port checks just below it: nothing before them writes anything.
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --at) AT="$2"; AT_SET=1; shift 2 ;;
-        --name) NAME="$2"; shift 2 ;;
-        --dest) DEST="$2"; shift 2 ;;
-        --port) PORT="$2"; shift 2 ;;
+        -h|--help) show_help; exit 0 ;;
+        --at) need_value "$1" $# "${2-}"; AT="$2"; AT_SET=1; shift 2 ;;
+        --name) need_value "$1" $# "${2-}"; NAME="$2"; shift 2 ;;
+        --dest) need_value "$1" $# "${2-}"; DEST="$2"; shift 2 ;;
+        --port) need_value "$1" $# "${2-}"; PORT="$2"; shift 2 ;;
         --no-app) NO_APP=1; shift ;;
         --no-task) NO_TASK=1; shift ;;
         --no-launch) NO_LAUNCH=1; shift ;;
         --isolated) ISOLATED=1; NO_APP=1; NO_TASK=1; shift ;;   # a test copy touches no app icon and no weekday job
-        *) shift ;;
+        *) bad_option "unknown option: $1" ;;   # a typo (--isolatd, --Dest) or a stray word: never ignored
     esac
 done
 # --at too: register-task.sh would reject a bad time only after config.json had already saved it

@@ -16,6 +16,7 @@
   and its page waits for Start the first scan every time it is opened; once pressed, it still uses the AI you are
   signed in to, so your real accounts (read-only: a scan sends and drafts nothing). $env:OPENLOOPS_ISOLATED = "1"
   does the same for any copy at run time.
+  -Help prints this list and installs nothing.
 
   What it does (all on this computer, nothing sent anywhere):
     1. Installs Python if it's missing (using Windows' own installer, winget). It never installs an AI CLI
@@ -25,11 +26,25 @@
     4. Sets it to refresh every weekday morning (default 09:15).
     5. Opens the app - which walks you through connecting Slack and email.
 #>
+# An unknown parameter (-Bogus, a typo such as -Isolatd) never reaches the script: with this param() block and
+# [CmdletBinding()], PowerShell itself stops with "A parameter cannot be found that matches parameter name ..."
+# before the first line below runs, so nothing is written (the install.sh side of #55 needed its own check).
 [CmdletBinding()]
 param([string]$At = "09:15", [string]$Name = "", [string]$Dest = "", [switch]$NoLaunch,
-      [switch]$NoApp, [switch]$NoTask, [int]$Port = 0, [switch]$Isolated)
+      [switch]$NoApp, [switch]$NoTask, [int]$Port = 0, [switch]$Isolated, [switch]$Help)
 
 $ErrorActionPreference = "Stop"
+
+# -Help (#55): print the flag list and stop before anything is checked, installed or written. The comment block at
+# the top of this file is that list, so it is printed from here rather than kept twice.
+if ($Help) {
+    Write-Host "usage: setup.ps1 [-At HH:MM] [-Name NAME] [-Dest DIR] [-Port N] [-NoApp] [-NoTask] [-NoLaunch] [-Isolated] [-Help]"
+    Write-Host ""
+    $text = Get-Content -LiteralPath $PSCommandPath -Raw
+    $start = $text.IndexOf("<#"); $end = $text.IndexOf("#>")
+    if ($start -ge 0 -and $end -gt $start) { Write-Host $text.Substring($start + 2, $end - $start - 2).Trim("`r", "`n") }
+    exit 0
+}
 function Say($t) { Write-Host ""; Write-Host "  $t" -ForegroundColor Cyan }
 function Ok($t)  { Write-Host "  [ok] $t" -ForegroundColor Green }
 
