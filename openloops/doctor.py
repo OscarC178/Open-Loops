@@ -227,15 +227,17 @@ def grok_steps(steps):
 
 
 # ---- Codex: Gmail and Slack are ChatGPT connectors, so the only way to know they answer is to ask Codex once. That
-# costs a run against the ChatGPT plan's allowance, so the answer is kept in state/codex-probe.json and reused:
-# a day while at least one source works, 15 minutes while none does, never more often than every 30 seconds even when
-# forced. "Check again" (--recheck) and a new sign-in (auth.json changed) ask afresh. One run checks every source and
-# reads the Slack user id too, so the checklist never costs more than one run.
+# costs a run against the ChatGPT plan's allowance, so every attempt (a good answer, a timeout, a cold start) is kept in
+# state/codex-probe.json and reused: never asked again within 30 seconds, even by Check again (--recheck); without
+# Check again, a working answer is kept a day, "nothing connected" 15 minutes, a failed attempt 5 minutes. A new
+# sign-in or account (auth.json changed) asks afresh. One run checks every source and reads the Slack user id too.
 CODEX_PROBE = ROOT / "state" / "codex-probe.json"
 PROBE_TIMEOUT_S = 90  # measured 2026-09-23: 38 s for the whole check with Gmail and Slack both answering
 PROBE_KEEP_OK_S = 24 * 3600
 PROBE_KEEP_BAD_S = 15 * 60
+PROBE_KEEP_FAIL_S = 5 * 60
 PROBE_MIN_GAP_S = 30
+PROBE_WARMING_MAX = 3  # attempts that found no connector list before the rows give up waiting and offer Connect
 PROBE_PROMPT = """Check which of this ChatGPT account's connections answer. Make these calls, one each, and no others:
 1. gmail.get_profile with no arguments.
 2. slack.slack_read_user_profile with no user id (it returns your own profile). If that fails, slack.slack_list_user_channels once.
@@ -246,6 +248,7 @@ SLACK_ID: <the Slack user id from step 2, which starts with U> or NONE
 {miro_line}A connection is CONNECTED only if its call returned data. It is NOT-CONNECTED if the tool is not there, fails,
 or asks to connect or sign in."""
 PROBE_TOOLS = ["gmail.get_profile", "slack.read_user_profile", "slack.list_user_channels"]
+PROBE_PROOF = {"gmail": ("gmail.get_profile",), "slack": ("slack.slack_read_user_profile", "slack.slack_list_user_channels")}
 # What the Gmail / Slack / Miro rows say when the probe itself could not answer (#25: what happened, what to do)
 CODEX_SAID = {
     "timeout": "Codex took too long to answer, so Open Loops couldn't check your connections just now. Press Check again.",
@@ -253,59 +256,88 @@ CODEX_SAID = {
               "It comes back by itself, usually within a few hours. Press Check again then."),
     "expired": "Your ChatGPT sign-in has run out. Press Sign in to sign in again.",
     "failed": "Couldn't ask Codex about your connections just now. Press Check again.",
-    "warming": "Codex was getting your ChatGPT connections ready for the first time. Press Check again.",
+    "warming": "Codex is getting your ChatGPT connections ready for the first time. Press Check again in a minute.",
 }
 _LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota", re.I)
 _EXPIRED_RE = re.compile(r"\b401\b|unauthori[sz]ed|refresh token|token (?:is )?expired|sign in again|log in again|login again", re.I)
-_codex_found = {}  # what the probe learnt that main() uses: the Slack user id
+_codex_found = {}  # what the probe learnt that main() uses: the Slack user id, and which account it was
 
 
 def parse_probe(text):
-    """The probe's answer -> {"gmail", "slack", "miro": True | False | None (not said), "slack_id": str}."""
+    """The probe's answer -> {"gmail", "slack", "miro": True | False | None (no such line), "slack_id": str}.
+    Strict: only a whole line "GMAIL: CONNECTED" or "GMAIL: NOT-CONNECTED" counts (surrounding spaces allowed), so an
+    answer that repeats the question ("GMAIL: CONNECTED or NOT-CONNECTED") says nothing."""
     got = {}
+    lines = [ln.strip() for ln in (text or "").splitlines()]
     for key in ("gmail", "slack", "miro"):
-        m = re.search(rf"^\W*{key}\W*:\s*\W*(NOT[- ]?CONNECTED|CONNECTED)", text or "", re.M | re.I)
-        got[key] = None if not m else not m.group(1).upper().startswith("NOT")
-    m = re.search(r"SLACK_ID\W*:\s*\W*(U[0-9A-Z]{8,})\b", text or "")
-    got["slack_id"] = m.group(1) if m else ""
+        said = [ln.split(":", 1)[1].strip() for ln in lines if ln.upper().startswith(key.upper() + ":")]
+        got[key] = True if said == ["CONNECTED"] else False if said == ["NOT-CONNECTED"] else None
+    ids = [m.group(1) for ln in lines if (m := re.fullmatch(r"SLACK_ID:\s*(U[0-9A-Z]{8,})", ln))]
+    got["slack_id"] = ids[0] if len(ids) == 1 else ""
     return got
 
 
+def _probe_keep(old, recheck, now):
+    """Whether the last attempt can answer this check -> bool."""
+    age = now - float(old.get("at") or 0)
+    if not 0 <= age:
+        return False
+    if age < PROBE_MIN_GAP_S:
+        return True
+    if recheck:
+        return False
+    keep = PROBE_KEEP_FAIL_S if old.get("why") else PROBE_KEEP_OK_S if (old.get("gmail") or old.get("slack")) else PROBE_KEEP_BAD_S
+    return age < keep
+
+
 def codex_probe(sig, want_miro, recheck=False, now=None):
-    """Gmail / Slack (/ Miro) through Codex -> {"gmail", "slack", "miro", "slack_id", "why", "at"}; "why" is a key of
-    CODEX_SAID when the probe could not answer, and the source values are then None (unknown, not missing)."""
+    """Gmail / Slack (/ Miro) through Codex -> {"gmail", "slack", "miro", "slack_id", "why", "tries", "at", "sig"}.
+    "why" is a key of CODEX_SAID or agent.CODEX_REFUSE when the probe could not answer; the sources are then None
+    (unknown, not missing). A source is True only when the run exited 0, its line says exactly CONNECTED, and its
+    own tool call is in the run's events as completed without an error. A failed run (timeout, 401, spent allowance)
+    wins over whatever text came back."""
     from .store import read_json, write_json
     import time as _t
     now = _t.time() if now is None else now
     old = read_json(CODEX_PROBE) or {}
-    if old.get("sig") == sig and old.get("miro_asked") == want_miro:
-        age = now - float(old.get("at") or 0)
-        keep = PROBE_KEEP_OK_S if (old.get("gmail") or old.get("slack")) else PROBE_KEEP_BAD_S
-        if 0 <= age < (PROBE_MIN_GAP_S if recheck else keep):
-            return old
+    if old.get("sig") == sig and old.get("miro_asked") == want_miro and _probe_keep(old, recheck, now):
+        return old
     miro = ("3. One read-only call on the miro MCP server (for example, list the boards you can see).\n" if want_miro else "")
-    warm = agent.codex_apps_cached()  # a first run in a new job home may start before the connector list arrives
     p = agent.codex_run(PROBE_PROMPT.format(miro=miro, miro_line="MIRO: CONNECTED or NOT-CONNECTED\n" if want_miro else ""),
                         PROBE_TOOLS + (["miro.*"] if want_miro else []), timeout=PROBE_TIMEOUT_S, effort_="low")
     got = parse_probe(p.stdout)
-    said = (p.stdout or "") + "\n" + (p.stderr or "")
+    failed = "\n".join(getattr(p, "errors", []) or []) + "\n" + (getattr(p, "codex_stderr", "") or "")
+    ok = set(getattr(p, "tools_ok", []) or [])
+    refused = getattr(p, "refused", "") or ""
     why = ""
-    if got["gmail"] is None and got["slack"] is None:
-        why = ("timeout" if p.returncode == 124 else "limit" if _LIMIT_RE.search(said)
-               else "expired" if _EXPIRED_RE.search(said) else "failed")
-    elif not warm and not getattr(p, "tools_used", None) and not (got["gmail"] or got["slack"]):
-        why = "warming"  # "not connected" without trying a single tool: it had none to try yet. Not kept.
+    if refused:
+        why = {"cold": "warming", "unlisted": "failed"}.get(refused, refused)  # keyring / signin / link: the sign-in row
+    elif p.returncode == 124:
+        why = "timeout"
+    elif _LIMIT_RE.search(failed):
+        why = "limit"
+    elif _EXPIRED_RE.search(failed):
+        why = "expired"
+    elif p.returncode != 0 or (got["gmail"] is None and got["slack"] is None):
+        why = "failed"
     if why:
-        got.update(gmail=None, slack=None, miro=None)
-    res = {**got, "why": why, "at": now, "sig": sig, "miro_asked": want_miro}
-    if not want_miro:
-        res["miro"] = None
+        got.update(gmail=None, slack=None, miro=None, slack_id="")
+    else:
+        for src_, tools_ in PROBE_PROOF.items():
+            got[src_] = bool(got[src_]) and bool(ok.intersection(tools_))
+        got["miro"] = bool(want_miro and got["miro"] and any(u.startswith("miro/") for u in getattr(p, "tools_used", [])))
+        if not got["slack"]:
+            got["slack_id"] = ""
+    tries = (int(old.get("tries") or 0) + 1) if (why == "warming" and old.get("why") == "warming" and old.get("sig") == sig) else 1
+    if why == "warming" and tries >= PROBE_WARMING_MAX:
+        why, got = "", dict(got, gmail=False, slack=False, miro=False if want_miro else None)  # stop waiting: offer Connect
+    res = {**got, "why": why, "tries": tries, "at": now, "sig": sig, "miro_asked": want_miro}
     try:
         LOGS.mkdir(parents=True, exist_ok=True)
         (LOGS / "codex-probe-last.log").write_text(
-            f"rc={p.returncode}\n--- final message ---\n{p.stdout}\n--- stderr ---\n{(p.stderr or '')[-3000:]}", encoding="utf-8")
-        if not why or why in ("limit", "expired"):  # a timeout or a one-off failure is asked again next time
-            write_json(CODEX_PROBE, res)
+            f"rc={p.returncode} why={why or '-'}\n--- final message ---\n{p.stdout}\n--- stderr ---\n{(p.stderr or '')[-3000:]}",
+            encoding="utf-8")
+        write_json(CODEX_PROBE, res)  # every attempt, so the cooldown holds for failures too
     except OSError:
         pass
     return res
@@ -325,19 +357,23 @@ def codex_steps(steps, recheck=False):
         rc, txt = run([cli, "login", "status"])
         low = txt.lower()
         logged = rc == 0 and "logged in" in low and "not logged in" not in low
-        mode = auth["mode"] or ("chatgpt" if "chatgpt" in low else "apikey" if "api key" in low else "")
+        mode = auth["mode"] or ("keyring" if logged and "chatgpt" in low else "apikey" if "api key" in low else "")
     chatgpt = logged and mode == "chatgpt"
     want_miro = agent.codex_has_miro()
-    probe = codex_probe(auth["sig"] or "keyring", want_miro, recheck) if chatgpt else {}
-    expired = probe.get("why") == "expired"
-    ok = chatgpt and not expired
+    probe = codex_probe(auth["account"] + ":" + auth["sig"], want_miro, recheck) if chatgpt else {}
+    pwhy = probe.get("why") or ""
+    ok = chatgpt and pwhy not in ("expired", "keyring", "signin", "link")
     login = {"id": "login", "ok": ok, "title": f"Signed in to ChatGPT{(' as ' + auth['email']) if ok and auth['email'] else ''}"}
     if not have:
         login["fix"] = "Install Codex first (the row above)."
+    elif logged and mode == "keyring" or pwhy == "keyring":
+        login["fix"] = agent.CODEX_REFUSE["keyring"].format(store=agent.codex_keyring_store())  # no button: a terminal step
+    elif pwhy == "link":
+        login["fix"] = agent.CODEX_REFUSE["link"]
     elif logged and mode == "apikey":
         login.update(fix="Codex is signed in with an API key, which can't use Gmail or Slack. Sign in with your ChatGPT "
                          "account instead: press Sign in.", connect="login")
-    elif expired:
+    elif pwhy == "expired":
         login.update(fix=CODEX_SAID["expired"], connect="login")
     elif not ok:
         login.update(fix="Press Sign in: your browser opens the ChatGPT sign-in page. Use the ChatGPT account whose Gmail "
@@ -349,7 +385,7 @@ def codex_steps(steps, recheck=False):
     steps.append(login)
 
     first = "Sign in to ChatGPT first (the row above)."
-    why = CODEX_SAID.get(probe.get("why") or "", "")
+    why = CODEX_SAID.get(pwhy, "")
 
     def row(id_, title, name):
         state = probe.get(id_)
@@ -376,7 +412,9 @@ def codex_steps(steps, recheck=False):
                        "Codex has a Miro server but it didn't answer. Open a terminal, type codex mcp login miro, "
                        "press Enter and follow what it says, then press Check again.")
     steps.append(miro)
-    _codex_found["slack_self_id"] = (probe.get("slack_id") or "") if slack_row["ok"] else ""
+    _codex_found.clear()
+    if ok and not pwhy:  # a real answer: its Slack id (or none) is the truth for this account
+        _codex_found.update(account=auth["account"], slack_self_id=(probe.get("slack_id") or "") if slack_row["ok"] else "")
     return auth["email"] if ok else "", slack_row["ok"], gmail_row["ok"], "", miro["ok"], "", {}
 
 
@@ -478,10 +516,15 @@ def main(detect=False, recheck=False):
 
     # Who am I on Slack (needed to find your own messages - Slack only)
     sid = cfg.get("slack_self_id") or ""
-    if not sid and slack and detect and _codex_found.get("slack_self_id"):  # Codex: read by the connection probe itself
-        sid = cfg["slack_self_id"] = _codex_found["slack_self_id"]
-        _save({"slack_self_id": sid})
-    if not sid and slack and detect:
+    if detect and agent.name() == "codex" and _codex_found.get("account"):
+        # Codex: the probe itself read the Slack id. A different id replaces the stored one; so does a different ChatGPT
+        # account (its Slack may be another person or workspace), with nothing if that account has no Slack.
+        found, acct = _codex_found.get("slack_self_id") or "", _codex_found["account"]
+        new = found or (sid if cfg.get("codex_account") == acct else "")
+        if new != sid or cfg.get("codex_account") != acct:
+            sid = cfg["slack_self_id"] = new
+            _save({"slack_self_id": new, "codex_account": acct})
+    if not sid and slack and detect and agent.name() != "codex":  # Codex asked already, in the probe: no second run
         p = agent.run("Reply with ONLY the current logged-in user's Slack user id (it starts with U). "
                       "The Slack search tool's description states it; if not, use slack_search_users with query 'me'.",
                       ["slack.search_users"])
