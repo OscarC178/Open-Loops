@@ -43,7 +43,10 @@ PORTS = range(8765, 8785)   # app.py's pick_port() range: an old copy may be on 
 LABEL = "com.openloops.refresh"
 FILES = ["config.json", "voice.json", "people_suggested.json", "google_oauth_client.json"]   # state.json last
 DIRS = ["state", ".grok", "profiles", "private"]
-GROK_HOME = os.path.join("state", "grok-home")   # links to ~/.grok/auth.json, trusted_folders.toml(.lock)
+# The only links agent.grok_job_env() makes: state/grok-home/<name> -> ~/.grok/<name>. Matched by exact relative
+# path, so any other link (even one elsewhere under grok-home) keeps the generic "left out" wording.
+GROK_LINKS = tuple(os.path.join("state", "grok-home", n)
+                   for n in ("auth.json", "trusted_folders.toml", "trusted_folders.toml.lock"))
 SENTINEL = ".migrated-from"   # in DEST: the resolved old folder, written only once everything is copied and checked
 LOG = Path.home() / "Library" / "Logs" / "OpenLoops" / "install.log"   # tracebacks go here, never on screen
 PAUSED = []   # the plist whose job unload_job() paused: put back as it was if we stop (the old copy stays in use)
@@ -413,7 +416,7 @@ def main():
         "Open Loops no longer uses it.")
     # The links Grok jobs keep in state/grok-home (agent.grok_job_env) point at ~/.grok's sign-in files. "Copy what
     # they point to by hand" means nothing to a first-time user (#55): say which files they are and the easy fix.
-    grok = [x for x in skipped if x.startswith(GROK_HOME + os.sep)]
+    grok = [x for x in skipped if x in GROK_LINKS]
     others = [x for x in skipped if x not in grok]
     if grok:
         say(f"Left out {len(grok)} link(s) to your Grok sign-in ({', '.join(os.path.basename(g) for g in grok)}). "

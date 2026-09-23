@@ -281,10 +281,12 @@ try:
     (old / "state" / "grok-home").mkdir(parents=True, exist_ok=True)
     for f in ("auth.json", "trusted_folders.toml", "trusted_folders.toml.lock"):
         os.symlink(home / ".grok" / f, old / "state" / "grok-home" / f)
+    os.symlink(old / "config.json", old / "state" / "grok-home" / "notes.md")   # not one of agent.py's three: generic wording
     new = home / "Library" / "Application Support" / "OpenLoops"
     r = install(home, "--no-app", "--no-launch", "--no-task")
-    check(r.returncode == 0 and "Left out 2 shortcut(s)" in r.stdout and "private/hosts-link" in r.stdout
-          and ".grok/etc-link" in r.stdout and "grok-home" not in r.stdout, "both links reported")
+    check(r.returncode == 0 and "Left out 3 shortcut(s)" in r.stdout and "private/hosts-link" in r.stdout
+          and ".grok/etc-link" in r.stdout and "state/grok-home/notes.md" in r.stdout,
+          "the other links reported by their path, the unrelated one under grok-home among them")
     check("Left out 3 link(s) to your Grok sign-in (auth.json, trusted_folders.toml, trusted_folders.toml.lock)" in r.stdout
           and "signing in again inside the app" in r.stdout, "the grok-home links named, with the easy fix")
     check(not os.path.lexists(new / "private" / "hosts-link") and not os.path.lexists(new / ".grok" / "etc-link")
