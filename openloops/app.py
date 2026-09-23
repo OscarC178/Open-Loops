@@ -139,7 +139,8 @@ def run_job(name, extra=None):
 # Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
 # The log (state/connect-<step>.log) holds what the CLI printed, minus the sign-in link's query, for the page and Console.
 CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
-INSTALL_TIMEOUT_S = 10 * 60  # an install downloads a few hundred MB: longer, but still not for ever
+# an install downloads a few hundred MB: longer, but still not for ever (the tests shorten it)
+INSTALL_TIMEOUT_S = int(os.environ.get("OPENLOOPS_INSTALL_TIMEOUT_S") or 10 * 60)
 URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 # On disk a link keeps its address but not its query: that is where an authorisation request's state and
 # challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
@@ -281,7 +282,7 @@ def _install_one(step, argv, log, deadline):
             return p.wait(max(1, deadline - time.time())), False
         except subprocess.TimeoutExpired:
             kill_tree(p)
-            f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S // 60} minutes\n")
+            f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S} seconds\n")
             return -1, True
         finally:
             connect_procs.pop(step, None)
