@@ -579,7 +579,7 @@ async function boot(){await loadCfg();await loadState();DOC=await api('/api/doct
 const card=k=>({state:$('#su_'+k+'_state').textContent,cls:$('#su_'+k+'_state').className,rows:$('#su_'+k+'_rows').innerHTML,act:($('#su_'+k+'_act')||{}).innerHTML});
 const view=()=>({stage:stage(),setup:$('#setup').style.display,lists:$('#lists').style.display,back:$('#setup_back').style.display,
   ai:card('ai'),src:card('src'),sched:card('sched'),pick:$('#su_ai_pick').innerHTML,scan:$('#su_scan').textContent,time:$('#su_time').innerHTML,
-  start:$('#st_start').style.display,jobs:jobCalls()});
+  start:$('#st_start').style.display,jobs:jobCalls(),every:$('#st_connect').style.display,steps:$('#setup_steps').innerHTML});
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);clearInterval(allowT);console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
@@ -711,6 +711,8 @@ if NODE:
               "AI and a source ready: the view stays, and its last step is the first-scan box, waiting for the press")
         check(e["jobs"] == [] and out["seen"] == ["slack-id"], f"nothing started by itself: no job, the AI asked only for the Slack id ({out['seen']})")
         check(out["embed"] == {"start": "#su_start", "connect": "#su_all_body"}, "setupEmbed puts the first-scan box in the schedule card")
+        check(e["every"] == "" and "Slack connected (optional)" in e["steps"] and "At least one source connected" in e["steps"],
+              "past the connect stage, Every check still holds the whole checklist, from the latest check")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -754,6 +756,7 @@ if NODE:
         check(o["setup"] == "" and o["lists"] == "none" and o["back"] == "" and out["home"] == ""
               and [o[k]["state"] for k in ("ai", "src", "sched")] == ["Done", "Done", "Done"] and o["scan"] == "The first scan is done.",
               f"⚙ → Set-up opens the view on Home, every card done, with Back to your loops ({[o[k]['state'] for k in ('ai', 'src', 'sched')]})")
+        check(o["every"] == "" and "Signed in to Claude" in o["steps"], "...and Every check is filled in there too")
         check(c["setup"] == "none" and c["lists"] == "" and c["jobs"] == [], "Back to your loops closes it again; nothing started")
     finally:
         stop(srv)

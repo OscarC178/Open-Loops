@@ -684,6 +684,7 @@ function suPill(id,k){const p=$(id);p.textContent=SU_STATE[k];p.className='su-st
 function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN||setupFirstRun(st));
  v.style.display=show?'':'none';allowPaint();if(!show)return;
  $('#lists').style.display='none';$('#gmail_later').style.display='none';   // while Set-up is up, it is the page
+ paintConnect();   // Every check: the whole checklist, from this check, at every stage the view is up (not only while connecting)
  $('#setup_back').style.display=SETUP_OPEN&&!setupFirstRun(st)?'':'none';
  if(SETUP_OPEN&&!['connect','checking','checkfail'].includes(st)&&Date.now()-docAt>60000&&!suDoc){   // past setup nothing else re-checks
   suDoc=true;doctor(false).catch(()=>{}).finally(()=>{suDoc=false;paintSetup(stage())})}
