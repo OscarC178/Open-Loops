@@ -378,11 +378,17 @@ def say(id_, win=None, **fmt):
     return part(id_, "what", win, **fmt) + " " + part(id_, "fix", win, **fmt)
 
 
+# A job that failed with one of these points the person at the connection checklist (Sign in, Check again), which the
+# page hides once set up: so the page re-runs the connection check, and the checklist (with its button) comes back.
+RECHECK_AFTER_JOB = ("job_signed_out", "codex_signin", "codex_expired", "codex_keyring", "codex_link", "codex_cold",
+                     "codex_stale", "codex_start")
+
+
 def for_page(win=None):
-    """The table as the page gets it: {id: {"what", "fix", "button"}}, fix already chosen for this platform,
-    placeholders left for the page to fill."""
-    return {k: {"what": part(k, "what", win), "fix": part(k, "fix", win), "button": v.get("button")}
-            for k, v in FAILURES.items()}
+    """The table as the page gets it: {id: {"what", "fix", "button", "recheck"}}, fix already chosen for this platform,
+    placeholders left for the page to fill. "recheck": a failed job with this id re-runs the connection check."""
+    return {k: {"what": part(k, "what", win), "fix": part(k, "fix", win), "button": v.get("button"),
+                "recheck": k in RECHECK_AFTER_JOB} for k, v in FAILURES.items()}
 
 
 # How a job's output says why it stopped, most specific first. Matched case-insensitively against the job's log tail.

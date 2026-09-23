@@ -833,7 +833,7 @@ let wasRunning=false,loopT=null,said={},runSeen=new Set();
 function finished(){if(!J)return;for(const k of Object.keys(J)){const j=J[k];if(!j||j.running||j.rc===undefined||said[k]===j.log)continue;said[k]=j.log;
  const ok=j.rc===0,tail=(j.log||'').trim().split('\n').pop()||'';clog(`${k} finished rc=${j.rc}`+(tail?' · '+tail.slice(0,200):''));
  if(!ok&&j.rc===2){toast(`${k}: skipped - ${tail.replace(/^SKIPPED:?\s*/i,'')}`,{ms:6000});continue}
- if(!ok){toast(j.said||`${k} didn't finish - details under Settings → History → "Last job output"`,{err:true,ms:10000});if(j.failure==='job_signed_out')doctor(true);continue}   // the log stays in the Console and Settings
+ if(!ok){toast(j.said||`${k} didn't finish - details under Settings → History → "Last job output"`,{err:true,ms:10000});if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true);continue}   // signed out and the like: bring the checklist and its Sign in back   // the log stays in the Console and Settings
  if(k==='refresh'){const a=counts(),b=before||a;const fresh=[...a.ids].filter(x=>!b.ids.has(x)).length;before=null;
   toast(`Refresh done: ${fresh} new, ${a.needs} need you, ${a.wait} waiting on them`);continue}
  if(k==='chase')toast('Chase '+(/sent/i.test(tail)?'sent':'drafted')+' - check the thread',{ms:6000});

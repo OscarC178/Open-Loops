@@ -93,7 +93,11 @@ check(say("server_offline", win=False).endswith("on your Desktop or in Applicati
       and say("server_offline", win=True).endswith("on your Desktop or in the Start menu."), "server_offline: Mac and Windows wording")
 page = messages.for_page(win=True)
 check(page["server_offline"]["fix"].endswith("Start menu.") and set(page) == set(FAILURES)
-      and all(set(v) == {"what", "fix", "button"} for v in page.values()), "for_page(): the whole table, fix chosen for the platform")
+      and all(set(v) == {"what", "fix", "button", "recheck"} for v in page.values()), "for_page(): the whole table, fix chosen for the platform")
+needs_list = sorted(k for k, v in FAILURES.items() if (k.startswith("job_") or k in messages.CODEX_JOB_IDS)
+                    and ("connection checklist" in v["fix"] or v.get("button") == "login" or k in ("codex_keyring", "codex_link")))
+check(needs_list == sorted(messages.RECHECK_AFTER_JOB) and all(page[k]["recheck"] for k in needs_list),
+      f"every job failure that points at the checklist re-runs the check, Codex sign-outs included ({needs_list})")
 
 # ---------------------------------------------------------------- 4. job failures
 show("4. job_failure() reads why a job stopped")
@@ -210,6 +214,8 @@ check(out["cleared"] == "none", "banner('') hides it again")
 check(out["said400"] == "Open Loops cannot create a file in that folder. Check the folder exists." and out["said409"] == "Open Loops was updated."
       and out["saidOff"] == want, "a failed request shows the app's own sentence (said, else error), or 'not running' when offline")
 check("Permission denied" in out["console"] and "-> 400" in out["console"], "...while the status, raw body and detail go to the Console only")
+check("if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true)" in html and "j.failure==='job_signed_out'" not in html,
+      "the page re-checks connections after any such failure, not only job_signed_out")
 check("e.message.replace(/^.*-> " not in html and html.count("errSaid(e)") >= 11,
       "no toast or message shows a raw response body any more (Settings save, to-do file, dialogs, card actions)")
 show("PASS")
