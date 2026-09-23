@@ -10,7 +10,9 @@ Checks:
      API status 429 -> job_usage_limit; 401 -> job_signed_out; no network -> job_network; anything else -> "failed",
      which has no sentence of its own (the plain "didn't finish"). An is_error run that exited 0 is made non-zero.
   4. a normal answer that SAYS "not logged in" (an email quoted by the model) is never classified.
-  5. output that is not JSON (an older CLI): passed on as it came, noted on the run's stderr, warned once per process.
+  5. raw-output tolerance: a warning line before the JSON (one line or pretty-printed) still parses; plain text with
+     exit 0 is passed on as it came, noted on stderr, warned once per process; a non-zero exit with no JSON (an old
+     CLI rejecting --output-format json with its usage text) is a plain failure with a clear stderr line, no retry.
 """
 import contextlib, io, json, os, sys, time
 from pathlib import Path
@@ -224,12 +226,42 @@ with contextlib.redirect_stderr(err):
     fake("{not json\n")
     q = agent.run("Refresh.", ["gmail.search_threads"])
 check(p.stdout == "Here you go.\n" + BLOCK + "\n" and p.is_error is None and p.refused == "",
-      "plain text is passed on as it came (an older CLI still works)")
+      "plain text that exited 0 is passed on as it came (raw-output tolerance)")
 check("claude: output was not JSON" in p.stderr and "claude: output was not JSON" in q.stderr and q.stdout == "{not json\n",
       "each such run notes it on its own stderr (the job's log)")
 check(err.getvalue().count("did not answer in JSON") == 1, "the process warns once, not once per run")
 fake("", rc=1)
 p = agent.run("Refresh.", ["gmail.search_threads"])
 check(p.stdout == "" and p.is_error is None and "not JSON" not in p.stderr, "no output at all: nothing to parse, no warning")
+
+for label, text in (("one line", json.dumps(result("Read.\n" + BLOCK))),
+                    ("pretty-printed", json.dumps(result("Read.\n" + BLOCK), indent=2))):
+    fake("Warning: 1 MCP server skipped due to invalid config:\n  - x: url_missing_type\n" + text + "\n")
+    p = agent.run("Refresh.", ["gmail.search_threads"])
+    check(p.is_error is False and p.stdout == "Read.\n" + BLOCK and "not JSON" not in p.stderr,
+          f"a warning printed before {label} JSON: the result object is still found")
+fake(json.dumps(result("Not logged in \u00b7 Please run /login", is_error=True), indent=2) + "\n", rc=1)
+p = agent.run("Refresh.", ["gmail.search_threads"])
+check(p.refused == "expired" and p.stdout == "", "pretty-printed is_error JSON is classified too")
+
+# A Claude Code too old for --output-format json: commander rejects the flag and prints usage, non-zero.
+(BIN / "claude").write_text(f"""#!{sys.executable}
+import sys
+open({str(BIN / "calls.txt")!r}, "a").write("x\\n")
+sys.stderr.write("error: option '--output-format <format>' argument 'json' is invalid. Allowed choices are text, stream-json.\\n")
+sys.stdout.write("Usage: claude [options] [command] [prompt]\\n\\nClaude Code - starts an interactive session by default\\n")
+sys.exit(1)
+""", encoding="utf-8")
+p = agent.run("Refresh.", ["gmail.search_threads"])
+check(p.returncode == 1 and p.stdout == "" and p.is_error is None and p.refused == "failed",
+      "an old CLI rejecting --output-format json: a plain failure, no stdout for the job")
+check("claude: exited 1 without a JSON result" in p.stderr and "update it" in p.stderr and "claude output: Usage: claude" in p.stderr
+      and "argument 'json' is invalid" in p.stderr, "...with a clear stderr line and the CLI's own output kept for the log")
+check((BIN / "calls.txt").read_text().count("x") == 1, "...and it is not retried")
+check(reported(p) is None and sentence(None)[0] == "job_failed", "...the page says the plain 'didn't finish'")
+(BIN / "claude").write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('Invalid API key \\u00b7 Please run /login\\n'); sys.exit(1)\n",
+                            encoding="utf-8")
+p = agent.run("Refresh.", ["gmail.search_threads"])
+check(reported(p)["failure"] == "job_signed_out", "no JSON, but the CLI's own stderr says signed out: stderr still classifies it")
 
 show("ALL OK")

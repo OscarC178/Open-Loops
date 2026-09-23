@@ -1129,16 +1129,23 @@ def claude_failure(status, text):
 
 
 def _claude_json(out):
-    """The result object in `claude -p --output-format json` stdout -> dict, or None when it is not there."""
+    """The result object in `claude -p --output-format json` stdout -> dict, or None when it is not there. Tried in turn:
+    the whole output; from each line that starts with { or [ to the end (a warning line printed before the JSON, the
+    JSON itself on one line or many), first line first; then each such line alone, last first (one event per line)."""
     out = (out or "").strip()
     if not out:
         return None
-    tries = [out] + [ln for ln in reversed(out.splitlines()) if ln.strip().startswith(("{", "["))]
+    lines = out.splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln.lstrip().startswith(("{", "["))]
+    tries = [out] + ["\n".join(lines[i:]) for i in starts] + [lines[i] for i in reversed(starts)]
+    dec = json.JSONDecoder()
     for t in tries:
         try:
-            j = json.loads(t)
+            j, end = dec.raw_decode(t.strip())
         except ValueError:
             continue
+        if t.strip()[end:].strip() and not isinstance(j, dict):
+            continue  # a list followed by more text is not one stream of events
         if isinstance(j, list):  # a stream of events: the last result in it
             j = next((e for e in reversed(j) if isinstance(e, dict) and e.get("type") == "result"), None)
         if isinstance(j, dict) and ("result" in j or "is_error" in j) and j.get("type", "result") == "result":
@@ -1151,12 +1158,22 @@ def claude_result(p):
     (the "result" field), so their <<<BLOCK>>> parsing is unchanged; "" when the run is an error. Extra attributes: agent ("claude"), is_error (True,
     False, or None when the output was not JSON), error_text (the CLI's own error when is_error), refused (claude_failure's
     reason when is_error, else ""), usage, cost_usd, session_id. A run marked is_error never exits 0 here.
-    Output that is not JSON (an older CLI, a crash) is passed on as it came, with a warning once per process."""
+    Output with no result object in it is not parsed further. Exit 0: raw-output tolerance, the text is passed on as it
+    came (a CLI that printed plain text) with a warning once per process. Non-zero (a crash, or a Claude Code too old
+    for --output-format json rejecting the flag with its usage text): a plain failure, no stdout, refused "failed",
+    the output kept on stderr for the log. Nothing is retried."""
     global _claude_text_warned
     p.agent, p.is_error, p.error_text, p.refused, p.usage, p.cost_usd, p.session_id = "claude", None, "", "", None, None, ""
     j = _claude_json(p.stdout)
     if j is None:
-        if (p.stdout or "").strip():
+        raw = (p.stdout or "").strip()
+        if p.returncode != 0:
+            p.refused, p.stdout = "failed", ""
+            # the note and the output go BEFORE the CLI's own stderr: messages.ai_failure reads its last 40 lines
+            p.stderr = (f"claude: exited {p.returncode} without a JSON result (if this Claude Code is too old for"
+                        " --output-format json, update it)\n" + "".join(f"claude output: {ln}\n" for ln in raw.splitlines()[-40:])
+                        + (p.stderr or ""))
+        elif raw:
             p.stderr = (p.stderr or "") + "claude: output was not JSON; used as plain text\n"
             if not _claude_text_warned:
                 _claude_text_warned = True

@@ -89,7 +89,9 @@ you would be reading old code while thinking you were on new.
 - Every external call goes through `agent.run(prompt, tools)` with an explicit tool allow-list. Jobs never send;
   chases are drafts unless the user has ticked *Send* in Settings.
 - Claude runs as `claude -p --output-format json`. `agent.run()` hands the job the JSON's `result` as `p.stdout`, so
-  jobs parse text as before; a failure is read from the result's `is_error` flag (`p.refused`), never from the answer.
+  jobs parse text as before; a failure is read from the result's `is_error` flag (`p.refused`), never from the answer,
+  and a failed run's `p.stdout` is empty. Output with no JSON result is raw-output tolerance only: passed on at exit 0,
+  a plain failure otherwise.
 - Jobs write state through `store.update_state()`, never a plain write of a stale copy.
 - Anything that exits early prints `SKIPPED: <reason>` and exits 2, so the page can say why.
 - A failure the person can fix is worded once, in `messages.py` (what happened, then what to do, naming who: Google, Slack,
