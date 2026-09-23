@@ -14,7 +14,7 @@ Checks:
      and is actually shown (display:block, not '' which the stylesheet turns into none); an HTTP error says
      something else. Run in node against the functions as served; skipped without node.
 """
-import json, re, shutil, subprocess, sys, tempfile, time, urllib.request
+import json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -366,6 +366,8 @@ msg_line = next(l for l in sp.found[0].splitlines() if l.startswith("const MSG="
 show("6. the offline banner, in node")
 node = shutil.which("node")
 if not node:
+    if os.environ.get("GITHUB_ACTIONS"):   # CI installs node (tests.yml): a missing one there is a broken setup, not a skip
+        raise SystemExit("FAIL: node is not on PATH in CI, so the page's JavaScript was not tested")
     show("SKIP the node run: node not installed (the static checks above still ran)")
     raise SystemExit(0)
 lines = html.splitlines()
