@@ -634,6 +634,9 @@ if NODE:
           "the cards run AI, sources, schedule; the first-scan box is moved into the last card, the checklist into 'Every check'")
     check(page.index('id="setup_open" onclick="openSetup()"') > page.index('id="page_settings"') and ">Open Set-up</button>" in page,
           "⚙ Settings has a Set-up row that opens the view")
+    check('role="radiogroup" aria-labelledby="su_ai_h" onkeydown="suPickKey(event)"' in page and 'tabindex="${k===a?0:-1}" data-fk="ai-${k}"' in page
+          and all(f'id="su_{k}" tabindex="-1"' in page for k in ("ai", "src", "sched")),
+          "the picker is a keyboard radio group with a roving tab stop; the cards can take focus back after a repaint")
 
     # 7a. nothing installed at all: the real check on a machine with no AI CLI
     tmp = setup_install("openloops-setup-none-", fake=False)
@@ -645,7 +648,7 @@ if NODE:
               "no AI installed: the Set-up view is the page, before the loops")
         check(v["ai"]["state"] == "Needs you" and ">Install Claude</button>" in v["ai"]["rows"] and "Show the exact command" in v["ai"]["rows"]
               and v["ai"]["act"] == "", f"'Your AI' needs you, with Install Claude (its command one click away) as its one button ({v['ai']['state']})")
-        check(v["pick"].count('role="radio"') == 3 and 'aria-checked="true" onclick="chooseAI(\'claude\')"' in v["pick"]
+        check(v["pick"].count('role="radio"') == 3 and 'aria-checked="true" tabindex="0" data-fk="ai-claude" onclick="chooseAI(\'claude\')"' in v["pick"]
               and all(x in v["pick"] for x in ("ChatGPT (Codex)", "Miro only if you added a Miro server", "Free gets Gmail and Slack isn&#39;t confirmed", "Google Cloud set-up", "paid Claude plan")),
               "three choices, Claude picked, each saying what it needs and what it can't do")
         check(v["src"]["state"] == "Not started" and messages.say("needs_install", ai="Claude") in v["src"]["rows"]
@@ -672,8 +675,20 @@ if NODE:
  await tick();out.c=view();
  C.agent='grok';const gfix='Gmail needs a one-off Google sign-in of its own: follow Gmail with Grok in INSTALL.md.';
  DOC={agent:'grok',all_ok:false,steps:[row('claude',true),row('login',false,{fix:"Click 'Open Grok' below and follow the sign-in link it shows."}),
-  row('gmail',false,{fix:gfix}),row('channel',false),row('self',false)]};await tick();out.d=view();""", tmp)
-        a, b, c, d = out["a"], out["b"], out["c"], out["d"]
+  row('gmail',false,{fix:gfix}),row('channel',false),row('self',false)]};await tick();out.d=view();C.agent='claude';
+ // #52: setup was done once and the sign-in went; its checklist heading says so, and Set-up puts that line on top
+ S.setup_done=true;const hh=$('#st_connect h3');hh.dataset={first:"1 · Let's get you connected"};hh.textContent='Setup is done; Claude just needs signing in again. Press Sign in below.';
+ DOC={agent:'claude',all_ok:false,steps:[row('claude',true),row('login',false,{connect:'login',title:'Signed in to <i>Claude</i>'}),row('slack',false),row('gmail',false),row('channel',false)]};
+ await tick();out.e={repair:$('#su_repair').textContent,shown:$('#su_repair').style.display,intro:$('#su_intro').style.display,rows:$('#su_ai_rows').innerHTML};
+ S.setup_done=false;paintSetup(stage());out.e.after=$('#su_repair').style.display;
+ // keyboard: arrows move along the three choices (wrapping), Home / End, and the one that can be tabbed to follows
+ const bs=[0,1,2].map(i=>({i,tabIndex:-1,focus(){document.activeElement=this}}));$('#su_ai_pick').querySelectorAll=()=>bs;bs[0].focus();
+ const key=k=>{suPickKey({key:k,preventDefault(){}});return document.activeElement.i+':'+bs.map(b=>b.tabIndex===0?1:0).join('')};
+ out.keys=[key('ArrowRight'),key('ArrowDown'),key('ArrowRight'),key('ArrowLeft'),key('Home'),key('End'),key('Tab')];
+ // the pop-up gives focus back to that step's button, or to its card once the button has gone
+ const asked=[];document.querySelector=sel=>{asked.push(sel);return sel.includes('connectStep')&&!out.gone?{focus(){out.focused=sel}}:sel.startsWith('#su_')?{focus(){out.focused=sel}}:null};
+ ALLOW={step:'slack'};allowClose();out.focus1=out.focused;out.gone=true;ALLOW={step:'login'};allowClose();out.focus2=out.focused;""", tmp)
+        a, b, c, d, e = out["a"], out["b"], out["c"], out["d"], out["e"]
         check(a["setup"] == "" and a["ai"]["state"] == "Done" and "su-state done" == a["ai"]["cls"] and ">Check again</button>" in a["ai"]["act"],
               "AI installed and signed in: 'Your AI' is done, and its one button is Check again")
         check(a["src"]["state"] == "Done" and 'class="" onclick="connectStep(\'slack\')">Connect Slack</button>' in a["src"]["rows"]
@@ -690,8 +705,15 @@ if NODE:
               "signed out: 'Your AI' needs you with Sign in; sources and schedule wait their turn")
         check('class="primary" onclick="suOpenAgent()">Open Grok</button>' in d["ai"]["act"] and "Open Grok" in d["ai"]["rows"]
               and "Gmail with Grok in INSTALL.md" in d["src"]["rows"] and "<button" not in d["src"]["rows"]
-              and 'aria-checked="true" onclick="chooseAI(\'grok\')"' in d["pick"],
+              and 'aria-checked="true" tabindex="0" data-fk="ai-grok" onclick="chooseAI(\'grok\')"' in d["pick"],
               "Grok: sign-in is Open Grok, and the Gmail row keeps its own instruction, with no button")
+        check(e["repair"] == "Setup is done; Claude just needs signing in again. Press Sign in below." and e["shown"] == "" and e["intro"] == "none"
+              and e["after"] == "none", "setup done once and the checklist back: its one-line repair sentence sits above the cards (#52)")
+        check("Signed in to &lt;i&gt;Claude&lt;/i&gt;" in e["rows"], "row titles are escaped (#52 puts a Slack display name in one)")
+        check(out["keys"] == ["1:010", "2:001", "0:100", "2:001", "0:100", "2:001", "2:001"],
+              f"the AI picker: arrows and Home / End move the focus and the tab stop; other keys are left alone ({out['keys']})")
+        check(out["focus1"] == "#setup button[onclick=\"connectStep('slack')\"]" and out["focus2"] == "#su_ai",
+              f"closing the pop-up puts focus on that step's button, or on its card when the button is gone ({out['focus1']}, {out['focus2']})")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -728,7 +750,7 @@ if NODE:
               f"choosing ChatGPT (Codex) POSTs agent to /api/config, then re-checks ({cz['calls']})")
         check(out["cfgCodex"] == "codex" and cz["agent"] == "codex" and cz["doc"] == "codex"
               and "Codex is installed" in cz["v"]["ai"]["rows"] and "Signed in to ChatGPT" in cz["v"]["ai"]["rows"]
-              and 'aria-checked="true" onclick="chooseAI(\'codex\')"' in cz["v"]["pick"],
+              and 'aria-checked="true" tabindex="0" data-fk="ai-codex" onclick="chooseAI(\'codex\')"' in cz["v"]["pick"],
               "...config.json says codex, and the card shows Codex's own rows with Codex picked")
         check(out["claude"]["calls"][:2] == ['/api/config {"agent":"claude"}', '/api/doctor {"force":true,"detect":true}']
               and out["claude"]["doc"] == "claude" and out["claude"]["v"]["ai"]["state"] == "Done",
@@ -825,7 +847,7 @@ if NODE:
     try:
         out = setup_js(port, """
  await boot();await tick();out.ready=view();await openSetup();out.open=view();out.home=$('#page_home').style.display;
- await closeSetup();out.closed=view();""", tmp)
+ await closeSetup();out.closed=view();PAGE_WIN=true;await openSetup();out.win={state:$('#su_sched_state').textContent,time:$('#su_time').innerHTML};""", tmp)
         r, o, c = out["ready"], out["open"], out["closed"]
         check(r["stage"] == "ready" and r["setup"] == "none" and r["lists"] == "", "set up: the loops are the page, Set-up is out of the way")
         check(o["setup"] == "" and o["lists"] == "none" and o["back"] == "" and out["home"] == ""
@@ -833,6 +855,9 @@ if NODE:
               f"⚙ → Set-up opens the view on Home, every card done, with Back to your loops ({[o[k]['state'] for k in ('ai', 'src', 'sched')]})")
         check(o["every"] == "" and "Signed in to Claude" in o["steps"], "...and Every check is filled in there too")
         check(c["setup"] == "none" and c["lists"] == "" and c["jobs"] == [], "Back to your loops closes it again; nothing started")
+        check(out["win"]["state"] == "Not checked" and "can&#39;t yet see from here whether Windows started it" not in out["win"]["time"]
+              and "can't yet see from here whether Windows started it" in out["win"]["time"],
+              "on Windows, with no morning-refresh row to go by, the schedule card says Not checked, never Done")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)

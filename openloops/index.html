@@ -85,6 +85,8 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 .su-pick button[aria-checked=true]{border-color:var(--b);box-shadow:inset 0 0 0 1px var(--b)}.su-pick button[aria-checked=true] b::after{content:" ✓";color:var(--b)}
 .su-act{margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.su-act:empty{display:none}
 #su_start .box{margin:10px 0 0;background:var(--bg)}
+#su_repair{border:1px solid var(--a);border-radius:8px;padding:10px 14px;margin:0 0 12px;font-size:13px}
+#setup section:focus{outline:2px solid var(--b);outline-offset:2px}
 @media(max-width:720px){.su-pick{grid-template-columns:1fr}}
 </style></head><body>
 <header><h1>Open Loops</h1>
@@ -106,21 +108,22 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
       the full checklist (#st_connect) and the first-scan box (#st_start) are moved into it when the page loads (setupEmbed) -->
  <div id="setup" style="display:none">
   <div class="su-head"><h3>Set up Open Loops</h3><button class="quiet" id="setup_back" onclick="closeSetup()" style="display:none">Back to your loops</button></div>
-  <div class="sub" style="margin:0 0 12px">Three steps, top to bottom. Nothing reads your messages until you press <b>Start the first scan</b> at the end.</div>
-  <section class="box" id="su_ai" aria-labelledby="su_ai_h">
+  <div id="su_repair" role="status" style="display:none"></div>
+  <div class="sub" id="su_intro" style="margin:0 0 12px">Three steps, top to bottom. Nothing reads your messages until you press <b>Start the first scan</b> at the end.</div>
+  <section class="box" id="su_ai" tabindex="-1" aria-labelledby="su_ai_h">
    <div class="su-top"><h3 id="su_ai_h">1 · Your AI</h3><span class="su-state" id="su_ai_state"></span></div>
    <div class="sub">The AI assistant that reads your messages and writes the nudges. It runs on this computer, on your own plan.</div>
-   <div class="su-pick" id="su_ai_pick" role="radiogroup" aria-labelledby="su_ai_h"></div>
+   <div class="su-pick" id="su_ai_pick" role="radiogroup" aria-labelledby="su_ai_h" onkeydown="suPickKey(event)"></div>
    <div id="su_ai_rows"></div>
    <div class="su-act" id="su_ai_act"></div>
   </section>
-  <section class="box" id="su_src" aria-labelledby="su_src_h">
+  <section class="box" id="su_src" tabindex="-1" aria-labelledby="su_src_h">
    <div class="su-top"><h3 id="su_src_h">2 · Your sources</h3><span class="su-state" id="su_src_state"></span></div>
    <div class="sub" id="su_src_help"></div>
    <div id="su_src_rows"></div>
    <div class="su-act" id="su_src_act"></div>
   </section>
-  <section class="box" id="su_sched" aria-labelledby="su_sched_h">
+  <section class="box" id="su_sched" tabindex="-1" aria-labelledby="su_sched_h">
    <div class="su-top"><h3 id="su_sched_h">3 · Your schedule</h3><span class="su-state" id="su_sched_state"></span></div>
    <div class="sub" id="su_time"></div>
    <div id="su_sched_rows"></div>
@@ -584,7 +587,7 @@ function paintConnect(){$('#st_connect').style.display='';
  const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
  $('#setup_steps').innerHTML=DOC.steps.map(s=>checkRow(s,s.connect===first)).join('')}
 // One checklist row: tick or cross, the title, and while red its sentence and button. The Set-up cards use it too (#28).
-const checkRow=(s,primary)=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${s.title}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
+const checkRow=(s,primary)=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
 
 // ---------- Setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
 // and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.
@@ -666,7 +669,9 @@ const AI_CHOICES=[   // what each needs and costs, and what it cannot do (#26, I
  ['claude','Claude','Needs a paid Claude plan. Slack, Gmail and Miro each connect by clicking Allow in your browser; one Slack and one Gmail per Claude account.'],
  ['codex','ChatGPT (Codex)','Needs a ChatGPT account: Codex comes with Free and paid plans, but whether Free gets Gmail and Slack isn\'t confirmed. Every scan uses some of its Codex allowance. Gmail and Slack are the ones your ChatGPT account connected; Miro only if you added a Miro server to Codex yourself.'],
  ['grok','Grok','Needs a Grok account. Gmail needs a one-off Google Cloud set-up of your own (INSTALL.md says how); Slack is off unless you turn it on.']];
-const SU_STATE={todo:'Not started',progress:'In progress',done:'Done',needs:'Needs you'};
+const SU_STATE={todo:'Not started',progress:'In progress',done:'Done',needs:'Needs you',unchecked:'Not checked'};
+// Windows: the connection check has no morning-refresh row there (doctor.py reads the Mac's only), so it is never "Done"
+let PAGE_WIN=/Win/.test((typeof navigator!=='undefined'&&navigator.platform)||'');
 const SU_AI=['claude','login'],SU_SRC=['slack','gmail','miro','self'],SU_SRC_STEPS=['slack_install','slack','gmail','miro'];
 let SETUP_OPEN=false,suBusy='',suDoc=false;   // suBusy: 'agent' while a new choice is saved and checked, 'check' during Check again
 // the card's rows, in card order; "Knows who you are on Slack" only while it holds setup up
@@ -681,22 +686,29 @@ function suState(card,st){
  if(card==='ai')return suBusy==='agent'||suRunning(['install','login'])?'progress':aiReady()?'done':'needs';
  if(card==='src')return suRunning(SU_SRC_STEPS)?'progress':srcReady()?'done':aiReady()?'needs':'todo';
  const s=schedStep(),red=!!(s&&!s.ok&&!s.test_copy);
- if(scanned())return red?'needs':'done';
+ if(scanned())return red?'needs':!s&&PAGE_WIN&&!ISO?'unchecked':'done';
  if(!aiReady()||!srcReady())return 'todo';
  return !waitsForGo(st)&&['people','voice','scan'].includes(st)?'progress':'needs'}
 const setupFirstRun=st=>st==='connect'||(st==='checking'&&aiPending())||(!!JOB_OF[st]&&waitsForGo(st));
-const setHTML=(el,h)=>{if(el._h!==h){el._h=h;el.innerHTML=h}};   // repainted every tick: never under the cursor unless it changed
+// Repainted every tick, but only when it changed; if focus was inside, it comes back to the same control (data-fk), or else
+// to the card, so a keyboard user is never dropped at the top of the page.
+const setHTML=(el,h)=>{if(el._h===h)return;const f=typeof document!=='undefined'&&document.activeElement;
+ const had=f&&el.contains&&el.contains(f)?((f.dataset&&f.dataset.fk)||''):null;el._h=h;el.innerHTML=h;
+ if(had!==null){const n=had&&el.querySelector(`[data-fk="${had}"]`);const t=n&&!n.disabled?n:(el.closest&&el.closest('section'))||el;if(t.focus)t.focus()}};
 function suPill(id,k){const p=$(id);p.textContent=SU_STATE[k];p.className='su-state '+k}
 function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN||setupFirstRun(st));
  v.style.display=show?'':'none';allowPaint();if(!show)return;
  $('#lists').style.display='none';$('#gmail_later').style.display='none';   // while Set-up is up, it is the page
  if(!aiPending())paintConnect();   // Every check: the whole checklist, from this check, at every stage the view is up (not only while connecting)
+ // Setup was done once and something needs fixing again: the checklist heading's one line (#52 writes it) goes on top
+ const hh=$('#st_connect h3'),fix=S&&S.setup_done&&hh&&hh.dataset&&hh.dataset.first!==undefined&&hh.textContent!==hh.dataset.first?hh.textContent:'';
+ $('#su_repair').textContent=fix;$('#su_repair').style.display=fix?'':'none';$('#su_intro').style.display=fix?'none':'';
  $('#setup_back').style.display=SETUP_OPEN&&!setupFirstRun(st)?'':'none';
  if(SETUP_OPEN&&!['connect','checking','checkfail'].includes(st)&&Date.now()-docAt>60000&&!suDoc){   // past setup nothing else re-checks
   suDoc=true;doctor(false).catch(()=>{}).finally(()=>{suDoc=false;paintSetup(stage())})}
  const a=aiSwitching||(C&&C.agent)||'claude',stale=suBusy==='agent'||aiPending(),anyRun=suRunning(Object.keys(CONN))||jobRunning();
  // 1. your AI: the choice, then its two rows (installed, signed in); the one button is the row's, else Open Grok / Check again
- setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}"${suBusy||anyRun?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
+ setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
  const ai=stale?[]:suRows(SU_AI),aiFirst=(ai.find(s=>!s.ok&&s.connect)||{}).connect;
  setHTML($('#su_ai_rows'),stale?`<div class="sub" style="padding:6px 0"><span class="spin"></span>Checking ${esc(aiName(a))} on this computer…</div>`:ai.map(s=>checkRow(s,s.connect===aiFirst)).join(''));
  const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
@@ -714,7 +726,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  suPill('#su_src_state',suState('src',st));
  // 3. your schedule: the morning time, whether the morning refresh started (Mac, doctor.py "schedule"), and last the first scan
  $('#su_time').innerHTML=ISO?'This is a test copy: it has no morning refresh. Press Refresh when you want a pass.'
-  :`After the first scan, Open Loops refreshes itself on weekdays at <b>${esc((C&&C.refresh_time)||'09:15')}</b>, while you're logged in. <a href="#" onclick="showTab('settings','cs_prefs');return false">Change the time</a>`;
+  :`After the first scan, Open Loops refreshes itself on weekdays at <b>${esc((C&&C.refresh_time)||'09:15')}</b>, while you're logged in.${PAGE_WIN?' Open Loops can\'t yet see from here whether Windows started it.':''} <a href="#" onclick="showTab('settings','cs_prefs');return false">Change the time</a>`;
  const sr=schedStep();
  setHTML($('#su_sched_rows'),sr?checkRow(sr,false)+(sr.link&&!sr.ok?`<button data-href="${esc(sr.link)}" onclick="window.open(this.dataset.href,'_blank','noopener')">Open the download page</button>`:''):'');
  const go=waitsForGo(st);
@@ -731,6 +743,12 @@ async function chooseAI(a){if(suBusy||!C||(C.agent||'claude')===a||suRunning(Obj
   await loadCfg();await doctor(true)}
  catch(e){toast('Your AI was not changed: '+errSaid(e),{err:true})}
  finally{suBusy='';aiSwitching='';tick()}}
+// The AI picker as a radio group: arrow keys (and Home / End) move between the three, Enter or Space picks. Moving does not
+// pick by itself, since picking re-checks the new AI; the one that can be tabbed to follows the focus (roving tabindex).
+function suPickKey(e){const step={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(!step&&e.key!=='Home'&&e.key!=='End')return;
+ const bs=[...$('#su_ai_pick').querySelectorAll('button')];if(!bs.length)return;e.preventDefault();
+ const i=Math.max(0,bs.indexOf(document.activeElement)),n=e.key==='Home'?0:e.key==='End'?bs.length-1:(i+step+bs.length)%bs.length;
+ bs.forEach((b,j)=>{b.tabIndex=j===n?0:-1});bs[n].focus()}
 async function setupCheck(){if(suBusy)return;suBusy='check';paintSetup(stage());try{await doctor(true)}finally{suBusy='';paintSetup(stage())}}
 async function suOpenAgent(){try{await openClaude();toast($('#setup_msg').textContent)}catch(e){toast(errSaid(e),{err:true})}}
 async function openSetup(){SETUP_OPEN=true;clog('set-up: opened from Settings');showTab('home');await tick();const v=$('#setup');if(v.scrollIntoView)v.scrollIntoView({block:'start'})}
@@ -757,7 +775,10 @@ async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&
  if(row&&row.ok){allowClose();toast(row.title.replace(/ \(optional.*\)$/,'')+'.');return}
  if(!a.url){try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&s.url)a.url=s.url}catch(e){}}   // the fallback link, from the run's own status
  allowPaint()}
-function allowClose(){ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close()}
+function allowClose(){const a=ALLOW;ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close();if(a)allowFocus(a.step)}
+// after the pop-up: focus back on that step's Connect / Sign in button, or on its card once the row has gone green
+function allowFocus(step){if(typeof document==='undefined'||!document.querySelector)return;
+ const b=document.querySelector(`#setup button[onclick="connectStep('${step}')"]`),t=b||document.querySelector(step==='login'?'#su_ai':'#su_src');if(t&&t.focus)t.focus()}
 async function allowCheck(){const a=ALLOW,b=$('#allow_check');if(!a)return;b.disabled=true;a.said='';$('#allow_msg').textContent='Checking…';
  try{await doctor(true)}finally{b.disabled=false}
  const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
@@ -1108,7 +1129,7 @@ window.addEventListener('pageshow',e=>{if(e.persisted&&!stopped)fetch('/',{cache
 async function quitApp(){const b=$('#quitbtn');b.disabled=true;try{const r=await api('/api/quit',{});stopped=true;clearTimeout(loopT);
   const after=r.after_jobs&&r.after_jobs.length?' once the running '+r.after_jobs.join(', ')+' job finishes':'';
   banner('Open Loops is stopping'+after+'. You can close this tab; double-click the Open Loops icon to start it again.')}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
-setupEmbed();$('#allow_dlg').addEventListener('close',()=>{ALLOW=null;clearInterval(allowT)});
+setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a)allowFocus(a.step)});
 cfgRestore();
 // the to-do file example, as a path on this computer looks; and a name for the AI picker, which has no <label> of its own
 $('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';
