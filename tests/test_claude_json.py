@@ -129,6 +129,17 @@ for text, status, rc, want, fid in cases:
 check("FAILED: expired" in p.stderr and "claude said: Not logged in" in p.stderr, "the run's stderr says why, for the log")
 check(sentence(reported(p))[1].startswith("The refresh stopped because Claude has signed you out."),
       "the page's sentence names Claude, not ChatGPT (Codex's 'expired' sentence is not used)")
+# The API status decides before any text is read, and a number merely quoted in the text decides nothing (#47 review).
+fake(result("Request rejected: invalid authentication credentials", is_error=True, status=401), rc=1)
+p = agent.run("Refresh.", ["gmail.search_threads"])
+check(p.refused == "expired" and reported(p)["failure"] == "job_signed_out",
+      "status 401 with text that says 'Request rejected' -> expired (signed out), not a usage limit")
+cf = agent.claude_failure
+check(cf(429, "Not logged in") == "limit" and cf(401, "You've hit your session limit") == "expired",
+      "a status beats conflicting text either way")
+check(cf(None, "Unable to connect while processing reference 429") == "network"
+      and cf(None, "Request rejected") == "failed" and cf(None, "error 401 in module") == "failed",
+      "no status: a bare 429/401 or 'Request rejected' in the text is not a limit or a sign-out")
 
 fake(result("Something went wrong on our side.", is_error=True), rc=1)
 p = agent.run("Refresh.", ["gmail.search_threads"])

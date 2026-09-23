@@ -1100,10 +1100,12 @@ def run(prompt, tools, timeout=None):
 # missing authentication, Claude Code prints the failure as the result on stdout"), never from a normal answer.
 # Wording from https://code.claude.com/docs/en/errors ("Not logged in · Please run /login", "You've hit your session
 # limit", "Unable to connect to API", ...) plus the API status the result carries (api_error_status, seen on 2.1.280).
-_CLAUDE_LIMIT_RE = re.compile(r"usage limit|rate limit|limit reached|hit your .{0,40}(?:limit|budget)|spend limit"
-                              r"|too many requests|\b429\b|credit balance|request rejected", re.I)
+# No bare "429"/"401" and no bare "request rejected": an error that merely quotes a number, or a 401 whose text says
+# "Request rejected", must not become a usage limit. The status numbers count only as api_error_status or "API Error: N".
+_CLAUDE_LIMIT_RE = re.compile(r"usage limit|rate.?limit|limit reached|hit your .{0,40}(?:limit|budget)|spend limit"
+                              r"|too many requests|api error: 429|credit balance", re.I)
 _CLAUDE_EXPIRED_RE = re.compile(r"not logged in|login expired|log(?:ged)? ?in again|invalid api key|/login|oauth token"
-                                r"|\b401\b|authentication|unauthori[sz]ed|re-?authenticate", re.I)
+                                r"|api error: 401|authentication|unauthori[sz]ed|re-?authenticate", re.I)
 _CLAUDE_NETWORK_RE = re.compile(r"unable to connect|connection (?:error|refused|dropped|lost|closed)|can't reach"
                                 r"|no internet|request timed out|getaddrinfo|econnrefused|etimedout|enotfound", re.I)
 _claude_text_warned = False  # the "not JSON" warning is printed once per process, not once per run
@@ -1111,10 +1113,15 @@ _claude_text_warned = False  # the "not JSON" warning is printed once per proces
 
 def claude_failure(status, text):
     """Why a Claude run the CLI marked is_error failed -> "limit" | "expired" | "network" | "failed". The API status
-    first (429 / 401), then the CLI's own error text."""
-    if status == 429 or _CLAUDE_LIMIT_RE.search(text or ""):
+    first: a 401 or 429 decides before any text is read (#47 review: "Request rejected: invalid authentication
+    credentials" with status 401 is a sign-out, not a limit). Only without one, the CLI's own error text."""
+    if status == 401:
+        return "expired"
+    if status == 429:
         return "limit"
-    if status == 401 or _CLAUDE_EXPIRED_RE.search(text or ""):
+    if _CLAUDE_LIMIT_RE.search(text or ""):
+        return "limit"
+    if _CLAUDE_EXPIRED_RE.search(text or ""):
         return "expired"
     if _CLAUDE_NETWORK_RE.search(text or ""):
         return "network"
