@@ -849,7 +849,9 @@ if NODE:
  out.hung={ms:Date.now()-t0,pend:aiPending(),stage:stage(),error:DOC.error,box:$('#st_checkfail').style.display,said:$('#checkfail_said').textContent,agent:C.agent};
  DOC_DEADLINE_MS=250000;clearTimeout(docT);aiSwitching='codex';out.stray=aiPending();await doctor(true);out.later={pend:aiPending(),doc:DOC.agent,stage:stage()};
  FAIL_GET.add('/api/config');let n=CALLS.length;await chooseAI('claude');
- out.reread={calls:CALLS.slice(n),agent:C.agent,doc:DOC.agent,pend:aiPending(),stage:stage(),toasts:TOASTS.filter(t=>/not changed/.test(t))};""", tmp)
+ out.reread={calls:CALLS.slice(n),agent:C.agent,doc:DOC.agent,pend:aiPending(),stage:stage(),toasts:TOASTS.filter(t=>/not changed/.test(t))};
+ const AC=global.AbortController;global.AbortController=undefined;DOC_DEADLINE_MS=900;HANG.add('/api/doctor');const t1=Date.now();
+ await doctor(true);out.noac={ms:Date.now()-t1,said:CON.filter(l=>l.includes('no answer within 1 s')).length>0};global.AbortController=AC;DOC_DEADLINE_MS=500000;clearTimeout(docT);""", tmp)
         check(out["during"] == {"pend": True, "stage": "checking"}, "a check that hangs after an AI change: the page waits in 'checking' meanwhile")
         h = out["hung"]
         check(800 <= h["ms"] < 5000 and h["pend"] is False and h["stage"] == "checkfail" and h["box"] == ""
@@ -861,8 +863,10 @@ if NODE:
         check(r["calls"][:2] == ['/api/config {"agent":"claude"}', '/api/doctor {"force":true,"detect":true}'] and r["agent"] == "claude"
               and r["doc"] == "claude" and r["pend"] is False and r["toasts"] == [],
               f"a saved change whose settings re-read fails once is read again, then checked ({r['stage']})")
-        check("DOC_DEADLINE_MS=250000" in page and "app.py" in page[page.index("let DOC_DEADLINE_MS") - 300:page.index("let DOC_DEADLINE_MS")],
-              "the deadline is 250 s, past the app's own 240 s")
+        check("DOC_DEADLINE_MS=500000" in page and "two attempts of 240 s" in page[page.index("let DOC_DEADLINE_MS") - 400:page.index("let DOC_DEADLINE_MS")],
+              "the deadline is 500 s, past the app's two 240 s attempts")
+        check(out["noac"]["said"] is True and 800 <= out["noac"]["ms"] < 5000,
+              f"...and without AbortController a hung check is still ended by the timer ({out['noac']})")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -884,13 +888,21 @@ if NODE:
  let n=CALLS.length;TOASTS.length=0;await chooseAI('codex');out.refused={calls:CALLS.slice(n),toasts:TOASTS.slice(),agent:C.agent};
  await realFetch(BASE+'/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
  for(let i=0;i<150&&J.refresh.running;i++){await sleep(100);await loadState()}
- out.ended={running:J.refresh.running,pending:!!PENDING_START.refresh,seq:J.refresh.seq};""", tmp)
+ out.ended={running:J.refresh.running,pending:!!PENDING_START.refresh,seq:J.refresh.seq};
+ J.refresh={running:false,seq:10,rc:0,finished_at:'2026-09-23T08:00:00'};   // the page has seen run 10 end
+ HOLD['/api/state']={body:held({refresh:{running:false,seq:11,rc:0,finished_at:new Date(Date.now()-60000).toISOString()}})};   // run 11 ended a minute ago
+ const before=loadState();await sleep(50);jobStarted('refresh');HOLD['/api/state'].release();await before;
+ out.prev={running:J.refresh.running,pending:!!PENDING_START.refresh};n=CALLS.length;TOASTS.length=0;await chooseAI('codex');
+ out.prevRefused={calls:CALLS.slice(n),toasts:TOASTS.slice()};""", tmp)
         check(out["order"] == {"marker": "", "applied": 2, "asked": 2}, f"an older /api/state answer arriving after a newer one is dropped ({out['order']})")
         check(out["early"] == {"running": True, "pending": True} and out["current"] is True,
               "an answer sent before jobStarted() and arriving after it leaves the job running (so does a current one not yet showing it)")
         check(out["refused"]["calls"] == [] and out["refused"]["agent"] == "claude"
               and out["refused"]["toasts"] == ["Open Loops is still running a job with Claude. Change your AI once it has finished."],
               "...so chooseAI() refuses, in a sentence")
+        check(out["prev"] == {"running": True, "pending": True} and out["prevRefused"]["calls"] == []
+              and out["prevRefused"]["toasts"] == ["Open Loops is still running a job with Claude. Change your AI once it has finished."],
+              f"a poll asked before the start that carries the previous run's end (seq 11 > 10, ended before) does not release it; chooseAI() refuses ({out['prev']})")
         check(out["ended"]["running"] is False and out["ended"]["pending"] is False and (out["ended"]["seq"] or 0) >= 1,
               f"once an answer shows the job ended after the start, it is no longer running ({out['ended']})")
     finally:

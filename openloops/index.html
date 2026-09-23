@@ -489,11 +489,12 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
 
 // ---------- data ----------
 // Polls can overlap and answer out of order: only a newer answer than the last one applied is taken (ST_SEQ). A job this
-// page just started (jobStarted) stays "running" until an answer shows it running or ended after the start (its seq past
-// the one at the start), so an answer sent before the start cannot clear it; 15 s without either and it lets go.
+// page just started (jobStarted) stays "running" until a poll asked AFTER the start (its number past the one noted at the
+// start) shows it running or ended after the start (seq past the one then known, or finished_at after it). A poll asked
+// before the start never releases it, even if it carries the previous run's end; 15 s without either and it lets go.
 async function loadState(){const my=++ST_SEQ,r=await api('/api/state');if(my<ST_DONE)return;ST_DONE=my;S=r.state;const jobs=r.jobs||{};
  for(const k of Object.keys(PENDING_START)){const t=PENDING_START[k],j=jobs[k]||{};
-  if(j.running||(j.seq||0)>t.seq||(j.finished_at&&Date.parse(j.finished_at)>t.at)||Date.now()-t.at>15000)delete PENDING_START[k];else jobs[k]=Object.assign({},j,{running:true})}
+  if((my>t.req&&(j.running||(j.seq||0)>t.seq||(j.finished_at&&Date.parse(j.finished_at)>t.at)))||Date.now()-t.at>15000)delete PENDING_START[k];else jobs[k]=Object.assign({},j,{running:true})}
  J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||''}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
@@ -744,7 +745,7 @@ async function chooseAI(a){if(suBusy||!C||(C.agent||'claude')===a||suRunning(Obj
  if(jobRunning()){toast(`Open Loops is still running a job with ${aiName(C.agent||'claude')}. Change your AI once it has finished.`,{err:true});return}
  suBusy='agent';aiSwitching=a;tick();   // "checking" until the new AI's own check is in: nothing starts meanwhile
  try{await api('/api/config',{agent:a});clog('set-up: your AI is now '+a);
-  try{await loadCfg()}catch(e){clog('set-up: settings not re-read, trying once more');try{await loadCfg()}catch(e2){if(C)C.agent=a}}   // saved: C must say so before the check
+  try{await loadCfg()}catch(e){clog('set-up: settings not re-read, trying once more');try{await loadCfg()}catch(e2){if(C){C.agent=a;agentUI()}}}   // saved: C must say so before the check
   for(const k of Object.keys(CONN))delete CONN[k];   // what the other AI's rows said
   if(formPainted){$('#cfg_agent').value=a;agentFormUI(a)}   // Settings shows the same choice, keeping its unsaved edits
   await doctor(true)}
@@ -1068,13 +1069,16 @@ async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').tex
 
 // ---------- doctor + the main loop ----------
 let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0;
-// The page's own limit on one check: the app gives up at 240 s (app.py), so a request still open after 250 s never will
-// answer. It then counts as a check that did not run (the Retry box), and whatever waited on it (an AI change) lets go.
-let DOC_DEADLINE_MS=250000;
+// The page's own limit on one check. app.py's /api/doctor makes up to two attempts of 240 s each, 2 s apart (482 s at most),
+// so a request still open after 500 s never will answer. It then counts as a check that did not run (the Retry box), and
+// whatever waited on it (an AI change) lets go. A timer bounds it too where the browser has no AbortController.
+let DOC_DEADLINE_MS=500000;
 async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent=force?'checking…':'';
  const seq=++docSeq;   // only the newest check may repaint: an older one can finish last and would undo a tick
- const ac=typeof AbortController!=='undefined'?new AbortController():null,dl=ac&&setTimeout(()=>ac.abort(),DOC_DEADLINE_MS);
- let r;try{r=await api('/api/doctor',{force:!!force,detect:true},ac&&ac.signal)}catch(e){r={all_ok:false,error:ac&&ac.signal.aborted?'no answer within '+Math.round(DOC_DEADLINE_MS/1000)+' s':e.message,steps:[]}}
+ const ac=typeof AbortController!=='undefined'?new AbortController():null;let dl,late=false;
+ const limit=new Promise((_,no)=>{dl=setTimeout(()=>{late=true;if(ac)ac.abort();no(new Error('late'))},DOC_DEADLINE_MS)});
+ let r;try{r=await Promise.race([api('/api/doctor',{force:!!force,detect:true},ac&&ac.signal),limit])}
+ catch(e){r={all_ok:false,error:late?'no answer within '+Math.round(DOC_DEADLINE_MS/1000)+' s':e.message,steps:[]}}
  finally{clearTimeout(dl)}
  if(seq!==docSeq)return;
  docAt=Date.now();
@@ -1096,7 +1100,7 @@ const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job
 // been handled: a follow-up load that fails leaves it for the next poll. WATCH: jobs this page started, polled every
 // 1.5 s until their end.
 let SEEN=null,SEEN_INST=null,INST='';const WATCH={};
-function jobStarted(k){if(!J)J={};PENDING_START[k]={seq:(J[k]&&J[k].seq)||0,at:Date.now()};J[k]=Object.assign({},J[k]||{},{running:true});WATCH[k]=Date.now();if(!runSeen.has(k)){runSeen.add(k);clog(k+' started')}pollSoon()}
+function jobStarted(k){if(!J)J={};PENDING_START[k]={seq:(J[k]&&J[k].seq)||0,at:Date.now(),req:ST_SEQ};J[k]=Object.assign({},J[k]||{},{running:true});WATCH[k]=Date.now();if(!runSeen.has(k)){runSeen.add(k);clog(k+' started')}pollSoon()}
 function pollSoon(){if(inLoop||stopped)return;clearTimeout(loopT);loopT=setTimeout(loop,1000)}
 function newlyEnded(){const out=[];if(!J)return out;
  if(SEEN===null){SEEN={};SEEN_INST=INST;for(const k of Object.keys(J))SEEN[k]=J[k].seq||0;return out}
