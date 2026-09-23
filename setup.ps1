@@ -7,6 +7,11 @@
   Re-run over an existing install (the exe or this file) keeps config.json, including its refresh
   time, unless -At is given explicitly.
 
+  Testing a fresh install beside the one you use, without touching it (INSTALL.md "Testing a fresh install"):
+      powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoops-test -NoApp -NoTask -Port 8790 -Name Test
+  -Dest (or $env:OPENLOOPS_DEST) installs elsewhere; -NoApp skips the Desktop / Start-menu icons; -NoTask leaves
+  the scheduled task alone (there is one per user); -Port saves the port in that copy's config.json.
+
   What it does (all on this computer, nothing sent anywhere):
     1. Installs Python and Claude Code if they're missing (using Windows' own installer, winget).
     2. Copies Open Loops to your user folder (%LOCALAPPDATA%\OpenLoops, or -Dest).
@@ -15,7 +20,8 @@
     5. Opens the app - which walks you through connecting Slack and email.
 #>
 [CmdletBinding()]
-param([string]$At = "09:15", [string]$Name = "", [string]$Dest = "", [switch]$NoLaunch)
+param([string]$At = "09:15", [string]$Name = "", [string]$Dest = "", [switch]$NoLaunch,
+      [switch]$NoApp, [switch]$NoTask, [int]$Port = 0)
 
 $ErrorActionPreference = "Stop"
 function Say($t) { Write-Host ""; Write-Host "  $t" -ForegroundColor Cyan }
@@ -64,6 +70,7 @@ $Src  = $PSScriptRoot
 # Install into the user's local app-data folder - no admin rights needed, and it works wherever the
 # download was unzipped (Downloads, Desktop, a USB stick). The Desktop icon points here, so the
 # downloaded folder can be deleted afterwards.
+if (-not $Dest) { $Dest = $env:OPENLOOPS_DEST }
 if (-not $Dest) { $Dest = Join-Path $env:LOCALAPPDATA "OpenLoops" }
 $Dest = [IO.Path]::GetFullPath($Dest)
 if ((Resolve-Path $Src).Path -eq $Dest) { Say "Already installed here - updating." }
@@ -92,6 +99,10 @@ if (Test-Path $CfgFile) {
     # -Encoding UTF8: the app writes config.json as BOM-less UTF-8; PowerShell 5.1 would otherwise read it as ANSI
     # and the rewrite below would mangle any non-ASCII name or tone text.
     $cfg = Get-Content $CfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($Port) {   # an explicit -Port wins; everything else in config.json stays
+        $cfg | Add-Member -NotePropertyName port -NotePropertyValue $Port -Force
+        $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
+    }
     if ($PSBoundParameters.ContainsKey('At')) {
         $cfg.refresh_time = $At   # keep config.json and the scheduled task in step (as Settings does)
         $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
@@ -104,6 +115,7 @@ if (-not (Test-Path $CfgFile)) {
     $tpl = Get-Content (Join-Path $Src "config.template.json") -Raw -Encoding UTF8 | ConvertFrom-Json
     $tpl.owner_name   = $Name
     $tpl.refresh_time = $At
+    if ($Port) { $tpl | Add-Member -NotePropertyName port -NotePropertyValue $Port -Force }   # app.py: --port, OPENLOOPS_PORT, then this
     $tpl | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
 }
 Ok "Files in place"
@@ -112,23 +124,31 @@ Ok "Files in place"
 $pyw  = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
 if (-not $pyw) { $pyw = (Get-Command python).Source }
 $ico  = Join-Path $Dest "docs\AppIcon.ico"
-$ws = New-Object -ComObject WScript.Shell
-foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
-    $s = $ws.CreateShortcut((Join-Path $folder "Open Loops.lnk"))
-    $s.TargetPath = $pyw; $s.Arguments = "-m openloops.app"; $s.WorkingDirectory = $Dest
-    if (Test-Path $ico) { $s.IconLocation = "$ico,0" } else { $s.IconLocation = "%SystemRoot%\System32\shell32.dll,44" }
-    $s.Description = "Open Loops - who owes you a reply"; $s.Save()
+if ($NoApp) {
+    Ok "Skipped the Desktop and Start menu icons (-NoApp). Start this copy with: cd `"$Dest`"; python -m openloops.app"
+} else {
+    $ws = New-Object -ComObject WScript.Shell
+    foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
+        $s = $ws.CreateShortcut((Join-Path $folder "Open Loops.lnk"))
+        $s.TargetPath = $pyw; $s.Arguments = "-m openloops.app"; $s.WorkingDirectory = $Dest
+        if (Test-Path $ico) { $s.IconLocation = "$ico,0" } else { $s.IconLocation = "%SystemRoot%\System32\shell32.dll,44" }
+        $s.Description = "Open Loops - who owes you a reply"; $s.Save()
+    }
+    Ok "Desktop and Start menu icons created"
 }
-Ok "Desktop and Start menu icons created"
 
 # ---------- 5. Morning refresh ----------
-powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -At $At | Out-Null
-# $ErrorActionPreference = "Stop" does not react to a native process's exit code in Windows PowerShell 5.1.
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  Couldn't set the weekday refresh (register-task.ps1 exit $LASTEXITCODE, time '$At'). Fix the problem above and run setup again, or set the time later in the app's Settings." -ForegroundColor Yellow
-    exit 1
+if ($NoTask) {
+    Ok "Skipped the weekday refresh (-NoTask): whatever was already scheduled is unchanged"
+} else {
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -At $At | Out-Null
+    # $ErrorActionPreference = "Stop" does not react to a native process's exit code in Windows PowerShell 5.1.
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Couldn't set the weekday refresh (register-task.ps1 exit $LASTEXITCODE, time '$At'). Fix the problem above and run setup again, or set the time later in the app's Settings." -ForegroundColor Yellow
+        exit 1
+    }
+    Ok "Will refresh itself weekdays at $At"
 }
-Ok "Will refresh itself weekdays at $At"
 
 # ---------- 6. Open it ----------
 if ($NoLaunch) {

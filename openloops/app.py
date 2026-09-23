@@ -17,15 +17,21 @@ VOICEF = ROOT / "voice.json"
 EDITABLE = ("agent", "model", "effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
 import os
 def _port_arg():
-    """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats 8765. `npm run dev` uses 8766 so a checkout never
-    collides with, or is mistaken for, the installed copy on 8765."""
+    """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
+    so a checkout never collides with, or is mistaken for, the installed copy on 8765; a test install
+    (`install.sh --dest … --port 8790`) keeps its port in its own config.json so every launch uses it."""
     a = sys.argv
     for i, x in enumerate(a):
         if x.startswith("--port="):
             return int(x.split("=", 1)[1])
         if x == "--port" and i + 1 < len(a):
             return int(a[i + 1])
-    return int(os.environ.get("OPENLOOPS_PORT", "8765"))
+    if os.environ.get("OPENLOOPS_PORT"):
+        return int(os.environ["OPENLOOPS_PORT"])
+    try:
+        return int(load_cfg().get("port") or 8765)
+    except (TypeError, ValueError):  # a hand-edited "port": "abc" falls back to the default rather than not starting
+        return 8765
 
 
 PREFERRED = _port_arg()
