@@ -1,35 +1,46 @@
 """Bring the list and settings of an older Mac install (in ~/Documents) into the new one (#24). Copy only.
 
-    python3 scripts/migrate_install.py --old ~/Documents/OpenLoops --dest ~/Library/Application\\ Support/OpenLoops
+    python3 scripts/migrate_install.py --old ~/Documents/OpenLoops --dest ~/Library/Application\\ Support/OpenLoops [--no-task]
 
 Why: macOS will not let the launchd weekday refresh read ~/Documents, so the install now lives elsewhere.
-Called by install.sh before it copies the program files. It NEVER moves, renames or deletes anything under the
-old folder, and never suggests deleting it: the old copy stays exactly as it was, as a fallback.
+Called by install.sh before it copies the program files. It NEVER moves, renames, deletes or writes anything
+under the old folder, and never suggests deleting it: the old copy stays exactly as it was, as a fallback.
 
-  1. Nothing to do without an old install. If the new install already has a list (state.json), nothing is
-     copied again: the new copy is the one in use.
-  2. The old copy must be idle first, or the copy could catch a half-written file:
-     - the weekday job, if its plist (read with plistlib) runs the old folder's script, is unloaded; if it is
-       loaded and cannot be unloaded, stop.
-     - an Open Loops server on 8765-8784 is asked to quit only if /api/diag says "app": "openloops" AND its
-       root is the old folder; a port that does not answer in time is "could not confirm", so stop.
-     - lsof must show nothing else working inside the old folder; if lsof is missing or fails, stop.
-  3. Copy only the named personal files and folders, file by file (shutil.copy2). Symbolic links are skipped
-     and reported, never followed. state.json goes last, so "the new install has a list" only ever means the
-     copy finished. Every copied file is then compared byte for byte; any difference stops the install.
+  1. Nothing to do without an old install, or when DEST/.migrated-from already names this old folder (written
+     only after every file was copied and checked). Otherwise any earlier, interrupted run is resumed: files
+     already in place and identical are left alone, missing or different ones are copied again. A new install
+     whose state.json differs from the old one (used on its own, or installed fresh) is never overwritten:
+     nothing is copied and it says so.
+  2. Nothing it writes may lead back into the old folder: DEST inside (or equal to) the old folder, a symbolic
+     link or a hard-linked file anywhere on a path it is about to write, or a path resolving outside DEST all
+     stop it, as does a symlinked log file. The log is opened with O_NOFOLLOW.
+  3. The old copy must be idle first, or the copy could catch a half-written file:
+     - the weekday job, if its plist (read with plistlib) runs the old folder's script, is paused; "Could not
+       find service" means not loaded, any other launchctl failure stops it. With --no-task (install.sh will not
+       register the job for the new place) the old job is put back afterwards, and it says so.
+     - a server on 8765-8784 whose /api/diag root is the old folder is asked to quit if it says "app": "openloops",
+       or - older versions without that field - if the process listening on the port is working inside the old
+       folder (lsof). A root it cannot confirm, or a port that does not answer clearly, stops it.
+     - lsof must show no process with any file (or its working folder) inside the old folder; missing or
+       failing lsof stops it.
+  4. Copy only the named personal files and folders. Each file goes to "<name>.part" (shutil.copy2), is compared
+     byte for byte with the original, then os.replace()d into place; state.json last; .migrated-from after all.
+     Symbolic links in the old folder are skipped and reported, never followed; an unreadable folder stops it.
 
 Exit 0 = copied or nothing to do, 1 = stopped (one sentence what happened, one what to do; details in the log).
 Stdlib only.
 """
-import argparse, filecmp, json, os, plistlib, shutil, subprocess, sys, time, traceback
+import argparse, filecmp, json, os, plistlib, shutil, stat, subprocess, sys, time, traceback
 from pathlib import Path
 
 PORTS = range(8765, 8785)   # app.py's pick_port() range: an old copy may be on any of them
 LABEL = "com.openloops.refresh"
 FILES = ["config.json", "voice.json", "people_suggested.json", "google_oauth_client.json"]   # state.json last
 DIRS = ["state", ".grok", "profiles", "private"]
+SENTINEL = ".migrated-from"   # in DEST: the resolved old folder, written only once everything is copied and checked
 LOG = Path.home() / "Library" / "Logs" / "OpenLoops" / "install.log"   # tracebacks go here, never on screen
-PAUSED = []   # the plist whose job unload_job() paused: put back as it was if we then stop (the old copy stays in use)
+PAUSED = []   # the plist whose job unload_job() paused: put back as it was if we stop (the old copy stays in use)
+TRY_AGAIN = "Run the installer again; your old copy in Documents is untouched."
 
 
 class Stop(Exception):
@@ -44,12 +55,23 @@ def say(msg):
 
 
 def log(text):
+    """Append to LOG without ever following a link (checked in check_log() too; O_NOFOLLOW where the OS has it)."""
     try:
         LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG, "a", encoding="utf-8") as f:
+        if os.path.islink(LOG.parent):
+            return
+        fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} migrate_install\n{text}\n")
     except OSError:
         pass
+
+
+def check_log():
+    for p in (LOG.parent, LOG):
+        if os.path.islink(p):
+            raise Stop("Open Loops found a shortcut where its install log should be, so it stopped to be safe.",
+                       f"Remove {p}, then run the installer again.")
 
 
 def inside(path, folder):
@@ -58,9 +80,10 @@ def inside(path, folder):
     return p == f or p.startswith(f + os.sep)
 
 
+# ---------- 1. the old copy must be idle ----------
+
 def unload_job(old):
-    """The weekday job is a writer too. Unload it if its plist runs the old folder's script; refuse if it is
-    loaded and will not unload. install.sh registers it again for the new place afterwards (unless --no-task)."""
+    """The weekday job is a writer too. Pause it if its plist runs the old folder's script."""
     plist = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     if not plist.exists():
         return
@@ -73,8 +96,12 @@ def unload_job(old):
     if not any(isinstance(a, str) and a.endswith("run-refresh.sh") and inside(a, old) for a in args):
         return
     target = f"gui/{os.getuid()}/{LABEL}"
-    if subprocess.run(["launchctl", "print", target], capture_output=True).returncode != 0:
-        return  # not loaded: nothing to stop
+    r = subprocess.run(["launchctl", "print", target], capture_output=True, text=True)
+    if r.returncode != 0:
+        if "could not find service" in (r.stdout + r.stderr).lower():
+            return  # not loaded: nothing to pause
+        log(f"launchctl print {target} -> {r.returncode}: {r.stdout}{r.stderr}")
+        raise Stop("Open Loops couldn't check the old copy's morning refresh.", "Restart your Mac, then run the installer again.")
     r = subprocess.run(["launchctl", "bootout", target], capture_output=True, text=True)
     if r.returncode != 0:
         log(f"launchctl bootout {target} -> {r.returncode}: {r.stdout}{r.stderr}")
@@ -82,6 +109,17 @@ def unload_job(old):
                    "Restart your Mac, then run the installer again.")
     PAUSED.append(plist)
     say("Paused the old copy's morning refresh while copying.")
+
+
+def resume():
+    """Put a paused job back exactly as it was (its plist was never changed)."""
+    while PAUSED:
+        plist = PAUSED.pop()
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], capture_output=True, text=True)
+        if r.returncode != 0:
+            log(f"launchctl bootstrap {plist} -> {r.returncode}: {r.stdout}{r.stderr}")
+            return False
+    return True
 
 
 def diag(port):
@@ -99,14 +137,38 @@ def diag(port):
         log(f"curl {port} -> {r.returncode}")
         return "unknown", None
     try:
-        return "answer", json.loads(r.stdout)
+        answer = json.loads(r.stdout)
     except ValueError:
-        return "answer", {}  # some other program on that port
+        answer = {}
+    return "answer", answer if isinstance(answer, dict) else {}
 
 
-def ours(answer, old):
-    return isinstance(answer, dict) and answer.get("app") == "openloops" and isinstance(answer.get("root"), str) \
-        and os.path.realpath(answer["root"]) == os.path.realpath(old)
+def listener_inside(port, old):
+    """Older versions' /api/diag has no "app" field: is the process listening on the port working in the old folder?"""
+    try:
+        r = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"], capture_output=True, text=True, timeout=30)
+        pids = [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("p")]
+        if not pids:
+            return False
+        for pid in pids:
+            c = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=30)
+            if not any(ln.startswith("n") and inside(ln[1:], old) for ln in c.stdout.splitlines()):
+                return False
+        return True
+    except Exception as e:
+        log(f"listener {port}: {e!r}")
+        return False
+
+
+def old_server(answer, old, port):
+    """True = an old-copy server to stop; False = not the old copy; None = its root is the old folder but it
+    cannot be confirmed to be Open Loops (so nothing is sent, and the copy stops)."""
+    root = answer.get("root")
+    if not isinstance(root, str) or os.path.realpath(root) != os.path.realpath(old):
+        return False
+    if answer.get("app") == "openloops" or listener_inside(port, old):
+        return True
+    return None
 
 
 def stop_servers(old):
@@ -117,8 +179,12 @@ def stop_servers(old):
         kind, answer = diag(p)
         if kind == "unknown":
             raise cant
-        if kind == "answer" and ours(answer, old):
-            running.append(p)
+        if kind == "answer":
+            which = old_server(answer, old, p)
+            if which is None:
+                raise cant
+            if which:
+                running.append(p)
     for p in running:
         subprocess.run(["curl", "-s", "--max-time", "5", "-X", "POST", "-H", "Content-Type: application/json",
                         "-d", "{}", f"http://127.0.0.1:{p}/api/quit"], capture_output=True, timeout=15)
@@ -128,7 +194,7 @@ def stop_servers(old):
         still = []
         for p in running:
             kind, answer = diag(p)
-            if kind == "unknown" or (kind == "answer" and ours(answer, old)):
+            if kind == "unknown" or (kind == "answer" and old_server(answer, old, p) is not False):
                 still.append(p)
         running = still
     if running:
@@ -136,41 +202,50 @@ def stop_servers(old):
 
 
 def users_of(old):
-    """PIDs (other than this script and install.sh) with their working folder inside the old install."""
+    """PIDs (other than this script and install.sh) with ANY open file, or their working folder, inside the old
+    install - so a writer using absolute paths counts too."""
+    cant = Stop("Open Loops can't check whether the old copy is still in use.", "Quit Open Loops and try again.")
     if not shutil.which("lsof"):
-        raise Stop("Open Loops can't check whether the old copy is still in use.", "Quit Open Loops and try again.")
+        raise cant
     try:
-        r = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn"], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["lsof", "-Fpn"], capture_output=True, text=True, timeout=120)
     except Exception as e:
         log(f"lsof: {e!r}")
-        r = None
-    if r is None or r.returncode != 0 or not r.stdout.strip():
-        if r is not None:
-            log(f"lsof -> {r.returncode}: {r.stderr[-500:]}")
-        raise Stop("Open Loops can't check whether the old copy is still in use.", "Quit Open Loops and try again.")
-    pids, pid = [], None
+        raise cant
+    if r.returncode != 0 or not r.stdout.strip():
+        log(f"lsof -> {r.returncode}: {r.stderr[-500:]}")
+        raise cant
+    pids, pid, old_s = set(), None, os.path.realpath(old)
     for ln in r.stdout.splitlines():
         if ln.startswith("p"):
             pid = int(ln[1:])
-        elif ln.startswith("n") and pid not in (None, os.getpid(), os.getppid()) and inside(ln[1:], old):
-            pids.append(pid)
-    return pids
+        elif ln.startswith("n") and pid not in (None, os.getpid(), os.getppid()):
+            n = ln[1:]
+            if any(n == o or n.startswith(o + "/") for o in (old_s, str(old))):
+                pids.add(pid)
+    return sorted(pids)
 
+
+# ---------- 2. what to copy, and where it may be written ----------
 
 def plan(old):
     """-> (files to copy as relative paths, state.json last; symlinks skipped). Never follows a link."""
+    def unreadable(err):
+        log(f"walk: {err!r}")
+        raise Stop("Open Loops couldn't read part of the old copy's folder, so it copied nothing more.",
+                   "Check that the old Open Loops folder in Documents opens in Finder, then run the installer again.")
     todo, skipped = [], []
     for name in FILES + DIRS + ["state.json"]:
         src = old / name
         if os.path.islink(src):
             skipped.append(name)
         elif name in DIRS and src.is_dir():
-            for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+            for dirpath, dirnames, filenames in os.walk(src, followlinks=False, onerror=unreadable):
                 for d in list(dirnames):
                     if os.path.islink(os.path.join(dirpath, d)):
                         skipped.append(os.path.relpath(os.path.join(dirpath, d), old))
                         dirnames.remove(d)
-                for f in filenames:
+                for f in sorted(filenames):
                     full = os.path.join(dirpath, f)
                     (skipped if os.path.islink(full) else todo).append(os.path.relpath(full, old))
         elif src.is_file():
@@ -178,32 +253,94 @@ def plan(old):
     return todo, skipped
 
 
-def copy_personal(old, dest):
-    todo, skipped = plan(old)
-    dest.mkdir(parents=True, exist_ok=True)
-    for rel in todo:
-        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(old / rel, dest / rel, follow_symlinks=False)
-    bad = [rel for rel in todo if not filecmp.cmp(old / rel, dest / rel, shallow=False)]
+def check_dest(old, dest, rels):
+    """Stop before writing anything if a write under DEST could land in the old folder or anywhere else outside DEST."""
+    alias = Stop("The new Open Loops folder points back into the old one, so copying could change your old copy.",
+                 "Remove the new Open Loops folder in Library/Application Support, then run the installer again.")
+    if inside(dest, old) or inside(old, dest):
+        raise alias
+    real_dest = os.path.realpath(dest)
+    # DEST and every folder above it that we might create must not be links
+    for p in [dest] + list(dest.parents)[:2]:
+        if os.path.islink(p):
+            raise alias
+    for rel in rels + [SENTINEL]:
+        target = dest / rel
+        chain = [target, Path(str(target) + ".part")] + [dest / q for q in Path(rel).parents if str(q) != "."]
+        for p in chain:
+            if not os.path.lexists(p):
+                continue
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode) or (stat.S_ISREG(st.st_mode) and st.st_nlink > 1) or not inside(p, real_dest):
+                log(f"alias: {p}")
+                raise alias
+
+
+def same(a, b):
+    try:
+        return os.path.isfile(b) and not os.path.islink(b) and filecmp.cmp(a, b, shallow=False)
+    except OSError:
+        return False
+
+
+def put(src, target):
+    """Copy to <target>.part, check it byte for byte, then replace the target in one step."""
+    part = Path(str(target) + ".part")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(part):
+        os.unlink(part)   # a leftover from an interrupted run; check_dest() already refused links and hard links
+    shutil.copy2(src, part, follow_symlinks=False)
+    if not filecmp.cmp(src, part, shallow=False):
+        os.unlink(part)
+        raise Stop("The copy of your list and settings didn't match the original, so the new Open Loops was not switched on.",
+                   TRY_AGAIN)
+    os.replace(part, target)
+
+
+def copy_personal(old, dest, todo):
+    copied = 0
+    for rel in todo:   # state.json is last in todo
+        if same(old / rel, dest / rel):
+            continue       # already copied by an interrupted earlier run
+        put(old / rel, dest / rel)
+        copied += 1
+    bad = [rel for rel in todo if not same(old / rel, dest / rel)]
     if bad:
         log("copy differs: " + ", ".join(bad))
-        if "state.json" in todo and (dest / "state.json").exists():
-            (dest / "state.json").unlink()   # ours, just written: without it the next run copies again
         raise Stop("The copy of your list and settings didn't match the original, so the new Open Loops was not switched on.",
-                   "Run the installer again; your old copy in Documents is untouched.")
-    return len(todo), skipped
+                   TRY_AGAIN)
+    tmp = Path(str(dest / SENTINEL) + ".part")
+    tmp.write_text(os.path.realpath(old) + "\n", encoding="utf-8")
+    os.replace(tmp, dest / SENTINEL)   # only now does a rerun skip
+    return copied
+
+
+def done_before(old, dest):
+    try:
+        return (dest / SENTINEL).read_text(encoding="utf-8").strip() == os.path.realpath(old)
+    except OSError:
+        return False
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--old", required=True)
     ap.add_argument("--dest", required=True)
+    ap.add_argument("--no-task", action="store_true", help="install.sh will not register the job: put the old one back")
     a = ap.parse_args()
     old, dest = Path(a.old), Path(a.dest)
     if not (old / "openloops" / "app.py").is_file():
         return 0
-    if (dest / "state.json").exists():
+    if not os.path.islink(dest) and done_before(old, dest):
         say("Your list is already in the new Open Loops, so nothing was copied again. The old copy in Documents is untouched.")
+        return 0
+    check_log()
+    todo, skipped = plan(old)
+    check_dest(old, dest, todo)
+    if (dest / "state.json").exists() and not same(old / "state.json", dest / "state.json"):
+        # the new copy has been used on its own (or was installed fresh): its list is never overwritten
+        say("The new Open Loops already has a list of its own, so nothing was copied from the old one. "
+            "The old copy in Documents is untouched.")
         return 0
     say("Copying your list and settings from the old Open Loops in Documents ...")
     os.chdir(Path.home())   # this script's own working folder must not count as a user of the old one
@@ -213,22 +350,21 @@ def main():
     if pids:
         raise Stop(f"Something is still working in the old Open Loops folder (process {', '.join(map(str, pids[:5]))}).",
                    "Quit Open Loops and close any Terminal window opened in that folder, then run the installer again.")
-    n, skipped = copy_personal(old, dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    check_dest(old, dest, todo)   # again, now that DEST exists: nothing may have appeared in between
+    copied = copy_personal(old, dest, todo)
     say("Your list and settings were copied to the new Open Loops. The old copy in Documents is untouched; "
         "Open Loops no longer uses it.")
     if skipped:
         say(f"Left out {len(skipped)} shortcut(s) that point somewhere else: {', '.join(skipped[:5])}. "
             "Copy what they point to by hand if you need it.")
-    log(f"copied {n} file(s) from {old} to {dest}; skipped links: {skipped}")
+    if a.no_task and PAUSED:
+        if resume():
+            say("The old copy's morning refresh was put back as it was, because this install does not set one up.")
+        else:
+            say("The old copy's morning refresh could not be put back; it will be again the next time you log in.")
+    log(f"copied {copied} of {len(todo)} file(s) from {old} to {dest}; skipped links: {skipped}")
     return 0
-
-
-def resume():
-    """Stopping after the pause: the old copy is still the one in use, so its job goes back exactly as it was."""
-    for plist in PAUSED:
-        r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], capture_output=True, text=True)
-        if r.returncode != 0:
-            log(f"launchctl bootstrap {plist} -> {r.returncode}: {r.stdout}{r.stderr}")
 
 
 if __name__ == "__main__":

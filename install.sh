@@ -111,7 +111,9 @@ OLD="$HOME/Documents/OpenLoops"   # where installs before #24 went
 # copies the named personal files into the new place after making sure the old copy is idle; it never moves,
 # renames or deletes anything in the old folder. If it cannot be sure, it stops the installer (exit 1).
 if [ "$DEST" = "$DEFAULT_DEST" ] && [ -f "$OLD/openloops/app.py" ]; then
-    python3 "$SRC/scripts/migrate_install.py" --old "$OLD" --dest "$DEST"
+    MIGRATE_FLAGS=()
+    [ "$NO_TASK" -eq 1 ] && MIGRATE_FLAGS+=(--no-task)   # no new job will be registered: put the old one back
+    python3 "$SRC/scripts/migrate_install.py" --old "$OLD" --dest "$DEST" "${MIGRATE_FLAGS[@]}"
 fi
 
 if [ "$SRC" = "$DEST" ]; then
