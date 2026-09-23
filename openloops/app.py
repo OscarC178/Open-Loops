@@ -136,9 +136,12 @@ def run_job(name, extra=None):
 
 # ---- Claude setup buttons: /api/connect/<step> runs agent.login_cmd(step) in the background ----
 # Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
-# The log (state/connect-<step>.log) holds what the CLI printed, sign-in link included, for the page and Console.
+# The log (state/connect-<step>.log) holds what the CLI printed, minus the sign-in link's query, for the page and Console.
 CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
 URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
+# On disk a link keeps its address but not its query: that is where an authorisation request's state and
+# challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
+REDACT_RE = re.compile(r"(https://[^\s?\x1b\x07]+)\?[^\s\x1b\x07]+")
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
 connects = {}  # step -> {"running", "rc", "url", "started"}
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
@@ -197,7 +200,7 @@ def _connect_one(step, argv, log, deadline):
                 raw = (raw + chunk)[-64000:]
                 # the whole buffer each time: an escape code or the link can straddle two reads
                 text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
-                log.write_text(before + text, encoding="utf-8")
+                log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
                 u = URL_RE.search(text)
                 if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
                     connects[step]["url"] = u.group(0)
@@ -350,6 +353,13 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global doctor_cache
+        # Every POST changes something (a job, a sign-in, a file), and any web page open in the browser can send one
+        # to localhost. Browsers always say where a POST comes from (Origin), so one from anywhere but this page is
+        # refused. The page's own requests and its close-tab beacon carry this page's origin; `--stop`, the tests
+        # and other local scripts send no Origin at all and are let through.
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"):
+            return self._json({"error": "refused: request from another site"}, 403)
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
         if self.path == "/api/bye":  # a page closed (or reloaded: its successor says hello within a second)
