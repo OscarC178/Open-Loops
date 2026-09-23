@@ -22,7 +22,7 @@ if sys.platform != "darwin":
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
-from openloops import doctor
+from openloops import agent, doctor
 from _helpers import start_app, stop
 
 MINIMAL = "/usr/bin:/bin:/usr/sbin:/sbin"  # what launchd gives its children
@@ -96,7 +96,8 @@ try:
         code = "\n".join(ln.split("#")[0] for ln in (REPO / name).read_text().splitlines())
         flags = re.findall(r"shell=(\w+)", code)
         check(flags and all(f == "WIN" for f in flags), f"{name}: every subprocess call uses shell=WIN")
-    args = ["-p", "--output-format", "text", "--allowedTools", "mcp__plugin_slack_slack__slack_search_users"]
+    args = agent.claude_args(["slack.search_users"])[1:]   # what a job really passes (#46: --output-format json)
+    check(args[:3] == ["-p", "--output-format", "json"], f"the jobs' real claude arguments ({args})")
     rc, _ = doctor.run(["claude", *args], input="ping", env={"PATH": f"{fakebin}:{MINIMAL}", "HOME": str(home)})
     got = argv_file.read_text().splitlines() if argv_file.exists() else []
     check(rc == 0 and got == args, f"doctor.run passed all {len(args)} args through to claude (got {got})")
