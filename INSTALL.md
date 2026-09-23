@@ -10,12 +10,20 @@ behalf — chases are created as **drafts** in the original thread and you press
 |---|---|---|
 | Windows 10/11, or macOS | Task Scheduler + Desktop shortcut (Windows) / `launchd` + Desktop launcher (Mac) | — |
 | Python 3.11+ (stdlib only, no pip installs) | runs the page and the scripts | `python --version` (Windows) / `python3 --version` (Mac) |
-| An AI CLI, logged in — Claude Code (default) or Grok | does the reading/classifying via headless runs (`agent.py`) | `claude --version` / `grok --version` |
-| Slack connected in that CLI *(optional)* | reads your DMs/channels, creates Slack drafts | Claude: `/mcp` shows *slack* connected · Grok: off unless ⚙ Settings → *Use Slack*, then `/mcps`, select *slack*, press `i` |
-| Gmail connected *(optional)* | reads sent mail/threads, creates Gmail drafts | Claude: `/mcp` → *claude.ai Gmail* → Authenticate · Grok: see **Gmail with Grok** below |
+| An AI CLI, logged in — Claude Code (default) or Grok | does the reading/classifying via headless runs (`agent.py`) | `claude --version` / `grok --version`. Claude: the checklist's **Sign in** button runs `claude auth login` |
+| Slack connected in that CLI *(optional)* | reads your DMs/channels, creates Slack drafts | Claude: the checklist's **Install Slack plugin** / **Connect Slack** buttons (fallback: *Open Claude (advanced)* → `/mcp` → *slack* → Authenticate) · Grok: off unless ⚙ Settings → *Use Slack*, then `/mcps`, select *slack*, press `i` |
+| Gmail connected *(optional)* | reads sent mail/threads, creates Gmail drafts | Claude: the checklist's **Connect Gmail** button (Gmail must be added at claude.ai → Settings → Connectors first; fallback: `/mcp` → *claude.ai Gmail* → Authenticate) · Grok: see **Gmail with Grok** below |
 
 Slack and Gmail are both optional sources — connect **at least one**; the checklist and every job adapt to
 whichever is available (Gmail-only and Slack-only installs both work).
+
+**Connecting with Claude: buttons, not a terminal.** Each unticked row on the checklist has a button. The app runs
+the matching Claude Code command in the background (`claude auth login`, `claude plugin install
+slack@claude-plugins-official`, `claude mcp login <server>`), your browser opens the sign-in page, and you click
+*Allow*; the row ticks a few seconds later. The checklist reads its ticks from `claude auth status` and
+`claude mcp list`, not from a trial prompt. What each command printed is in `state/connect-<step>.log`. If a button
+doesn't do it, *Open Claude (advanced)* opens a terminal running `claude`, where `/mcp` lists every connection.
+Open Loops stores no tokens for this: the sign-ins stay wherever the Claude CLI keeps them.
 
 **Accounts / permissions this touches**
 - **Slack**: whatever your Slack user can already see. The tool never posts; it only uses `slack_send_message_draft`.
@@ -23,7 +31,7 @@ whichever is available (Gmail-only and Slack-only installs both work).
   With Grok, the app's own bundled Gmail MCP server (`gmail_mcp.py`) talking to the Gmail REST API with a
   token minted locally by `gmail_auth.py` (see below).
 - **The AI CLI**: a subscription/API access for the headless runs. Each refresh is one short session.
-- **No other credentials.** With Claude nothing is stored by this tool; with Grok the Gmail refresh token lives in `state/google_oauth.json` on your machine.
+- **No other credentials.** With Claude nothing is stored by this tool (the setup buttons only start the Claude CLI's own sign-in; its tokens stay with the CLI); with Grok the Gmail refresh token lives in `state/google_oauth.json` on your machine.
 
 ### Choosing your AI
 
@@ -217,8 +225,8 @@ state/logs/       one log per run
    connection check detects which you have and stores it as `slack_source` in `config.json`; Settings shows the
    detected route. If you switch, press *Check again* on the Home tab.
 2. **Miro (Roadmap card only).** Two routes, like Slack: the *claude.ai Miro connector* (add it at claude.ai →
-   Connectors, or *Open Claude* → `/mcp` → **Miro** → Authenticate) or the *Miro plugin*
-   (`claude plugin install miro@claude-plugins-official`, then `/mcp` → **miro** → Authenticate). The connection check
+   Connectors) or the *Miro plugin* (`claude plugin install miro@claude-plugins-official`); then press **Connect Miro**
+   on the checklist (fallback: *Open Claude (advanced)* → `/mcp` → **Miro** → Authenticate). The connection check
    detects whichever is connected and stores it as `miro_source`; the plugin wins if both are. Each Miro login is tied
    to one Miro team.
 3. **Second launch only opens the browser.** If Open Loops is already running, double-clicking the icon just opens the

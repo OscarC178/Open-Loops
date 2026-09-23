@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .paths import PKG, ROOT
-from .store import load_cfg, norm_date, read_json, write_json
+from .store import load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
@@ -75,6 +75,9 @@ if not STATE.exists():
 (ROOT / "state" / "logs").mkdir(parents=True, exist_ok=True)
 
 doctor_cache = {"at": 0, "result": None}
+# Bumped whenever the answer may have changed under a check already running (a setup step finished, Start over):
+# such a check still answers its caller but is never cached, so it cannot bring back a row the user just fixed.
+doctor_gen = {"n": 0}
 JOB_MOD = {"refresh": "refresh", "chase": "chase", "voice": "voice", "people": "people", "standing": "close_standing",
            "daylog": "daylog", "roadmap": "roadmap"}
 jobs = {k: {"running": False, "log": ""} for k in JOB_MOD}
@@ -129,6 +132,162 @@ def run_job(name, extra=None):
 
     threading.Thread(target=go, daemon=True).start()
     return True
+
+
+# ---- Claude setup buttons: /api/connect/<step> runs agent.login_cmd(step) in the background ----
+# Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
+# The log (state/connect-<step>.log) holds what the CLI printed, minus the sign-in link's query, for the page and Console.
+CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
+URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
+# On disk a link keeps its address but not its query: that is where an authorisation request's state and
+# challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
+REDACT_RE = re.compile(r"(https://[^\s?\x1b\x07]+)\?[^\s\x1b\x07]+")
+ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
+connects = {}  # step -> {"running", "rc", "url", "started"}
+connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
+connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
+
+
+def stop_connects():
+    """Quit or exit: stop every setup step still waiting (Windows: its console window too). quit_requested is set
+    first, and _launch checks it under the same lock, so a step about to start either is in this list or never starts."""
+    with connect_lock:
+        running = list(connect_procs.values())
+    for p in running:
+        kill_tree(p)
+
+
+def _launch(step, *args, **kw):
+    """Popen for a setup step, registered for stop_connects() in the same breath -> Popen, or None once quitting."""
+    with connect_lock:
+        if quit_requested:
+            return None
+        p = connect_procs[step] = subprocess.Popen(*args, **kw)
+        return p
+
+
+def _reap(step, p, secs):
+    """Wait for a setup step's process (killing it if it outstays secs) -> exit code, then stop tracking it.
+    Tracked until here, so a child that closed its terminal but lives on can still be stopped by Quit."""
+    try:
+        return p.wait(max(1, secs))
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+        return -1
+    finally:
+        with connect_lock:
+            if connect_procs.get(step) is p:
+                connect_procs.pop(step)
+
+
+def connect_log(step):
+    return ROOT / "state" / f"connect-{step}.log"
+
+
+def _connect_one(step, argv, log, deadline):
+    """Run one command of a setup step -> exit code. Off Windows it runs on a pseudo-terminal (stdlib pty):
+    `claude mcp login` gives up at once when stdin is not a terminal, but on one it waits for the browser's
+    callback. With --no-browser it prints the sign-in link instead of opening it; we open it here, and the
+    page shows it too in case no browser window came up. Windows has no stdlib pty: the command gets a
+    console window of its own (a real terminal) and opens the browser itself; its output stays in that window."""
+    if WIN:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"$ {subprocess.list2cmdline(argv)}\n(running in its own window)\n")
+        p = _launch(step, subprocess.list2cmdline(argv), cwd=ROOT, shell=True,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE)
+        return -1 if p is None else _reap(step, p, deadline - time.time())
+    import os, pty, select
+    m, s = pty.openpty()
+    try:
+        p = _launch(step, argv, cwd=ROOT, stdin=s, stdout=s, stderr=s, start_new_session=True, close_fds=True)
+    finally:
+        os.close(s)
+    if p is None:  # Open Loops is closing
+        os.close(m)
+        return -1
+    raw, tail, rc = b"", "", -1
+    try:
+        before = log.read_text(encoding="utf-8") + "$ " + " ".join(shlex.quote(a) for a in argv) + "\n"
+        while True:
+            if time.time() > deadline:
+                kill_tree(p)
+                tail = "\nstopped: no answer from the browser within 5 minutes\n"
+                break
+            if select.select([m], [], [], 0.5)[0]:
+                try:
+                    chunk = os.read(m, 4096)
+                except OSError:  # the command exited and closed its end (Linux says so with EIO)
+                    chunk = b""
+                if not chunk:
+                    break
+                raw = (raw + chunk)[-64000:]
+                # the whole buffer each time: an escape code or the link can straddle two reads
+                text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
+                log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
+                u = URL_RE.search(text)
+                if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
+                    connects[step]["url"] = u.group(0)
+                    if "--no-browser" in argv:
+                        webbrowser.open(u.group(0))
+            elif p.poll() is not None:
+                break
+    finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
+        os.close(m)
+        rc = _reap(step, p, 5)
+    if tail:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(tail)
+    return rc
+
+
+def run_connect(step):
+    """Start a Claude setup step in the background -> (started, error). One run per step at a time."""
+    from . import agent
+    if agent.name() != "claude" or step not in agent.CONNECT_STEPS:
+        return False, "no such setup step for " + agent.display_name()
+    with connect_lock:  # check and claim in one go
+        if quit_requested:
+            return False, "Open Loops is closing"
+        if (connects.get(step) or {}).get("running"):
+            return False, "already running"
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
+    log = connect_log(step)
+
+    def go():
+        rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
+        try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
+            for argv in agent.login_cmd(step) or []:
+                rc = _connect_one(step, argv, log, deadline)
+                if rc != 0:
+                    break
+        except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
+        finally:
+            doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
+            doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
+            connects[step].update(running=False, rc=rc)
+
+    try:  # anything failing between the claim and the worker would leave the step "already running" for good
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
+        threading.Thread(target=go, daemon=True).start()
+    except Exception as e:
+        connects[step].update(running=False, rc=-1)
+        return False, f"could not start {step}: {type(e).__name__}: {e}"
+    return True, ""
+
+
+def connect_status(step):
+    c = dict(connects.get(step) or {"running": False, "rc": None, "url": "", "started": None})
+    log = connect_log(step)
+    try:
+        lines = [x.strip() for x in log.read_text(encoding="utf-8", errors="replace").splitlines()]
+    except OSError:  # not written yet, or not writable at all
+        lines = []
+    c["last"] = next((x for x in reversed(lines) if x), "")[:300]
+    c["step"] = step
+    return c
 
 
 class H(BaseHTTPRequestHandler):
@@ -200,6 +359,12 @@ class H(BaseHTTPRequestHandler):
         elif self.path.split("?")[0] == "/api/standing":
             from . import standing
             self._json(standing.status(self._query().get("path") or None))
+        elif self.path.split("?")[0].startswith("/api/connect/"):
+            from . import agent
+            step = self.path.split("?")[0].rsplit("/", 1)[1]
+            if step not in agent.CONNECT_STEPS:
+                return self._json({"error": "unknown setup step"}, 404)
+            self._json(connect_status(step))
         elif self.path == "/api/roadmap":
             from . import roadmap
             st, conf = roadmap.load(), roadmap.configured()
@@ -216,6 +381,13 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global doctor_cache
+        # Every POST changes something (a job, a sign-in, a file), and any web page open in the browser can send one
+        # to localhost. Browsers always say where a POST comes from (Origin), so one from anywhere but this page is
+        # refused. The page's own requests and its close-tab beacon carry this page's origin; `--stop`, the tests
+        # and other local scripts send no Origin at all and are let through.
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"):
+            return self._json({"error": "refused: request from another site"}, 403)
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
         if self.path == "/api/bye":  # a page closed (or reloaded: its successor says hello within a second)
@@ -226,6 +398,7 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/quit":  # Settings button or `python -m openloops.app --stop [--now]`
             global quit_requested, quit_now
             quit_requested = True
+            stop_connects()  # a sign-in still waiting in the browser is not worth holding a quit for
             busy = [k for k, j in jobs.items() if j["running"]]
             if body.get("now") and busy:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
                 for k in busy:
@@ -268,6 +441,7 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/doctor":
             import time as _t
             if body.get("force") or _t.time() - doctor_cache["at"] > 55:
+                gen = doctor_gen["n"]
                 args = [sys.executable, "-m", "openloops.doctor"] + (["--detect"] if body.get("detect") else [])
                 for attempt in (1, 2):  # a check that produced nothing gets one quiet retry before anyone hears about it
                     try:
@@ -286,13 +460,21 @@ class H(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 try:
-                    doctor_cache = {"at": _t.time(), "result": json.loads(out.strip().splitlines()[-1])}
+                    res = json.loads(out.strip().splitlines()[-1])
                 except Exception:
                     why = (out + err).strip()[-300:] or f"the check produced no output (exit code {rc})"
                     # not a connection problem: the checker itself did not answer. The page keeps its last good answer.
-                    doctor_cache = {"at": _t.time(), "result": {"all_ok": False, "error": why, "steps": [], "rc": rc}}
+                    res = {"all_ok": False, "error": why, "steps": [], "rc": rc}
+                if gen == doctor_gen["n"]:  # a check that started before a sign-in finished answers, but is not kept
+                    doctor_cache = {"at": _t.time(), "result": res}
+                return self._json(res)
             return self._json(doctor_cache["result"])
-        if self.path == "/api/open-claude":
+        if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
+            step = self.path.rsplit("/", 1)[1]
+            started, why = run_connect(step)
+            return self._json({"started": started, **({"error": why} if why else {})},
+                              200 if started or why == "already running" else 400)
+        if self.path == "/api/open-claude":  # the fallback: a terminal running the agent, for anything the buttons can't do
             # opens a terminal running the configured agent so the user can sign in / connect
             from . import agent
             cli, title = agent.cli(), agent.display_name()
@@ -316,17 +498,14 @@ class H(BaseHTTPRequestHandler):
             else:
                 r = subprocess.run(["bash", str(ROOT / "scripts" / "register-task.sh"), "--at", t],
                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if r.returncode == 0:
-                c = cfg()
-                c["refresh_time"] = t
-                write_json(CONFIG, c)
+            if r.returncode == 0 and update_json(CONFIG, lambda c: c.update(refresh_time=t)) is False:
+                return self._json({"ok": False, "error": "config.json could not be read, so the new time was not saved there"}, 500)
             return self._json({"ok": r.returncode == 0, "out": (r.stdout + r.stderr)[-500:]})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":
             return self._json({"started": run_job("people")})
         if self.path == "/api/config":
-            c = cfg()
             if "pinned_links" in body:  # http(s) only, one entry per url, label trimmed
                 seen, clean = set(), []
                 for p in body.get("pinned_links") or []:
@@ -336,21 +515,21 @@ class H(BaseHTTPRequestHandler):
                     seen.add(u)
                     clean.append({"url": u, "label": str((p or {}).get("label") or "").strip()[:60]})
                 body["pinned_links"] = clean
-            for k, v in body.items():
-                if k in EDITABLE:
-                    c[k] = v
-            write_json(CONFIG, c)
+            # applied to config.json as it is now, under the lock doctor.py takes too (its own process)
+            if update_json(CONFIG, lambda c: c.update({k: v for k, v in body.items() if k in EDITABLE})) is False:
+                return self._json({"ok": False, "error": "config.json could not be read; nothing saved (fix or delete it)"}, 500)
             return self._json({"ok": True})
         if self.path == "/api/reset":
             # "Start over": back to the state a brand-new user sees, keeping only name/domains/tone settings.
+            # Config first: if it cannot be read, refuse before deleting anything, so an unreadable
+            # config.json never leaves the user with no list AND stale people/Slack id (Codex review, #21).
+            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="")) is False:
+                return self._json({"ok": False, "error": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
             for f in (STATE, VOICEF, PEOPLEF):
                 if f.exists():
                     f.unlink()
-            c = cfg()
-            for k in ("people", "voice_sample_people", "slack_self_id"):
-                c[k] = {} if k == "people" else ([] if k == "voice_sample_people" else "")
-            write_json(CONFIG, c)
             STATE.write_text(fresh_state(), encoding="utf-8")
+            doctor_gen["n"] += 1
             doctor_cache = {"at": 0, "result": None}
             return self._json({"ok": True})
         if self.path == "/api/chase":
@@ -529,6 +708,8 @@ if __name__ == "__main__":
                     pages.pop(pid, None)
             if any(j["running"] for j in jobs.values()) and not quit_now:
                 continue  # never pull the rug from under a refresh/chase; check again once it is done
+            if any(c.get("running") for c in connects.values()) and not quit_requested:
+                continue  # a sign-in outlives its tab: the browser may still send Allow, up to the 5-minute deadline
             no_pages = bye_at and not pages and now - bye_at > PAGE_GRACE_S and now - last_seen > PAGE_GRACE_S
             if quit_requested or no_pages or now - last_seen > IDLE_EXIT_S:
                 srv.shutdown()
@@ -539,3 +720,5 @@ if __name__ == "__main__":
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        stop_connects()

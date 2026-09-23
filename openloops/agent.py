@@ -8,7 +8,7 @@ Grok: Slack is opt-in (config.json "use_slack"). Off, the Slack plugin is not st
 doctor does not probe it. Vercel is never started. Jobs pass --effort low because the Grok
 CLI defaults to xhigh. Gmail is the bundled gmail_mcp.py server (not Claude's connector).
 """
-import json, os, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 from .paths import ROOT
@@ -114,9 +114,10 @@ def grok_job_env():
 
 def _qualify(tools):
     fmt = dict(_FMT.get(name()) or _FMT["claude"])
-    if name() == "claude":
-        fmt["slack"] = _CLAUDE_SLACK[slack_source()]
-        fmt["miro"] = _CLAUDE_MIRO[miro_source()]
+    if name() == "claude":  # from the server actually found, so a renamed server gets its real tool ids
+        fmt["slack"] = tool_prefix(server_name("slack")) + "__slack_{}"
+        fmt["gmail"] = tool_prefix(server_name("gmail")) + "__{}"
+        fmt["miro"] = tool_prefix(server_name("miro"))
     out = []
     for t in tools:
         svc, tool = t.split(".", 1)
@@ -124,6 +125,73 @@ def _qualify(tools):
         # "miro.*" -> the bare server id: Claude Code reads that as every tool on that server
         out.append(pat.format(tool) if "{}" in pat else pat)
     return list(dict.fromkeys(out))
+
+
+# Claude setup steps the checklist can start from a button (doctor.py names them in each red row's
+# "connect" key, app.py's /api/connect/<step> runs them). The server names are what `claude mcp list`
+# prints on Claude Code 2.1.x; doctor.py matches them exactly and falls back to a looser match.
+CLAUDE_SERVERS = {
+    "slack": {"plugin": "plugin:slack:slack", "connector": "claude.ai Slack"},
+    "gmail": {"connector": "claude.ai Gmail"},
+    "miro":  {"plugin": "plugin:miro:miro", "connector": "claude.ai Miro", "server": "miro"},
+}
+CONNECT_STEPS = ("login", "slack_install", "slack", "gmail", "miro")
+_MARKETPLACE = "claude-plugins-official"  # where the Slack plugin lives
+_MARKETPLACE_SRC = "anthropics/claude-plugins-official"
+
+
+def _has_marketplace():
+    """Whether `claude plugin marketplace list` already knows the official marketplace."""
+    try:
+        p = subprocess.run(["claude", "plugin", "marketplace", "list"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60, shell=WIN)
+        return _MARKETPLACE in (p.stdout or "")
+    except Exception:
+        return False  # adding it again is harmless; failing to add it breaks the install
+
+
+def login_cmd(step):
+    """The commands for one Claude setup step, run in order -> [argv, ...], or None (unknown step, or not Claude).
+
+    Each opens the browser at most once and needs nothing typed: the user only clicks Allow. `mcp login`
+    gets --no-browser off Windows because app.py runs it on a pseudo-terminal, reads the sign-in link it
+    prints and opens that itself (the CLI refuses to wait for the browser when stdin is not a terminal).
+    On Windows app.py gives it a console window of its own instead, and the CLI opens the browser."""
+    if name() != "claude" or step not in CONNECT_STEPS:
+        return None
+    if step == "login":
+        return [["claude", "auth", "login"]]
+    if step == "slack_install":
+        add = [] if _has_marketplace() else [["claude", "plugin", "marketplace", "add", _MARKETPLACE_SRC]]
+        return add + [["claude", "plugin", "install", f"slack@{_MARKETPLACE}"]]
+    return [["claude", "mcp", "login", server_name(step)] + ([] if WIN else ["--no-browser"])]
+
+
+def server_name(svc):
+    """The Claude server for "slack" / "gmail" / "miro" on the configured route. doctor.py saves the name
+    `claude mcp list` actually printed (config "claude_servers"); that one is used when it is on the same route
+    and a plain name (Windows passes it through cmd.exe), else today's usual name. Sign-in and tool ids both
+    come from here, so a renamed server is never signed in to while jobs allow tools it does not have."""
+    src = {"slack": slack_source, "miro": miro_source}.get(svc, lambda: "connector")()
+    seen = str((_cfg().get("claude_servers") or {}).get(svc) or "")
+    if seen and re.fullmatch(r"[\w .:@/-]{1,100}", seen) and _route_of(seen, svc) == src:
+        return seen
+    return CLAUDE_SERVERS[svc][src]
+
+
+def tool_prefix(server):
+    """Claude Code's tool-id prefix for a server: "mcp__" + its name with anything but letters, digits, _ and -
+    made _ (plugin:slack:slack -> mcp__plugin_slack_slack, claude.ai Gmail -> mcp__claude_ai_Gmail)."""
+    return "mcp__" + re.sub(r"[^A-Za-z0-9_-]", "_", server)
+
+
+def _route_of(server, svc):
+    """"plugin" / "connector" / "server" for a server name, by exact match or by the shape of the name."""
+    exact = next((s for s, n in CLAUDE_SERVERS[svc].items() if n == server), None)
+    if exact:
+        return exact
+    low = server.lower()
+    return ("plugin" if low.startswith("plugin:") else "connector" if low.startswith("claude.ai") else None) if svc in low else None
 
 
 def model():

@@ -23,8 +23,47 @@ def run(args, timeout=60, **kw):
         return 1, str(e)
 
 
+# One `claude mcp list` line: "<name>: <url or command> - <mark> <state>", e.g.
+#   plugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ✔ Connected
+#   claude.ai Miro: https://mcp.miro.com - ! Needs authentication
+# The name may itself hold colons, so it ends at the first ": "; the state follows the last " - ".
+# The mark is optional and may be several symbols (a Windows console may print another glyph, an emoji
+# font adds U+FE0F to "✔"); the words decide.
+_ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]")
+_MCP_LINE = re.compile(r"^(.+?): .* - (?:[^\w\s]+\s*)?(\S.*)$")
+
+
+def parse_mcp_list(txt):
+    """`claude mcp list` output -> {server name: "connected" | "auth" | "failed"}. Colour codes, the
+    "Checking MCP server health…" header and blank lines are skipped."""
+    out = {}
+    for line in _ANSI.sub("", txt or "").splitlines():
+        m = _MCP_LINE.match(line.strip())
+        if m:
+            said = m.group(2).strip().lower()
+            out[m.group(1).strip()] = "connected" if said.startswith("connected") else ("auth" if "auth" in said else "failed")
+    return out
+
+
+def route(svc, servers):
+    """Which way Claude reaches one service -> (source, state, name): source is a key of agent.CLAUDE_SERVERS[svc]
+    ("plugin", "connector", "server"), state as parse_mcp_list, name the server exactly as listed (what
+    `claude mcp login` needs, even if a later Claude Code renames it). ("", "", "") when no such server is set up.
+    A connected route beats one that needs signing in; otherwise the plugin wins, as the jobs expect."""
+    names = agent.CLAUDE_SERVERS[svc]
+    found = []
+    for name, state in servers.items():
+        src = agent._route_of(name, svc)  # exact name, or for a server renamed by a later Claude Code its shape
+        if src in names:
+            found.append((src, state, name))
+    found.sort(key=lambda f: (f[1] != "connected", list(names).index(f[0])))
+    return found[0] if found else ("", "", "")
+
+
 def claude_steps(steps):
-    """Installed / signed in / Slack / Gmail via the Claude Code CLI and its connectors."""
+    """Installed / signed in / Slack / Gmail / Miro, read straight from the Claude Code CLI (`claude auth status`,
+    `claude mcp list`) - no model call. Each red row names in "connect" the setup step the page's button starts
+    (agent.login_cmd); rows without one need something no button can do."""
     have = shutil.which("claude") is not None
     steps.append({"id": "claude", "ok": have, "title": "Claude is installed",
                   "fix": "Run the installer again, or ask IT to install Claude Code." if not have else ""})
@@ -33,7 +72,7 @@ def claude_steps(steps):
     if have:
         rc, txt = run(["claude", "auth", "status"])
         logged = bool(re.search(r'"loggedIn"\s*:\s*true', txt))
-        e = re.search(r'"emailAddress"\s*:\s*"([^"]+)"', txt)
+        e = re.search(r'"email(?:Address)?"\s*:\s*"([^"]+)"', txt)  # 2.1.x says "email"; older builds "emailAddress"
         email = e.group(1) if e else ""
         if not email:  # fall back to the account stored by Claude Code
             try:
@@ -41,36 +80,54 @@ def claude_steps(steps):
                 email = cj.get("oauthAccount", {}).get("emailAddress", "")
             except Exception:
                 pass
-    steps.append({"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email else ''}",
-                  "fix": "Click 'Open Claude' below, then follow the sign-in link it shows. Use your work Google account." if not logged else ""})
+    login = {"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email else ''}",
+             "fix": "Press Sign in: your browser opens the Claude sign-in page. Use your work Google account." if not logged else ""}
+    if have and not logged:
+        login["connect"] = "login"
+    steps.append(login)
 
-    slack = gmail = miro = False
-    slack_source = ""  # "plugin" (plugin:slack:slack) or "connector" (claude.ai Slack) - jobs need the right prefix
-    miro_source = ""   # same two routes for Miro; the plugin wins if both are connected
+    # "plugin" (plugin:slack:slack) or "connector" (claude.ai Slack): jobs need the right tool prefix. Reported even
+    # while it still needs signing in, so the Connect button signs in to the route that is actually there.
+    servers, unlisted = {}, ""
     if logged:
         rc, txt = run(["claude", "mcp", "list"], timeout=90)
-        for line in txt.splitlines():
-            low = line.lower()
-            up = "connected" in low and "failed" not in low
-            if "slack" in low and up:
-                slack = True
-                slack_source = "plugin" if "plugin" in low else "connector"
-            if "gmail" in low and up:
-                gmail = True
-            if "miro" in low and up:
-                miro = True
-                # plugin:miro:miro / claude.ai Miro / a user-added server literally named "miro"
-                src = "plugin" if "plugin" in low else ("connector" if "claude.ai" in low else "server")
-                if miro_source != "plugin":
-                    miro_source = src
-    steps.append({"id": "slack", "ok": slack, "optional": True, "title": "Slack connected (optional)",
-                  "fix": "Click 'Open Claude', type /mcp and press Enter, choose Slack, then Authenticate and approve in the browser." if not slack else ""})
-    steps.append({"id": "gmail", "ok": gmail, "optional": True, "title": "Gmail connected (optional)",
-                  "fix": "Click 'Open Claude', type /mcp and press Enter, choose 'claude.ai Gmail', then Authenticate and approve in the browser." if not gmail else ""})
-    steps.append({"id": "miro", "ok": miro, "optional": True, "title": "Miro connected (optional, for the Roadmap card)",
-                  "fix": "Click 'Open Claude', type /mcp and press Enter, choose Miro (the claude.ai connector, or the miro plugin if installed), Authenticate and approve in the browser. "
-                         "No Miro entry? Add the server first: claude mcp add --scope user --transport http miro https://mcp.miro.com/ - then /mcp to authenticate." if not miro else ""})
-    return email, slack, gmail, slack_source, miro, miro_source
+        servers = parse_mcp_list(txt)
+        if rc != 0:  # the listing failed (timeout, CLI error), perhaps part-way: a service it did not print may
+            # still be set up, so it is "unknown", not "missing". Services it did print keep what it said about them.
+            unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]
+    (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (route(k, servers) for k in ("slack", "gmail", "miro"))
+    names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
+    slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
+    first = "Sign in to Claude first (the row above)."
+
+    def row(id_, ok, title, state, connect, fix_missing, fix_auth):
+        r = {"id": id_, "ok": ok, "optional": True, "title": title, "fix": ""}
+        if not ok:
+            if not logged:
+                r["fix"] = first
+            elif unlisted and not state:  # no button: installing would not fix a listing that did not finish
+                r["fix"] = f"Couldn't ask Claude which connections it has just now ({unlisted}). Press Check again."
+            elif not state:
+                r["fix"], r["connect"] = fix_missing
+            else:
+                r["fix"], r["connect"] = fix_auth, connect
+                if state == "failed":
+                    r["fix"] = "It is set up but did not answer just now. " + fix_auth
+            if not r.get("connect"):
+                r.pop("connect", None)
+        return r
+
+    steps.append(row("slack", slack, "Slack connected (optional)", s_st, "slack",
+                     ("Press Install Slack plugin (it takes about half a minute), then Connect Slack.", "slack_install"),
+                     "Press Connect Slack: your browser opens Slack's sign-in page; click Allow."))
+    steps.append(row("gmail", gmail, "Gmail connected (optional)", g_st, "gmail",
+                     ("Gmail is added on claude.ai, not here: claude.ai → Settings → Connectors → Gmail. Then press Check again.", None),
+                     "Press Connect Gmail: your browser opens Google's sign-in page; click Allow."))
+    steps.append(row("miro", miro, "Miro connected (optional, for the Roadmap card)", m_st, "miro",
+                     ("Add Miro first: claude.ai → Settings → Connectors → Miro, or in a terminal: "
+                      "claude plugin install miro@claude-plugins-official. Then press Check again and Connect Miro.", None),
+                     "Press Connect Miro: your browser opens Miro's sign-in page; pick the team and click Allow."))
+    return email, slack, gmail, slack_source, miro, miro_source, names
 
 
 def grok_steps(steps):
@@ -132,22 +189,36 @@ def grok_steps(steps):
         gmail_fix = ""
     steps.append({"id": "gmail", "ok": gmail, "optional": True, "title": "Gmail connected (optional)",
                   "fix": gmail_fix})
-    return email, slack, gmail, "", False, ""
+    return email, slack, gmail, "", False, "", {}
+
+
+def _save(updates, names=None):
+    """Write doctor's own keys into config.json as it is now, under its cross-process lock: a check can take minutes
+    (claude mcp list, the Slack-id prompt), and Settings saved meanwhile must survive. names (service -> server
+    name) are merged into the claude_servers the file holds now, not the copy read at the start."""
+    from .store import update_json
+
+    def mutate(cfg):
+        new = dict(updates)
+        if names:
+            new["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
+        if all(cfg.get(k) == v for k, v in new.items()):
+            return False  # already so: leave the file alone
+        cfg.update(new)
+    update_json(CONFIG, mutate)
 
 
 def main(detect=False):
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig")) if CONFIG.exists() else {}
     out = {"steps": [], "agent": agent.name()}
-    email, slack, gmail, slack_source, miro, miro_source = (grok_steps if agent.name() == "grok" else claude_steps)(out["steps"])
+    email, slack, gmail, slack_source, miro, miro_source, names = (grok_steps if agent.name() == "grok" else claude_steps)(out["steps"])
     out["miro"] = miro
     # Remember which Slack / Miro route Claude has, so the job scripts allow the right tool prefix.
-    changed = False
-    for key, val in (("slack_source", slack_source), ("miro_source", miro_source)):
-        if val and cfg.get(key) != val:
-            cfg[key] = val
-            changed = True
-    if changed:
-        CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    # ...and the exact server names, so a Connect button signs in to the server that is really there
+    updates = {k: v for k, v in (("slack_source", slack_source), ("miro_source", miro_source)) if v}
+    cfg.update(updates)
+    if updates or names:
+        _save(updates, names)
     out["slack_source"] = slack_source or cfg.get("slack_source") or ""
     out["miro_source"] = miro_source or cfg.get("miro_source") or ""
 
@@ -165,7 +236,7 @@ def main(detect=False):
         if m:
             sid = m.group(0)
             cfg["slack_self_id"] = sid
-            CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            _save({"slack_self_id": sid})
     out["steps"].append({"id": "self", "ok": bool(sid), "optional": not slack,
                          "title": f"Knows who you are on Slack{(' (' + sid + ')') if sid else ''}",
                          "fix": ("This fills in by itself once Slack is connected - nothing to do."

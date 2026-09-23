@@ -10,7 +10,7 @@ plus one HTML page; `npm` is only a command runner here and installs nothing.
 | Python 3.11+ | runs the app and the tests | `python --version` (Mac: `python3 --version`) |
 | Node 18+ | the `npm run …` wrapper | `node --version` |
 | Claude Code, signed in (or Grok) | the jobs that read Slack / Gmail / Miro | `claude --version` |
-| Slack and/or Gmail connected in Claude | anything past the setup screen | `/mcp` in Claude |
+| Slack and/or Gmail connected in Claude | anything past the setup screen | the checklist's Connect buttons, or `claude mcp list` |
 
 ## The commands
 

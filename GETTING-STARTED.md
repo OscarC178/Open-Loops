@@ -24,14 +24,17 @@ computer only. It never sends anything unless you turn that on.
 ## 2. Connect your accounts (one-off)
 
 The app opens with a checklist. It watches itself and ticks things off as you go — you don't need to press anything to update it.
+Each row that isn't ticked has a button: press it, your browser opens a sign-in page, click **Allow**, and the tick appears a few seconds later. No terminal, nothing to type.
 
 | Tick | What to do |
 |---|---|
-| **Signed in to Claude** | Press **Open Claude**. A black window opens. If it shows a sign-in link, open it and sign in with your **work Google account**. |
-| **Slack connected** *(optional)* | In that same black window, type `/mcp` and press Enter. Pick **Slack** → **Authenticate** → click **Allow** in the browser. |
-| **Gmail connected** *(optional)* | Same again: `/mcp` → **claude.ai Gmail** → **Authenticate** → **Allow**. |
+| **Signed in to Claude** | Press **Sign in**. Your browser opens the Claude sign-in page: sign in with your **work Google account**. |
+| **Slack connected** *(optional)* | Press **Install Slack plugin** if the row shows it (about half a minute), then **Connect Slack** → click **Allow** in the browser. |
+| **Gmail connected** *(optional)* | Press **Connect Gmail** → **Allow**. No button? Add Gmail at claude.ai → Settings → Connectors first, then press **Check again**. |
 | **At least one source connected** | Ticks by itself once Slack or Gmail is connected — you only need the one(s) you actually use. |
 | **Knows who you are on Slack** | Fills in by itself (only matters if you use Slack). |
+
+A button didn't work? **Open Claude (advanced)** opens a black window: type `/mcp`, press Enter, pick the connection, choose **Authenticate** and click **Allow**. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.
 
 When the required rows are ticked the checklist disappears and your list starts building (first fill takes about 2 minutes).
 
