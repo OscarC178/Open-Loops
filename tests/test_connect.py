@@ -89,6 +89,25 @@ check("connect" not in rows["slack"] and "Couldn't ask Claude" in rows["slack"][
 check(rows["gmail"].get("connect") == "gmail", "...while one it did print keeps its Connect button")
 doctor.run, doctor.shutil.which = _real
 
+# a check that takes a while must not write back a config.json it read before Settings were saved meanwhile
+_cfgdir = Path(tempfile.mkdtemp(prefix="openloops-doctor-cfg-"))
+_real_cfg, doctor.CONFIG = doctor.CONFIG, _cfgdir / "config.json"
+doctor.CONFIG.write_text(json.dumps({"agent": "claude", "owner_name": "Old"}), encoding="utf-8")
+def _slow_steps(steps):
+    doctor.CONFIG.write_text(json.dumps({"agent": "claude", "owner_name": "Saved meanwhile"}), encoding="utf-8")
+    return "", False, False, "plugin", False, "", {"slack": "plugin:slack:slack"}
+_real_steps, doctor.claude_steps = doctor.claude_steps, _slow_steps
+_real_name, agent.name = agent.name, lambda: "claude"
+import io, contextlib
+with contextlib.redirect_stdout(io.StringIO()):
+    doctor.main()
+saved = json.loads(doctor.CONFIG.read_text(encoding="utf-8"))
+check(saved.get("owner_name") == "Saved meanwhile" and saved.get("slack_source") == "plugin"
+      and saved.get("claude_servers") == {"slack": "plugin:slack:slack"},
+      f"doctor merges its own keys into config.json as it is now, keeping Settings saved meanwhile (got {saved})")
+doctor.CONFIG, doctor.claude_steps, agent.name = _real_cfg, _real_steps, _real_name
+shutil.rmtree(_cfgdir, ignore_errors=True)
+
 # ---------------------------------------------------------------- login_cmd
 cfg = {"agent": "claude"}
 agent._cfg = lambda: cfg

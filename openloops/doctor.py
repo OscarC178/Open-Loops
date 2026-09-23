@@ -192,23 +192,30 @@ def grok_steps(steps):
     return email, slack, gmail, "", False, "", {}
 
 
+def _save(updates):
+    """Write doctor's own keys into config.json, re-read just now: a check can take minutes (claude mcp list, the
+    Slack-id prompt), and Settings saved meanwhile must not be overwritten with the copy read at the start."""
+    from .store import read_json, write_json
+    cfg = read_json(CONFIG, {}) or {}
+    cfg.update(updates)
+    write_json(CONFIG, cfg)
+
+
 def main(detect=False):
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig")) if CONFIG.exists() else {}
     out = {"steps": [], "agent": agent.name()}
     email, slack, gmail, slack_source, miro, miro_source, names = (grok_steps if agent.name() == "grok" else claude_steps)(out["steps"])
     out["miro"] = miro
     # Remember which Slack / Miro route Claude has, so the job scripts allow the right tool prefix.
-    changed = False
+    updates = {}
     for key, val in (("slack_source", slack_source), ("miro_source", miro_source)):
         if val and cfg.get(key) != val:
-            cfg[key] = val
-            changed = True
+            cfg[key] = updates[key] = val
     # ...and the exact server names, so a Connect button signs in to the server that is really there
     if names and {**(cfg.get("claude_servers") or {}), **names} != cfg.get("claude_servers"):
-        cfg["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
-        changed = True
-    if changed:
-        CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        cfg["claude_servers"] = updates["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
+    if updates:
+        _save(updates)
     out["slack_source"] = slack_source or cfg.get("slack_source") or ""
     out["miro_source"] = miro_source or cfg.get("miro_source") or ""
 
@@ -226,7 +233,7 @@ def main(detect=False):
         if m:
             sid = m.group(0)
             cfg["slack_self_id"] = sid
-            CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            _save({"slack_self_id": sid})
     out["steps"].append({"id": "self", "ok": bool(sid), "optional": not slack,
                          "title": f"Knows who you are on Slack{(' (' + sid + ')') if sid else ''}",
                          "fix": ("This fills in by itself once Slack is connected - nothing to do."
