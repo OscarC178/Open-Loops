@@ -95,4 +95,27 @@ store.TEMPLATE = tmp / "no-template.json"
 check(store.load_cfg()["owner_name"] == "Oscar", "no template file: config.json alone")
 store.CONFIG = tmp / "no-config.json"
 check(store.load_cfg() == {}, "neither file: empty dict, no crash")
+# --- update_state and update_json share one lock (review of #59): a refresh ending while the page repairs a cursor
+import threading  # noqa: E402
+store.write_json(store.STATE, {"cursor": "junk", "loops": [{"id": "a"}]})
+read_it = threading.Event()
+
+
+def slow_refresh(s):   # a job's update_state: it has read the file, and takes a moment before its write
+    read_it.set()
+    time.sleep(0.5)
+    s["loops"].append({"id": "b"})
+    s["last_refresh"] = "2026-09-24T09:00+01:00"
+
+
+job = threading.Thread(target=store.update_state, args=(slow_refresh,))
+job.start()
+read_it.wait(5)
+t1 = time.time()
+store.update_json(store.STATE, lambda s: s.update(cursor=None))   # the page's repair, in the middle of that
+job.join()
+got = store.load_state()
+check(time.time() - t1 >= 0.3, "the repair waited for the job's write instead of slipping in between")
+check(got["cursor"] is None and [l["id"] for l in got["loops"]] == ["a", "b"] and got["last_refresh"],
+      f"...and neither write is lost: the repair and the job's new loop are both there ({got})")
 say("ALL OK")

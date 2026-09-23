@@ -153,11 +153,15 @@ def load_state():
 
 
 def update_state(fn):
-    """Read state.json fresh, let fn mutate it in place, write it back. Returns the state."""
-    s = load_state()
-    s.setdefault("loops", [])
-    fn(s)
-    write_json(STATE, s)
+    """Read state.json fresh, let fn mutate it in place, write it back. Returns the state.
+    Under the same file lock as update_json (review of #59): a refresh or chase finishing at the moment the page's
+    Forget where I was (app.py, update_json) writes can no longer overwrite it with the copy it read a moment before.
+    fn runs inside the lock, so it must be quick: the jobs call this after their AI run, never around it."""
+    with _locked(STATE):
+        s = load_state()
+        s.setdefault("loops", [])
+        fn(s)
+        write_json(STATE, s)
     return s
 
 
