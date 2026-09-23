@@ -413,6 +413,26 @@ FAILURES = {
         "fix": "Press Start the first scan when you're ready.",
         "button": None},
 
+    # ---- the Set-up page's own lines (#54, #56): not failures either, but said once, here, like the rest.
+    # One statement of which sources are needed, for the sources card and the Every check fold alike, so the card,
+    # its rows ("Slack connected", "Gmail connected", "Miro connected (optional, ...)") and the fold never disagree.
+    "sources_needed": {
+        "what": "Slack or Gmail is needed; one of them is enough.",
+        "fix": "Miro is optional, for the Roadmap card.",
+        "button": None},
+    # The schedule card on an isolated test copy: it has no weekday refresh, and Refresh only appears once the first
+    # scan is done (paintButtons), so the card says what really happens rather than naming a button not there yet.
+    "sched_test_copy": {
+        "what": "This is a test copy, so it never refreshes by itself.",
+        "fix": "Once the first scan is done, press Refresh at the top of the page whenever you want a new pass.",
+        "button": None},
+    # Who's who while its job runs. {sources} as in first_scan. It took about 3.5 minutes on a Slack-only set-up in
+    # the #48 test, so "a few minutes", not "about a minute" (#54).
+    "people_running": {
+        "what": "Looking at who you talk to on {sources}.",
+        "fix": "This usually takes a few minutes.",
+        "button": None},
+
     # ---- your own to-do file (standing.py, #37)
     "standing_no_path": {
         "what": "No to-do file is selected.",
