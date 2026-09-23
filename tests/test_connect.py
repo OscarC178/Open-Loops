@@ -192,6 +192,40 @@ got = agent._qualify(["slack.search_users", "miro.*"])
 check(got == ["mcp__plugin_slack-v2_slack__slack_search_users", "mcp__plugin_miro-next_miro"],
       f"a renamed server's tools are allowed under its own name, as it is signed in to (got {got})")
 cfg.pop("claude_servers")
+
+# #27, end to end: a fake `claude mcp list` from a later Claude Code that renamed its servers. The doctor ticks them,
+# saves the names it saw, and the jobs' tool ids and the sign-in follow those names. A listed name Open Loops will not
+# use (shell characters) is a red "unsupported" row with no button, never a green tick with today's tool ids behind it.
+RENAMED = ("Checking MCP server health…\n\n"
+           "plugin:slack-next:slack: https://mcp.slack.com/mcp (HTTP) - ✔ Connected\n"
+           "claude.ai Gmail Next: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected\n"
+           "plugin:miro:x & calc.exe: https://mcp.miro.com/ (HTTP) - ✔ Connected\n")
+_real = (doctor.run, doctor.shutil.which)
+doctor.shutil.which = lambda _: "/usr/local/bin/claude"
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version"
+                                       else (0, '{"loggedIn": true}') if args[1] == "auth" else (0, RENAMED))
+steps = []
+email, slack_ok, gmail_ok, s_src, miro_ok, m_src, names = doctor.claude_steps(steps)
+rows = {r["id"]: r for r in steps}
+doctor.run, doctor.shutil.which = _real
+check(rows["slack"]["ok"] and rows["gmail"]["ok"] and slack_ok and gmail_ok and s_src == "plugin",
+      "renamed Slack plugin and Gmail connector: both ticked, on their usual routes")
+check(names == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Next"},
+      f"...the names saved for the jobs are the ones listed; the unusable Miro name is not saved (got {names})")
+check(not rows["miro"]["ok"] and not miro_ok and "connect" not in rows["miro"]
+      and rows["miro"]["fix"] == messages.say("server_unsupported", service="Miro")
+      and rows["miro"]["detail"] == "listed as plugin:miro:x & calc.exe" and "calc" not in rows["miro"]["fix"],
+      "a connected server under a name Open Loops won't use: red, unsupported in plain words, no button; the name goes to the Console only")
+cfg.update(slack_source=s_src, miro_source=m_src, claude_servers=names)
+got = agent._qualify(["slack.search_users", "gmail.search_threads"])
+check(got == ["mcp__plugin_slack-next_slack__slack_search_users", "mcp__claude_ai_Gmail_Next__search_threads"],
+      f"...and the jobs allow the renamed servers' own tool ids (got {got})")
+check(agent.login_cmd("slack")[0][3] == "plugin:slack-next:slack" and agent.login_cmd("gmail")[0][3] == "claude.ai Gmail Next",
+      "...and sign in to them by the same names")
+check(agent.usable_name("plugin:slack:slack") and agent.usable_name("claude.ai Gmail") and not agent.usable_name("")
+      and not agent.usable_name("a;b") and not agent.usable_name("x" * 101), "usable_name: plain names only, 1-100 characters")
+for k in ("slack_source", "miro_source", "claude_servers"):
+    cfg.pop(k)
 agent.WIN = True
 check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail"]], "Windows: no --no-browser (the CLI opens the browser)")
 agent.WIN = sys.platform == "win32"

@@ -129,7 +129,14 @@ def claude_steps(steps):
         if rc != 0:  # the listing failed (timeout, CLI error), perhaps part-way: a service it did not print may
             # still be set up, so it is "unknown", not "missing". Services it did print keep what it said about them.
             unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]  # Console / diag only
-    (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (route(k, servers) for k in ("slack", "gmail", "miro"))
+    routes = {k: route(k, servers) for k in ("slack", "gmail", "miro")}
+    # #27: jobs derive their tool ids from the listed name (agent.server_name / tool_prefix). A name Open Loops will
+    # not use (agent.usable_name) would leave them on today's name, allowing tools that server does not have, so the
+    # row says so in red ("unsupported") instead of ticking it; the name is the row's developer detail, never in the sentence.
+    odd = {k: nm for k, (_, _, nm) in routes.items() if nm and not agent.usable_name(nm)}
+    for k in odd:
+        routes[k] = (routes[k][0], "unsupported", "")
+    (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (routes[k] for k in ("slack", "gmail", "miro"))
     names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
     slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
     # the step that blocks every source row: installing Claude, else signing in (#25: not "Sign in" before it exists)
@@ -142,6 +149,8 @@ def claude_steps(steps):
                 r["fix"] = first
             elif unlisted and not state:  # no button: installing would not fix a listing that did not finish
                 r["fix"], r["detail"] = say("listing_failed"), unlisted  # what the CLI said: Console / diag, not the sentence
+            elif state == "unsupported":  # no button: signing in to it again would not change its name (#27)
+                r["fix"], r["detail"] = say("server_unsupported", service=service), "listed as " + odd[id_][:200]
             elif not state:
                 r["fix"], r["connect"] = fix_missing
             else:

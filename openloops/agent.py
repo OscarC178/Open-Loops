@@ -929,9 +929,17 @@ def server_name(svc):
     come from here, so a renamed server is never signed in to while jobs allow tools it does not have."""
     src = {"slack": slack_source, "miro": miro_source}.get(svc, lambda: "connector")()
     seen = str((_cfg().get("claude_servers") or {}).get(svc) or "")
-    if seen and re.fullmatch(r"[\w .:@/-]{1,100}", seen) and _route_of(seen, svc) == src:
+    if usable_name(seen) and _route_of(seen, svc) == src:
         return seen
     return CLAUDE_SERVERS[svc][src]
+
+
+def usable_name(server):
+    """Whether a server name `claude mcp list` printed is one Open Loops will sign in to and derive tool ids from: a
+    plain name of letters, digits, spaces and . : @ / - _ (Windows passes it through cmd.exe, so nothing a shell
+    reads). doctor.py reports a listed server whose name fails this as unsupported (#27), rather than ticking a row
+    whose jobs would fall back to today's name and allow tools that server does not have."""
+    return bool(re.fullmatch(r"[\w .:@/-]{1,100}", server or ""))
 
 
 def tool_prefix(server):

@@ -125,6 +125,10 @@ FAILURES = {
         "what": "{service} is set up in Claude but didn't answer just now.",
         "fix": "Press Connect {service} to sign in to it again.",
         "button": None},  # the row's own Connect step
+    "server_unsupported": {  # #27: listed under a name Open Loops won't use (agent.usable_name), so not ticked
+        "what": "{service} is set up in Claude under a name Open Loops doesn't recognise, so Open Loops can't use it.",
+        "fix": "Ask whoever set Open Loops up to update it, then press Check again.",
+        "button": None},
     "no_source": {
         "what": "Neither Slack nor Gmail is connected yet.",
         "fix": "Connect whichever you use above: one is enough, and you can add the other any time.",
