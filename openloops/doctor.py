@@ -102,6 +102,7 @@ def claude_steps(steps):
     logged, email = False, ""
     if have:
         rc, txt = run(["claude", "auth", "status"])
+        agent.set_claude_auth(txt)   # the Slack lookup's summary line then knows a plan from a billed key (#52)
         logged = bool(re.search(r'"loggedIn"\s*:\s*true', txt))
         e = re.search(r'"email(?:Address)?"\s*:\s*"([^"]+)"', txt)  # 2.1.x says "email"; older builds "emailAddress"
         email = e.group(1) if e else ""

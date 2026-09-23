@@ -53,6 +53,7 @@ sys.exit(int(open(os.path.join(here, "rc.txt")).read()))
 """, encoding="utf-8")
 (BIN / "claude").chmod(0o755)
 os.environ["PATH"] = f"{BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+agent.set_claude_auth('{"authMethod": "claude.ai"}')   # as doctor would; the fake claude answers every command with out.txt
 check(agent.name() == "claude", "the throwaway install runs Claude (template default)")
 
 # The shape `claude -p --output-format json "Reply with exactly: OK"` printed on Claude Code 2.1.280 (trimmed of
@@ -105,7 +106,14 @@ check(p.returncode == 0 and p.stdout == "Read 12 threads.\n" + BLOCK, "stdout is
 check(p.is_error is False and p.refused == "" and p.error_text == "" and p.agent == "claude", "not an error, nothing refused")
 check(p.usage and p.usage["output_tokens"] == 4 and abs(p.cost_usd - 0.4398785) < 1e-9 and p.session_id.startswith("d14616e5"),
       "usage, cost and session id attached")
-check("claude: success; tokens in 2, out 4; cost $0.4399" in p.stderr, f"one summary line on stderr ({p.stderr.strip()!r})")
+check("claude: success; tokens in 2, out 4; usage ≈ $0.4399 at API rates (not billed on a Claude plan)" in p.stderr,
+      f"one summary line on stderr; on a Claude plan the cost is an API-rate equivalent, not money ({p.stderr.strip()!r})")
+check(agent.claude_auth_kind('{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max"}') == "claude.ai"
+      and agent.claude_auth_kind('{"authMethod": "api_key"}') == "api" and agent.claude_auth_kind('{"authMethod": "console"}') == "api"
+      and agent.claude_auth_kind('{"loggedIn": true}') == "",
+      "claude auth status: claude.ai = a plan, an API key or Console sign-in = billed, anything else unknown")
+check(agent.cost_note(0.4398785, "api") == "cost $0.4399" and agent.cost_note(0.5, "") == "usage ≈ $0.5000 at API rates",
+      "'cost $X' only for a billed sign-in; unknown says API rates without claiming either way")
 check(reported(p) is None, "report() after a good run writes nothing")
 
 # ---------------------------------------------------------------- 3. is_error results

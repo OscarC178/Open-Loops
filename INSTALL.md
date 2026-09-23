@@ -450,7 +450,9 @@ state/logs/       one log per run
    synced folder.
 6. **Which model the jobs use.** Every job runs `claude -p` with `--model` and `--effort` from `model` and
    `effort` in `config.json` (template: `sonnet` at `high`; Settings → Preferences → Your AI). Sonnet at high or Opus at medium
-   both do the job (`xhigh` cost about 8p even for a one-line answer in testing, #50). The two small lookups, the
+   both do the job; each run counts against your Claude plan's allowance (an API-key sign-in is billed per run
+   instead), and `xhigh` uses much more of it even for a one-line answer (#50). The job logs' `usage ≈ $X at API
+   rates` is that equivalent, not a charge, on a Claude plan. The two small lookups, the
    connection check's Slack lookup and *Who's who*, always run at `low`, whatever `effort` says. Leave either blank and
    the jobs inherit whatever `claude` defaults to on that computer, which
    is usually the most expensive model available. Grok ignores both. Codex has its own pair, `codex_model` and

@@ -1076,6 +1076,50 @@ def claude_args(tools, effort_=None):
     return args
 
 
+# How Claude is signed in, for the run summary line: "claude.ai" (a Claude plan: runs count against its allowance and are
+# not billed, so total_cost_usd is only the API-rate equivalent), "api" (an API key or Console sign-in: billed per run),
+# or "" (not known). Read once per process from `claude auth status` (no model call); doctor.py sets it from its own
+# read of the same command, so a check does not ask twice.
+_claude_auth = None
+
+
+def claude_auth_kind(text):
+    """`claude auth status` output -> "claude.ai" | "api" | ""."""
+    m = re.search(r'"authMethod"\s*:\s*"([^"]*)"', text or "")
+    method = (m.group(1) if m else "").strip().lower()
+    if not method:
+        return ""
+    return "claude.ai" if method in ("claude.ai", "claudeai", "oauth", "subscription") else "api" if (
+        "api" in method or "console" in method or "key" in method) else ""
+
+
+def set_claude_auth(text):
+    """Remember the sign-in kind from a `claude auth status` output someone already read (doctor.claude_steps)."""
+    global _claude_auth
+    _claude_auth = claude_auth_kind(text)
+
+
+def claude_auth():
+    """The cached sign-in kind (claude_auth_kind), reading `claude auth status` the first time it is asked."""
+    global _claude_auth
+    if _claude_auth is None:
+        try:
+            p = subprocess.run(["claude", "auth", "status"], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=20, shell=WIN)
+            _claude_auth = claude_auth_kind(p.stdout)
+        except Exception:  # noqa: BLE001 - a summary line never stops a job
+            _claude_auth = ""
+    return _claude_auth
+
+
+def cost_note(cost, auth):
+    """The run summary's money part (#52): "cost $X" only for a billed (API-key / Console) sign-in; on a Claude plan,
+    and when the sign-in is not known, the JSON's total_cost_usd is an API-rate equivalent, not a charge."""
+    if auth == "api":
+        return f"cost ${cost:.4f}"
+    return f"usage ≈ ${cost:.4f} at API rates" + (" (not billed on a Claude plan)" if auth == "claude.ai" else "")
+
+
 def run(prompt, tools, timeout=None, effort_=None):
     """One unattended prompt with only the given MCP tools allowed -> CompletedProcess.
     timeout (seconds) is honoured by Codex only; unset, Codex jobs use config.json "codex_timeout_s" (900).
@@ -1095,10 +1139,11 @@ def run(prompt, tools, timeout=None, effort_=None):
             args += ["--allow", f"MCPTool({t})"]
         return subprocess.run(args, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", env=grok_job_env(), shell=WIN)
+    auth = claude_auth()   # before the run: how its cost figure is described afterwards
     # shell=True only on Windows, to resolve claude.cmd (npm shim) via PATH
     p = subprocess.run(claude_args(tools, effort_), input=prompt, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", shell=WIN)
-    return claude_result(p)
+    return claude_result(p, auth)
 
 
 # Claude's structured failures (#46), in Codex's vocabulary (codex_failure): "expired" = signed out, "limit" = the plan's
@@ -1164,7 +1209,7 @@ def _claude_json(out):
     return flagged[0] if len(flagged) == 1 else None
 
 
-def claude_result(p):
+def claude_result(p, auth=""):
     """A finished `claude -p --output-format json` -> the CompletedProcess the jobs expect: .stdout is the answer text
     (the "result" field), so their <<<BLOCK>>> parsing is unchanged; "" when the run is an error. Extra attributes: agent ("claude"), is_error (True,
     False, or None when the output was not JSON), error_text (the CLI's own error when is_error), refused (claude_failure's
@@ -1206,7 +1251,7 @@ def claude_result(p):
     if p.usage:
         note += f"; tokens in {p.usage.get('input_tokens', '?')}, out {p.usage.get('output_tokens', '?')}"
     if isinstance(p.cost_usd, (int, float)):
-        note += f"; cost ${p.cost_usd:.4f}"
+        note += "; " + cost_note(p.cost_usd, auth)   # auth: claude_auth(), as run() read it
     if p.is_error:
         status = j.get("api_error_status")
         p.error_text = "\n".join(x for x in [result] + errors if x).strip() or str(j.get("subtype") or "error")
