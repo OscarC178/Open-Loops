@@ -5,11 +5,11 @@
 Covers: add (contact from people list + free text), notes, reopen stays in Needs me,
 refresh.py skips these so the agent cannot close them.
 """
-import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
-from pathlib import Path
+import json, shutil, time, urllib.error, urllib.request
 
-REPO = Path(__file__).resolve().parent.parent
-PORT = 8796
+from _helpers import fresh_install, isolated_env, start_app, stop
+
+PORT = 0  # set by start_app(): the port the app says it bound
 t0 = time.time()
 
 
@@ -36,14 +36,10 @@ def api(path, body=None, method=None):
         return e.code, json.loads(e.read().decode())
 
 
-tmp = Path(tempfile.mkdtemp(prefix="openloops-notes-"))
+tmp = fresh_install("openloops-notes-", {
+    "owner_name": "Oscar",
+    "people": {"Alice Example": {"level": "peer", "aliases": ["Alice"], "email": "alice@example.com"}}})
 say(f"fresh install in {tmp}")
-shutil.copytree(REPO / "openloops", tmp / "openloops")
-shutil.copy(REPO / "config.template.json", tmp / "config.template.json")
-tpl = json.loads((tmp / "config.template.json").read_text(encoding="utf-8-sig"))
-tpl["owner_name"] = "Oscar"
-tpl["people"] = {"Alice Example": {"level": "peer", "aliases": ["Alice"], "email": "alice@example.com"}}
-(tmp / "config.json").write_text(json.dumps(tpl, indent=2), encoding="utf-8")
 (tmp / "state.json").write_text(json.dumps({
     "cursor": "2026-01-01T00:00", "last_refresh": "2026-01-02T00:00",
     "loops": [{"id": "alice-report", "owner": "Alice Example", "ask": "the report",
@@ -51,17 +47,9 @@ tpl["people"] = {"Alice Example": {"level": "peer", "aliases": ["Alice"], "email
                "chases": 0, "snooze_until": None, "notes": ""}],
 }), encoding="utf-8")
 
-env = dict(os.environ, OPENLOOPS_PORT=str(PORT))
-srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+env = isolated_env(tmp)
+srv, PORT = start_app(tmp, env)
 try:
-    for _ in range(40):
-        if socket.socket().connect_ex(("127.0.0.1", PORT)) == 0:
-            break
-        time.sleep(0.1)
-    else:
-        raise SystemExit("FAIL: openloops.app did not come up")
-
     code, err = api("/api/action", {"action": "add", "owner": "", "ask": ""})
     check(code == 400 and "something to do" in err.get("error", ""), "add without a task is 400")
 
@@ -109,8 +97,7 @@ try:
     check('id="add_need"' in html and "addNeed()" in html and "editNote(" in html,
           "Home tab has the add form and a per-card note button")
 finally:
-    srv.terminate()
-    srv.wait(timeout=5)
+    stop(srv)
     shutil.rmtree(tmp, ignore_errors=True)
 
 say("all passed")
