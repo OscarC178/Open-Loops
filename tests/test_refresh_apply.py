@@ -4,7 +4,7 @@
 
 Slack-only runs must advance only slack_cursor and must never admit an email loop; full runs
 advance both cursors; links merge without duplicates; needs_me clears a snooze; a Slack ask of the
-owner (inbound) lands on Needs me once per DM/thread, however the agent names it.
+owner (inbound) lands on Needs me once per ask (conversation + ask ts), however the agent names it.
 """
 import sys, time
 from pathlib import Path
@@ -87,43 +87,93 @@ check("cy-quote" in ids and "bo-brief" in ids, "full run admits both channels")
 check(s["cursor"] == s["slack_cursor"] == s["last_refresh"] == "2026-09-15T15:00+01:00", "full run advances both cursors and last_refresh")
 check(s["gmail_available"] is True, "full run records gmail_available")
 
-# --- Slack inbound: asks OF the owner from DMs and @-mentions, merged once per DM/thread
+# --- Slack inbound: asks OF the owner from DMs and @-mentions, one loop per ask (conversation + ask ts)
+JO_DM, NOW = "D0JODM0001", "2026-09-15T17:00+01:00"
 s = base()
-s["loops"].append({"id": "jo-budget", "owner": "Jo", "ask": "sign off the budget", "channel": "slack", "thread": "DM Jo D0JODM0001",
-                   "status": "needs_me", "inbound": True})
+s["loops"].append({"id": "jo-budget", "owner": "Jo", "ask": "sign off the budget", "channel": "slack",
+                   "thread": f"DM Jo {JO_DM} 1757800000.000100", "status": "needs_me", "inbound": True})
 s["loops"].append({"id": "kit-old", "owner": "Kit", "ask": "old ask", "channel": "slack", "thread": "#ops C0OPSCH001 1757000000.000100",
                    "status": "done", "inbound": True, "closed_at": "2026-09-12T09:00"})
 ib = {"new_loops": [
     # new DM ask, no status given: an inbound loop defaults to needs_me
-    {"id": "lu-copy", "owner": "Lu", "ask": "approve the copy", "channel": "slack", "thread": "DM Lu D0LUDM0001",
+    {"id": "lu-copy", "owner": "Lu", "ask": "approve the copy", "channel": "slack", "thread": "DM Lu D0LUDM0001 1757900000.000100",
      "link": "https://x.slack.com/archives/D0LUDM0001/p1757900000000100", "asked_at": "2026-09-15T09:00", "inbound": True},
-    # same DM as the open Jo loop under a different id and wording: dropped
-    {"id": "jo-budget-2", "owner": "Jo Bloggs", "ask": "budget?", "channel": "slack", "thread": "DM Jo Bloggs D0JODM0001",
+    # the open Jo ask seen again under a different id, name and wording (same DM, same ask ts): dropped
+    {"id": "jo-budget-2", "owner": "Jo Bloggs", "ask": "budget?", "channel": "slack", "thread": f"DM Jo Bloggs {JO_DM} 1757800000.000100",
      "status": "needs_me", "inbound": True},
-    # the Lu DM again in the same batch: dropped
-    {"id": "lu-copy-again", "owner": "Lu", "ask": "copy", "channel": "slack", "thread": "DM Lu (D0LUDM0001)", "status": "needs_me", "inbound": True},
-    # a mention in the same channel as the closed Kit loop, same thread: closed loops do not block a fresh ask
-    {"id": "kit-new", "owner": "Kit", "ask": "review the rota", "channel": "slack", "thread": "#ops C0OPSCH001 1757000000.000100",
+    # the Lu ask again in the same batch: dropped
+    {"id": "lu-copy-again", "owner": "Lu", "ask": "copy", "channel": "slack", "thread": "DM Lu (D0LUDM0001) 1757900000.000100", "status": "needs_me", "inbound": True},
+    # REGRESSION: an unrelated second ask from Jo in the same DM (a later message): kept
+    {"id": "jo-rota", "owner": "Jo", "ask": "check the rota", "channel": "slack", "thread": f"DM Jo {JO_DM} 1757900900.000100",
+     "status": "needs_me", "inbound": True},
+    # a mention in the thread of the closed Kit loop: closed loops never block a fresh ask
+    {"id": "kit-new", "owner": "Kit", "ask": "review the rota", "channel": "slack", "thread": "#ops C0OPSCH001 1757000000.000100 1757900000.000400",
      "status": "needs_me", "inbound": True},
     # two mentions in one channel, different threads: both kept
     {"id": "mo-a", "owner": "Mo", "ask": "a", "channel": "slack", "thread": "#design C0DESIGN01 1757900000.000200", "status": "needs_me", "inbound": True},
     {"id": "mo-b", "owner": "Mo", "ask": "b", "channel": "slack", "thread": "#design C0DESIGN01 1757900500.000300", "status": "needs_me", "inbound": True},
     # an outbound loop in Jo's DM is a different loop (my ask of Jo), never collapsed into her ask of me
-    {"id": "jo-deck", "owner": "Jo", "ask": "send the deck", "channel": "slack", "thread": "DM Jo D0JODM0001", "status": "waiting"}]}
-n_new, _ = refresh.apply(s, ib, slack_only=True, now="2026-09-15T17:00+01:00")
+    {"id": "jo-deck", "owner": "Jo", "ask": "send the deck", "channel": "slack", "thread": f"DM Jo {JO_DM}", "status": "waiting"}]}
+n_new, _ = refresh.apply(s, ib, slack_only=True, now=NOW)
 ids = [l["id"] for l in s["loops"]]
 lu = next(l for l in s["loops"] if l["id"] == "lu-copy")
 check(lu["status"] == "needs_me" and lu["inbound"] is True and lu["channel"] == "slack", "a Slack inbound loop merges as needs_me / inbound on a slack-only run")
-check(lu["thread"] == "DM Lu D0LUDM0001" and lu["link"].endswith("p1757900000000100"), "it keeps the agent's thread + permalink so the Needs me row opens the DM")
+check(lu["thread"] == "DM Lu D0LUDM0001 1757900000.000100" and lu["link"].endswith("p1757900000000100"), "it keeps the agent's thread + permalink so the Needs me row opens the message")
 check(lu["chases"] == 0 and lu["snooze_until"] is None and lu["last_reply_at"] is None, "it gets the usual new-loop fields")
-check("jo-budget-2" not in ids and "lu-copy-again" not in ids, "a second ask in an already-open inbound DM is not added again (DM id, not wording)")
+check("jo-budget-2" not in ids and "lu-copy-again" not in ids, "the same ask seen again (same conversation + ask ts) is not added twice, whatever the wording")
+check("jo-rota" in ids, "REGRESSION: an unrelated second ask in the same DM is its own loop")
 check("kit-new" in ids, "a fresh ask in a thread whose inbound loop was closed is a new loop")
 check("mo-a" in ids and "mo-b" in ids, "two mentions in one channel but different threads are two loops")
 check("jo-deck" in ids, "an outbound loop in the same DM is never de-duplicated against an inbound one")
-check(n_new == 5, f"counts only the merged loops (got {n_new})")
-check(refresh.slack_key({"thread": "DM Jo D0JODM0001"}) == refresh.slack_key({"thread": "dm jo bloggs  D0JODM0001"}) == "D0JODM0001", "slack_key: a DM is its id")
-check(refresh.slack_key({"thread": "#ops C0OPSCH001", "owner": "Kit "}) == "C0OPSCH001/kit", "slack_key: a channel ask without a ts falls back to the asker")
-check(refresh.slack_key({"thread": ""}) is None and refresh.slack_key({"thread": "#General  chat"}) == "#general chat", "slack_key: no thread -> None; no id -> the thread text")
+check(n_new == 6, f"counts only the merged loops (got {n_new})")
+
+# REGRESSION: the old ask closes and a new one arrives in the same run - updates count first
+s = base()
+s["loops"].append({"id": "jo-nums", "owner": "Jo", "ask": "send the numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}",
+                   "status": "needs_me", "inbound": True})
+n = refresh.apply(s, {"new_loops": [
+        {"id": "jo-rota", "owner": "Jo", "ask": "check the rota", "channel": "slack", "thread": f"DM Jo {JO_DM} 1757900900.000100", "inbound": True},
+        {"id": "jo-nums-again", "owner": "Jo", "ask": "Send the  numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}", "inbound": True}],
+    "updates": [{"id": "jo-nums", "status": "done"}]}, slack_only=True, now=NOW)
+ids = [l["id"] for l in s["loops"]]
+check(n == (2, 1) and "jo-rota" in ids, f"REGRESSION: a new ask survives the old one closing in the same run (got {n})")
+check("jo-nums-again" in ids, "the same ask made again after it closed (no ts, same words) is a fresh loop")
+s = base()
+s["loops"].append({"id": "jo-nums", "owner": "Jo", "ask": "send the numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}",
+                   "status": "needs_me", "inbound": True})
+refresh.apply(s, {"new_loops": [{"id": "jo-nums-2", "owner": "Jo", "ask": "send the numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}", "inbound": True}]},
+              slack_only=True, now=NOW)
+check("jo-nums-2" not in [l["id"] for l in s["loops"]], "without an ask ts, the same words in the same open DM are the same ask")
+
+# REGRESSION: one reply seen by both searches - an update on my loop AND a new inbound ask - is one Needs me row
+s = base()
+s["loops"].append({"id": "sam-deck-dm", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757800000.000500",
+                   "status": "waiting"})
+s["loops"].append({"id": "sam-thread", "owner": "Sam", "ask": "pick a date", "channel": "slack", "thread": "#plan C0PLANCH01 1757800000.000600",
+                   "status": "waiting"})
+n = refresh.apply(s, {"new_loops": [
+        {"id": "sam-format", "owner": "Sam Jones", "ask": "which format?", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757900000.000700", "inbound": True},
+        {"id": "sam-date", "owner": "Sam", "ask": "Tue or Wed?", "channel": "slack", "thread": "#plan C0PLANCH01 1757800000.000600 1757900000.000800", "inbound": True},
+        {"id": "viv-date", "owner": "Viv", "ask": "can I join?", "channel": "slack", "thread": "#plan C0PLANCH01 1757800000.000600 1757900000.000900", "inbound": True}],
+    "updates": [{"id": "sam-deck-dm", "status": "needs_me", "reply_snippet": "which format?"},
+                {"id": "sam-thread", "status": "needs_me", "reply_snippet": "Tue or Wed?"}]}, slack_only=True, now=NOW)
+ids = [l["id"] for l in s["loops"]]
+check("sam-format" not in ids and "sam-date" not in ids, "REGRESSION: a reply already reported on my loop is not a second, inbound Needs me row")
+check("viv-date" in ids, "someone else's ask in that same thread still is")
+s = base()
+s["loops"].append({"id": "sam-deck-dm", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001", "status": "waiting"})
+refresh.apply(s, {"new_loops": [{"id": "sam-lunch", "owner": "Sam", "ask": "lunch?", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757900000.000700", "inbound": True}]},
+              slack_only=True, now=NOW)
+check("sam-lunch" in [l["id"] for l in s["loops"]], "a separate ask of me in a DM where my own ask is still waiting is kept")
+
+check(refresh.slack_key({"thread": f"DM Jo {JO_DM} 1757800000.000100"}) == refresh.slack_key({"thread": f"dm jo bloggs  {JO_DM} 1757800000.000100"}) == (JO_DM, "1757800000.000100"),
+      "slack_key: a DM ask is its DM id + the ask ts")
+check(refresh.slack_key({"thread": "#ops C0OPSCH001 1757000000.000100"}) == ("C0OPSCH001/1757000000.000100", "1757000000.000100"),
+      "slack_key: a channel ask is channel id + thread ts; the thread's first message is the ask when there is one ts")
+check(refresh.slack_key({"thread": "#ops C0OPSCH001", "owner": "Kit Smith", "ask": "The  rota"}) == ("C0OPSCH001/kit", "the rota"),
+      "slack_key: no ts -> the asker's first name and the ask's words")
+check(refresh.slack_key({"thread": ""}) is None and refresh.slack_key({"thread": "#General  chat", "ask": "x"}) == ("#general chat", "x"),
+      "slack_key: no thread -> None; no id -> the thread text")
 
 # --- in_scope: slack-only ignores email + typed loops; recent done loops stay in scope
 recent = "2026-09-12T00:00"

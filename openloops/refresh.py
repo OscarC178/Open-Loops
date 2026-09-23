@@ -99,18 +99,30 @@ def from_mail(l):
     return not l.get("manual") and l.get("channel") not in ("note", "vault")
 
 
+def first_name(l):
+    return (str(l.get("owner") or "").lower().split() or [""])[0]
+
+
 def slack_key(l):
-    """What makes two Slack inbound loops the same ask, whatever id or wording the agent used:
-    a DM is its id; a channel or group is its id plus the thread ts (the asker if the ts is missing);
-    no id -> the thread text. None when there is no thread to go on."""
+    """(conversation, ask) for a Slack loop, whatever id or wording the agent used. The conversation
+    is the DM id, or the channel/group id plus the thread ts (the asker's first name if there is no ts),
+    or the thread text when there is no id; the ask is the last ts in `thread` (the message that asked),
+    else the ask's words. None when there is no thread to go on."""
     t = str(l.get("thread") or "")
-    cid = SLACK_CID.search(t)
+    cid, ts = SLACK_CID.search(t), SLACK_TS.findall(t)
+    ask = ts[-1] if ts else " ".join(str(l.get("ask") or "").lower().split())
     if not cid:
-        return " ".join(t.lower().split()) or None
+        t = " ".join(t.lower().split())
+        return (t, ask) if t else None
     if cid.group(1).startswith("D"):
-        return cid.group(1)
-    ts = SLACK_TS.search(t)
-    return cid.group(1) + "/" + (ts.group(1) if ts else str(l.get("owner") or "").strip().lower())
+        return cid.group(1), ask
+    return cid.group(1) + "/" + (ts[0] if ts else first_name(l)), ask
+
+
+def exchange(l):
+    """Who is talking where: the DM, or the channel thread plus the person (several people share one)."""
+    conv = slack_key(l)[0]
+    return conv, "" if conv.startswith("D") else first_name(l)
 
 
 def in_scope(l, slack_only, recent):
@@ -150,8 +162,9 @@ def build_prompt(s, slack_only, slack_on):
             "you pass the cursor. Read each DM/thread and keep it only where the LATEST message is from someone "
             "else, asks {n} for a specific action or answer, and {n} has not replied since. Drop bots, apps, "
             "workflows, joins, reminders, reactions and {n}'s own messages. Slack loops: channel \"slack\", "
-            'thread "DM <asker> <DM channel id>" or "#<channel> <channel id> <thread ts>", link = the message '
-            "permalink.".format(n=name, u=SELF_ID, d=slack_date))
+            'thread "DM <asker> <DM channel id> <ask ts>" or "#<channel> <channel id> <thread ts> <ask ts>" '
+            "(<ask ts> = the ts of the message that asks), link = that message's permalink. Several asks in one "
+            "DM/thread are separate loops.".format(n=name, u=SELF_ID, d=slack_date))
     inbound = ("1b. ASKS OF {n} (inbound). Search what others sent {n}:\n{parts}\n   These become new loops with "
                '"status": "needs_me" and "inbound": true - owner is the person asking; ask = one line on what they '
                "need from {n}. The same exclusions and duplicate rule apply.").format(n=name, parts="\n".join(inbound)) if inbound else ""
@@ -194,10 +207,14 @@ def merge_links(loop, links):
 def apply(s, out, slack_only, now):
     """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated)."""
     by_id = {l["id"]: l for l in s["loops"]}
-    # Slack asks of the owner already open (Needs me or answered-and-waiting): the same DM or thread is
-    # not added again under a new id. Closed ones do not count - a fresh ask there is a fresh loop.
-    inbound_open = {slack_key(l) for l in s["loops"]
-                    if l.get("inbound") and l.get("channel") == "slack" and l.get("status") in ("waiting", "needs_me")}
+    # Slack asks of the owner still open once this run's updates land (an ask closed now no longer counts):
+    # the same ask (conversation + ask ts) seen again under a new id is not added twice. And a reply this
+    # run reports on one of the owner's loops (an update to needs_me) is that loop's news, not a second
+    # Needs me row from the inbound search: same DM, or same thread + same person -> dropped.
+    ups = {u.get("id"): u.get("status") for u in out.get("updates", []) or [] if isinstance(u, dict)}
+    slack = [l for l in s["loops"] if l.get("channel") == "slack" and slack_key(l)]
+    inbound_open = {slack_key(l) for l in slack if l.get("inbound") and (ups.get(l["id"]) or l["status"]) in ("waiting", "needs_me")}
+    replied = {exchange(l) for l in slack if ups.get(l["id"]) == "needs_me"}
     n_new = n_upd = 0
     for nl in out.get("new_loops", []) or []:
         nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
@@ -206,7 +223,7 @@ def apply(s, out, slack_only, now):
         if slack_only and nl.get("channel") != "slack":
             continue  # belt and braces: the prompt says no email, the merge enforces it
         key = slack_key(nl) if nl.get("inbound") and nl.get("channel") == "slack" else None
-        if key and key in inbound_open:
+        if key and (key in inbound_open or exchange(nl) in replied):
             continue
         links = nl.pop("links", None)
         nl.setdefault("status", "needs_me" if nl.get("inbound") else "waiting")
