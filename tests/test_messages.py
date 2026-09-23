@@ -44,10 +44,10 @@ US = ("color", "authoriz", "cancele", "recogniz", "organiz", "behavior", "center
 BUTTONS = set(agent.CONNECT_STEPS) | {agent.INSTALL_STEP}
 check(len(FAILURES) >= 40, f"the inventory is there ({len(FAILURES)} entries)")
 for fid, m in FAILURES.items():
-    check(set(m) <= {"what", "fix", "fix_win", "fix_follow", "fix_test", "fix_test_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
+    check(set(m) <= {"what", "fix", "fix_win", "fix_follow", "fix_busy", "fix_test", "fix_test_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
           f"{fid}: has a non-empty what and fix")
     check(m.get("button") is None or m["button"] in BUTTONS, f"{fid}: button is a real checklist step or none")
-    for part in ("what", "fix", "fix_win", "fix_follow", "fix_test", "fix_test_win"):
+    for part in ("what", "fix", "fix_win", "fix_follow", "fix_busy", "fix_test", "fix_test_win"):
         text = m.get(part)
         if not text:
             continue
@@ -135,7 +135,7 @@ import string as _string  # noqa: E402
 
 def holes_of(fid):
     m = FAILURES[fid]
-    return {f for part_ in ("what", "fix", "fix_win", "fix_follow", "fix_test", "fix_test_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
+    return {f for part_ in ("what", "fix", "fix_win", "fix_follow", "fix_busy", "fix_test", "fix_test_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
 
 
 def short_calls(cs):
@@ -185,12 +185,14 @@ check(tp["server_offline"]["fix"].startswith("Start it again by typing python3")
 check(say("setup_done_signin", ai="Claude", button="Sign in") == "Setup is done; Claude just needs signing in again. Press Sign in below.",
       "after setup, a sign-out says setup is done and what to press (#50)")
 # #50, from the #48 fresh-install test
-check(say("first_scan_ask").endswith("nothing runs until you do, apart from a quick check of who you are on Slack."),
-      "the first-scan box owns up to the one Slack-id lookup that runs before the press")
+check(say("first_scan_ask_slack").endswith("nothing runs until you do, apart from a quick check of who you are on Slack.")
+      and say("first_scan_ask").endswith("nothing runs until you do.") and "Slack" not in messages.part("first_scan_ask", "fix")
+      and "srcOk('slack')?msg('first_scan_ask_slack'):msg('first_scan_ask')" in (REPO / "openloops" / "index.html").read_text(encoding="utf-8"),
+      "the first-scan box owns up to the one Slack-id lookup only when Slack is connected (no Slack: no Slack sentence)")
 check(say("first_scan_later").startswith("Not started; Open Loops remembers that"), "after Not now the box says the choice is remembered")
 page = messages.for_page(win=True)
 check(page["server_offline"]["fix"].endswith("Start menu.") and set(page) == set(FAILURES)
-      and all({"what", "fix", "button", "recheck"} <= set(v) <= {"what", "fix", "button", "recheck", "fix_follow"} for v in page.values())
+      and all({"what", "fix", "button", "recheck"} <= set(v) <= {"what", "fix", "button", "recheck", "fix_follow", "fix_busy"} for v in page.values())
       and page["setup_done_signin"]["fix_follow"] == "Follow the ‘{row}’ row below.", "for_page(): the whole table, fix chosen for the platform")
 needs_list = sorted(k for k, v in FAILURES.items() if (k.startswith("job_") or k in messages.CODEX_JOB_IDS)
                     and ("connection checklist" in v["fix"] or v.get("button") == "login" or k in ("codex_keyring", "codex_link")))
@@ -481,16 +483,30 @@ if not chrome:
     show("SKIP the toast layout check: no Chrome or Chromium found (set CHROME_BIN)")
 else:
     LAYOUT = r"""<script>
-window.addEventListener('load',()=>setTimeout(()=>{let r={};try{stopped=true;clearTimeout(loopT);banner('');
+window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=true;clearTimeout(loopT);banner('');
  C={agent:'claude'};S={setup_done:true};$('#steps').innerHTML='';   // after setup: no intro, no bar, the rows start high up
  DOC={all_ok:false,steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:false,title:'Signed in to Claude',fix:MSG.signin_needed.what+' '+MSG.signin_needed.fix,connect:'login'},
   {id:'slack',ok:false,optional:true,title:'Slack connected (optional)',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected (optional)',fix:'Sign in to Claude first (the row above).'},
   {id:'channel',ok:false,title:'At least one source connected (Slack or Gmail)',fix:'Sign in to Claude first (the row above).'},{id:'self',ok:false,optional:true,title:'Knows who you are on Slack',fix:'Sign in to Claude first (the row above).'}]};
  document.querySelectorAll('#page_home>div').forEach(e=>{if(e.id!=='st_connect'&&e.id!=='steps')e.style.display='none'});$('#st_connect').style.display='';paintConnect();
- for(let i=0;i<5;i++)toast('Toast '+i+': a long sentence that wraps over two or three lines on a narrow phone screen, so it takes real room.',{err:i%2===1,ms:600000});
- const box=e=>e.getBoundingClientRect(),rows=[...document.querySelectorAll('.row')].map(box),ts=[...document.querySelectorAll('#toasts .toast')].map(box);
- const hit=ts.some(a=>rows.some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom));
- r={w:innerWidth,rows:rows.length,toasts:ts.length,hit,first:(document.querySelector('#toasts .toast')||{}).textContent||''}}catch(e){r={error:String(e&&e.stack||e)}}
+ const frames=n=>new Promise(res=>{const f=()=>--n<=0?res():requestAnimationFrame(f);requestAnimationFrame(f)});
+ const box=e=>e.getBoundingClientRect(),hdr=document.querySelector('header');
+ // what of each row can be seen: the part below the sticky header (a row scrolled under the header was hidden before
+ // any toast), inside the window
+ const seen=()=>{const hb=box(hdr).bottom;return [...document.querySelectorAll('.row')].map(e=>{const b=box(e);return {el:e,left:b.left,right:b.right,top:Math.max(b.top,hb),bottom:Math.min(b.bottom,innerHeight)}}).filter(b=>b.bottom>b.top)};
+ const measure=()=>{const rows=seen(),ts=[...document.querySelectorAll('#toasts .toast')].map(box);
+  return {rows:rows.length,toasts:ts.length,hit:ts.some(a=>rows.some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom))}};
+ const burst=()=>{for(let i=0;i<5;i++)toast('Toast '+i+': a long sentence that wraps over two or three lines on a narrow phone screen, so it takes real room.',{err:i%2===1,ms:600000})};
+ // 1. at the top of the page
+ burst();await frames(2);r={w:innerWidth,...measure(),first:(document.querySelector('#toasts .toast')||{}).textContent||''};
+ // 2. scrolled: a row sits just below the sticky header when the toasts arrive; it must still be below it after
+ document.querySelectorAll('#toasts .toast').forEach(e=>e.remove());const pad=document.createElement('div');pad.style.height='3000px';document.querySelector('main').append(pad);
+ await frames(2);const row=document.querySelectorAll('.row')[3];scrollTo(0,box(row).top+scrollY-box(hdr).height-4);await frames(2);
+ const before=box(row).top,full=seen().filter(b=>b.top===box(b.el).top&&b.bottom===box(b.el).bottom).map(b=>b.el);burst();await frames(3);
+ const hb=box(hdr).bottom;
+ r.scrolled={y:Math.round(scrollY),...measure(),hdrBottom:Math.round(hb),rowTop:Math.round(box(row).top),rowBefore:Math.round(before),
+  fullBefore:full.length,stillClear:full.filter(e=>box(e).top>=hb).length};
+ }catch(e){r={error:String(e&&e.stack||e)}}
  document.body.setAttribute('data-layout',JSON.stringify(r))},300));
 </script>"""
     node_ = shutil.which("node")
@@ -511,6 +527,10 @@ window.addEventListener('load',()=>setTimeout(()=>{let r={};try{stopped=true;cle
         check(not lay.get("error") and lay["w"] == w_ and lay["rows"] >= 6 and lay["toasts"] == 3 and lay["first"].startswith("Toast 2")
               and lay["hit"] is False,
               f"at {w_} px: five toasts leave the newest three (the oldest go), and none overlaps a checklist row ({lay})")
+        sc = lay.get("scrolled") or {}
+        check(sc.get("y", 0) > 0 and sc.get("toasts") == 3 and sc.get("hit") is False and sc.get("rowTop", -1) >= sc.get("hdrBottom", 1e9)
+              and sc.get("fullBefore", 0) >= 1 and sc.get("stillClear") == sc.get("fullBefore"),
+              f"at {w_} px, scrolled: toasts arriving while a row sits just below the sticky header neither cover it nor push it under the header ({sc})")
     if not node_:
         show("SKIP the toast layout check: node not installed")
 
@@ -598,6 +618,7 @@ check(tc_out["offline"] == {"display": "block", "text": "Open Loops isn't runnin
 # #50 review: after setup, the heading's instruction comes from the row itself, never a button the row does not have
 SD = "\n".join([grab("const MSG="), grab("const fill="), grab("function msg("), grab("function msgFollow("), grab("const agentLabel="),
                 grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("), grab("const setupDone="),
+                grab("function msgBusy("), "const CONN=" + json.dumps({}) + ";",
                 html[html.index("function paintSetupDone("):html.index("\nasync function tick(){")]])
 SD_CASES = {
     "claude signed out": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Claude", "connect": "login"}],
@@ -612,12 +633,15 @@ SD_CASES = {
                      "Setup is done; Claude just needs installing again. Follow the ‘Claude is installed’ row below."),
     "install button": ("claude", [{"id": "claude", "ok": False, "title": "Claude is installed", "connect": "install", "agent": "claude"}],
                        "Setup is done; Claude just needs installing again. Press Install Claude below."),
+    "sign-in under way": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Claude", "connect": "login"}],
+                          "Setup is done; Claude just needs signing in again. Please wait while that finishes."),
     "slack stopped": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": False, "optional": True, "title": "Slack connected (optional)", "connect": "slack"}],
                       "Setup is done; one connection just needs attention. Press Connect Slack below."),
 }
 for name_, (ai_, steps_, want_) in SD_CASES.items():
     js = ("const els={};const $=s=>els[s]||(els[s]={style:{},textContent:\"1 · Let's get you connected\",dataset:{}});"
           f"let S={{setup_done:true}},C={{agent:{json.dumps(ai_)}}},DOC={{steps:{json.dumps(steps_)}}};\n" + SD +
+          ("\nCONN.login={busy:true};" if name_ == "sign-in under way" else "") +
           "\npaintSetupDone();const a=$('#st_connect_h').textContent,i=$('#st_connect_intro').style.display;S.setup_done=false;paintSetupDone();"
           "console.log(JSON.stringify([a,i,$('#st_connect_h').textContent,$('#st_connect_intro').style.display]))")
     r6 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)

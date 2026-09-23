@@ -142,7 +142,7 @@ def page_js(port, session, scenario, tmp):
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
         cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="), grab("function msgFollow("),
-        grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("),
+        grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("), grab("function msgBusy("), "const CONN={};",
         grab("const running="), grab("const havePeople="), grab("const haveVoice="),
         cut("function stage(){", "\nasync function tick(){"), cut("async function tick(){", "\nfunction paintConnect("),
         cut("let peopleRendered=''", "async function findPeople("),
@@ -211,6 +211,7 @@ if NODE:
               f"before the press: the Start the first scan box and no job started ({b})")
         check(b["said"] == "Looking back 30 days across Slack. The first pass can take ten minutes.",
               f"...saying what the first scan reads and how long, from history_days and what is connected ({b['said']!r})")
+        check(b["ask"] == messages.say("first_scan_ask_slack"), "with Slack connected, the box mentions the one quick Slack-id check (#50)")
         check(b["uslack"] == "" and b["uslack_label"] == "Update Slack" and b["uslack_disabled"] is False,
               "Update Slack is on show during setup, Slack being connected, and pressable")
         check(out["scan"]["uslack_label"] == "Updating…" and out["scan"]["uslack_disabled"] is True,

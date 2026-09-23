@@ -195,7 +195,7 @@ r = job("openloops.people")
 check(r.returncode == 0 and people.exists(), "...the same block in a normal answer is (so the check above can fail)")
 
 src = (TMP / "openloops" / "doctor.py").read_text(encoding="utf-8")
-check("found = slack_id_of(p.stdout, bare=True)" in src and "slack_name_of(p.stdout)" in src,
+check('found = slack_id_of(p.stdout, bare=agent.name() == "claude")' in src and "slack_name_of(p.stdout)" in src,
       "doctor's Slack-id lookup (id and, #50, display name) reads p.stdout through slack_id_of / slack_name_of")
 fake(result("Slack said: unauthorised for U12345678", is_error=True), rc=1)
 p = agent.run("Reply with ONLY the current logged-in user's Slack user id", ["slack.search_users"])

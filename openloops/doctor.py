@@ -614,7 +614,7 @@ def main(detect=False, recheck=False):
                       "The Slack search tool's description states the id; if not, use slack_search_users with query 'me'.",
                       ["slack.search_users"], effort_="low")
         # one complete SLACK_ID line (or an answer that is only an id); never an id found inside other text (#52 review)
-        found = slack_id_of(p.stdout, bare=True)
+        found = slack_id_of(p.stdout, bare=agent.name() == "claude")   # the old one-token answer: Claude's only
         if found:
             sid, sname = found, slack_name_of(p.stdout)
             cfg.update(slack_self_id=sid, slack_self_name=sname)

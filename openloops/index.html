@@ -435,6 +435,7 @@ const MSG=/*OL_MESSAGES*/{};
 const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
 function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
 function msgFollow(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_follow&&f&&f.row?' '+fill(m.fix_follow,f):''):''}   // "what" + "follow the <row> row": for a row with no button
+function msgBusy(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_busy?' '+fill(m.fix_busy,f):''):''}   // "what" + "please wait": that row's step is under way
 // A fetch that throws never reached the app (it is not running); an HTTP error did, and carries its status and body.
 const api=async(u,b,signal)=>{let r;try{r=await fetch(u,Object.assign(b?{method:'POST',headers:{'Content-Type':'application/json','X-OL-Page':PAGE},body:JSON.stringify(b)}:{headers:{'X-OL-Page':PAGE}},signal?{signal}:{}))}catch(e){clog('no answer from '+u+': '+e.message);e.offline=true;throw e}
  if(!r.ok){const t=await r.text(),m=u+' -> '+r.status+' '+t.slice(0,300);clog(m);const e=new Error(m);e.status=r.status;try{e.body=JSON.parse(t)}catch(x){}throw e}return r.json()};
@@ -468,8 +469,12 @@ window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e
 const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
 function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
- const box=$('#toasts');while(box.children.length>=TOAST_MAX)box.firstElementChild.remove();
- box.appendChild(t);setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
+ // The header grows by the toast; with the page scrolled, the browser's scroll anchoring would keep the rows where they
+ // were, i.e. under the grown header. Off for this one layout, the rows move down with it and stay in view (#52 review).
+ const box=$('#toasts'),de=document.documentElement;de.style.overflowAnchor='none';
+ while(box.children.length>=TOAST_MAX)box.firstElementChild.remove();
+ box.appendChild(t);requestAnimationFrame(()=>requestAnimationFrame(()=>{de.style.overflowAnchor=''}));
+ setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
 // ---------- one dialog for snooze / note / link / vault close ----------
 let dlgOk=null;
 function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textContent=o.sub||'';$('#dlg_err').textContent='';$('#dlg_ok').textContent=o.ok||'OK';$('#dlg_ok').disabled=false;
@@ -576,7 +581,7 @@ async function notNow(){if(choiceBusy)return;if(!await saveChoice('later')){pain
  goRemember('later');clog('first scan: not now');tick()}
 function retryChoice(){return choiceFailed==='later'?notNow():startScan()}
 function paintStart(){$('#st_start').style.display='';$('#start_said').textContent=msg('first_scan',{days:histDays(),sources:scanSources()});
- $('#start_ask').textContent=msg('first_scan_ask');$('#start_retry').style.display=choiceFailed?'':'none';
+ $('#start_ask').textContent=srcOk('slack')?msg('first_scan_ask_slack'):msg('first_scan_ask');$('#start_retry').style.display=choiceFailed?'':'none';   // the Slack-id check ran only with Slack connected
  $('#start_msg').textContent=choiceFailed?msg('first_scan_not_saved'):GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
@@ -591,7 +596,8 @@ function paintSetupDone(){const h=$('#st_connect_h'),intro=$('#st_connect_intro'
  const bad=inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.connect||x.alert))||{};
  const id=bad===inst?'setup_done_install':bad===login?'setup_done_signin':'setup_done_other';
  const f={ai:bad===login&&(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),button:setupBtn(bad),row:bad.title||''};
- h.textContent=!done?h.dataset.first:f.button?msg(id,f):msgFollow(id,f);
+ const busy=!!(bad.connect&&CONN[bad.connect]&&CONN[bad.connect].busy);   // its button is a spinner now: nothing to press
+ h.textContent=!done?h.dataset.first:busy?msgBusy(id,f):f.button?msg(id,f):msgFollow(id,f);
  if(intro)intro.style.display=done?'none':''}
 async function tick(){
  const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step

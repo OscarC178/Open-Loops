@@ -6,6 +6,7 @@ Each entry has:
   "button"  the checklist step whose button fixes it (doctor.py's "connect" value), or None
   "fix_win" optional: the fix as Windows says it, where the Mac wording names Mac places
   "fix_follow" optional: the fix when the row has no button to press, pointing at the row itself ({row}, its title)
+  "fix_busy" optional: the fix while that row's own step is already under way (its button shows a spinner instead)
   "fix_test", "fix_test_win" optional: the fix on a test copy (config.json "test_copy" or "isolated", #50), which has
             no Desktop or Applications icon; part() / for_page() take test=True for it
 
@@ -362,16 +363,19 @@ FAILURES = {
         "what": "Setup is done; {ai} just needs signing in again.",
         "fix": "Press {button} below.",
         "fix_follow": "Follow the ‘{row}’ row below.",
+        "fix_busy": "Please wait while that finishes.",
         "button": None},
     "setup_done_install": {
         "what": "Setup is done; {ai} just needs installing again.",
         "fix": "Press {button} below.",
         "fix_follow": "Follow the ‘{row}’ row below.",
+        "fix_busy": "Please wait while that finishes.",
         "button": None},
     "setup_done_other": {
         "what": "Setup is done; one connection just needs attention.",
         "fix": "Press {button} below.",
         "fix_follow": "Follow the ‘{row}’ row below.",
+        "fix_busy": "Please wait while that finishes.",
         "button": None},
 
     # ---- the first scan (index.html's setup, #38): not a failure, but said once, here, like the rest.
@@ -381,6 +385,10 @@ FAILURES = {
         "fix": "The first pass can take ten minutes.",
         "button": None},
     "first_scan_ask": {
+        "what": "Open Loops is ready to read your own messages, read-only, to see who you talk to, how you write and what is still open.",
+        "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do.",
+        "button": None},
+    "first_scan_ask_slack": {   # the same, with Slack connected: the checklist has looked up who you are on Slack once
         "what": "Open Loops is ready to read your own messages, read-only, to see who you talk to, how you write and what is still open.",
         "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do, apart from a quick check of who you are on Slack.",
         "button": None},
@@ -458,11 +466,11 @@ RECHECK_AFTER_JOB = ("job_signed_out", "codex_signin", "codex_expired", "codex_k
 
 
 def for_page(win=None, test=False):
-    """The table as the page gets it: {id: {"what", "fix", "button", "recheck"[, "fix_follow"]}}, fix already chosen for this platform
+    """The table as the page gets it: {id: {"what", "fix", "button", "recheck"[, "fix_follow", "fix_busy"]}}, fix already chosen for this platform
     (and, test=True, for a test copy: app.py passes it per install), placeholders left for the page to fill.
     "recheck": a failed job with this id re-runs the connection check."""
     return {k: {"what": part(k, "what", win), "fix": part(k, "fix", win, test), "button": v.get("button"),
-                "recheck": k in RECHECK_AFTER_JOB, **({"fix_follow": v["fix_follow"]} if v.get("fix_follow") else {})}
+                "recheck": k in RECHECK_AFTER_JOB, **{x: v[x] for x in ("fix_follow", "fix_busy") if v.get(x)}}
             for k, v in FAILURES.items()}
 
 
