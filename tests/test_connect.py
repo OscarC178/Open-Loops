@@ -134,6 +134,18 @@ cfg["slack_source"] = "connector"
 check(agent.login_cmd("slack")[0][3] == "claude.ai Slack", "a listed name for another route is ignored")
 cfg["slack_source"], cfg["claude_servers"] = "plugin", {"slack": "plugin:slack:x & calc.exe"}
 check(agent.login_cmd("slack")[0][3] == "plugin:slack:slack", "a listed name with shell characters is ignored")
+# tool ids follow the same server: today's names give today's ids, a renamed server its own
+cfg.pop("claude_servers")
+for src_s, src_m, want in (("plugin", "plugin", ["mcp__plugin_slack_slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__plugin_miro_miro"]),
+                           ("connector", "connector", ["mcp__claude_ai_Slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Miro"]),
+                           ("plugin", "server", ["mcp__plugin_slack_slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__miro"])):
+    cfg["slack_source"], cfg["miro_source"] = src_s, src_m
+    got = agent._qualify(["slack.search_users", "gmail.search_threads", "miro.*"])
+    check(got == want, f"tool ids for slack={src_s} miro={src_m} unchanged from the fixed prefixes (got {got})")
+cfg.update(slack_source="plugin", miro_source="plugin", claude_servers={"slack": "plugin:slack-v2:slack", "miro": "plugin:miro-next:miro"})
+got = agent._qualify(["slack.search_users", "miro.*"])
+check(got == ["mcp__plugin_slack-v2_slack__slack_search_users", "mcp__plugin_miro-next_miro"],
+      f"a renamed server's tools are allowed under its own name, as it is signed in to (got {got})")
 cfg.pop("claude_servers")
 agent.WIN = True
 check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail"]], "Windows: no --no-browser (the CLI opens the browser)")

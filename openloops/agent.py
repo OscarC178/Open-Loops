@@ -114,9 +114,10 @@ def grok_job_env():
 
 def _qualify(tools):
     fmt = dict(_FMT.get(name()) or _FMT["claude"])
-    if name() == "claude":
-        fmt["slack"] = _CLAUDE_SLACK[slack_source()]
-        fmt["miro"] = _CLAUDE_MIRO[miro_source()]
+    if name() == "claude":  # from the server actually found, so a renamed server gets its real tool ids
+        fmt["slack"] = tool_prefix(server_name("slack")) + "__slack_{}"
+        fmt["gmail"] = tool_prefix(server_name("gmail")) + "__{}"
+        fmt["miro"] = tool_prefix(server_name("miro"))
     out = []
     for t in tools:
         svc, tool = t.split(".", 1)
@@ -163,14 +164,25 @@ def login_cmd(step):
     if step == "slack_install":
         add = [] if _has_marketplace() else [["claude", "plugin", "marketplace", "add", _MARKETPLACE_SRC]]
         return add + [["claude", "plugin", "install", f"slack@{_MARKETPLACE}"]]
-    src = {"slack": slack_source, "miro": miro_source}.get(step, lambda: "connector")()
-    server = CLAUDE_SERVERS[step][src]
-    # doctor.py saves the name `claude mcp list` actually printed; use it when it is the same route. Checked
-    # against a plain pattern because Windows runs this through cmd.exe.
-    seen = str((_cfg().get("claude_servers") or {}).get(step) or "")
-    if seen and re.fullmatch(r"[\w .:@/-]{1,100}", seen) and _route_of(seen, step) == src:
-        server = seen
-    return [["claude", "mcp", "login", server] + ([] if WIN else ["--no-browser"])]
+    return [["claude", "mcp", "login", server_name(step)] + ([] if WIN else ["--no-browser"])]
+
+
+def server_name(svc):
+    """The Claude server for "slack" / "gmail" / "miro" on the configured route. doctor.py saves the name
+    `claude mcp list` actually printed (config "claude_servers"); that one is used when it is on the same route
+    and a plain name (Windows passes it through cmd.exe), else today's usual name. Sign-in and tool ids both
+    come from here, so a renamed server is never signed in to while jobs allow tools it does not have."""
+    src = {"slack": slack_source, "miro": miro_source}.get(svc, lambda: "connector")()
+    seen = str((_cfg().get("claude_servers") or {}).get(svc) or "")
+    if seen and re.fullmatch(r"[\w .:@/-]{1,100}", seen) and _route_of(seen, svc) == src:
+        return seen
+    return CLAUDE_SERVERS[svc][src]
+
+
+def tool_prefix(server):
+    """Claude Code's tool-id prefix for a server: "mcp__" + its name with anything but letters, digits, _ and -
+    made _ (plugin:slack:slack -> mcp__plugin_slack_slack, claude.ai Gmail -> mcp__claude_ai_Gmail)."""
+    return "mcp__" + re.sub(r"[^A-Za-z0-9_-]", "_", server)
 
 
 def _route_of(server, svc):
