@@ -2,7 +2,7 @@
 # Build Open Loops.app — a real Mac app with the logo, so it can sit in the Dock.
 # Called by install.sh. Not double-clicked by the user.
 #
-#   bash scripts/macos-app.sh --app-dir ~/Documents/OpenLoops --out ~/Applications/Open\ Loops.app
+#   bash scripts/macos-app.sh --app-dir "$HOME/Library/Application Support/OpenLoops" --out ~/Applications/Open\ Loops.app
 #   bash scripts/macos-app.sh ... --dock     # also pin to the Dock (idempotent)
 set -e
 

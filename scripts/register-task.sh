@@ -2,20 +2,28 @@
 # Register/remove the weekday "com.openloops.refresh" launchd agent - macOS equivalent of
 # register-task.ps1 (Windows Task Scheduler).
 #
-# Usage: scripts/register-task.sh [--at HH:MM] [--remove]
+# Usage: scripts/register-task.sh [--at HH:MM] [--dest DIR] [--remove]
+#   --dest DIR   the install whose scripts/run-refresh.sh the job runs (default: the copy this script is in).
+#                Keep it out of ~/Documents, ~/Desktop and ~/Downloads: macOS will not let the job read them (#24).
 set -e
 
 AT="09:15"
 REMOVE=0
+DEST=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --at) AT="$2"; shift 2 ;;
+        --dest) DEST="$2"; shift 2 ;;
         --remove) REMOVE=1; shift ;;
         *) shift ;;
     esac
 done
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "$DEST" ]; then
+    ROOT="$(cd "$DEST" && pwd)"
+else
+    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 LABEL="com.openloops.refresh"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 UID_GUI="gui/$(id -u)"
