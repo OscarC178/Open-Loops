@@ -8,7 +8,7 @@ Anthropic's, which the real bash runs: it drops a fake `claude` into $HOME/.loca
 where the real installer puts it. So a pass proves the shown command is the one that runs, that the app finds a
 CLI in a folder that was not on its PATH, and that the re-check goes green. Skipped on Windows (own console window).
 """
-import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import json, os, shlex, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -34,9 +34,10 @@ def check(cond, what):
 LINES = {"claude": ("curl -fsSL https://claude.ai/install.sh | bash", "irm https://claude.ai/install.ps1 | iex", "Anthropic"),
          "codex": ("curl -fsSL https://chatgpt.com/codex/install.sh | sh", "irm https://chatgpt.com/codex/install.ps1 | iex", "OpenAI"),
          "grok": ("curl -fsSL https://x.ai/cli/install.sh | bash", "irm https://x.ai/cli/install.ps1 | iex", "xAI")}
+SHOWN = lambda ag: agent.install_cmd(ag, win=False)["command"]  # what the row shows on a Mac: the full invocation
 for ag, (unix, ps, vendor) in LINES.items():
     mac = agent.install_cmd(ag, win=False)
-    check(mac["argv"] == ["bash", "-o", "pipefail", "-c", unix] and mac["command"] == unix and mac["needs"] == ["curl", "bash"]
+    check(mac["argv"] == ["bash", "-o", "pipefail", "-c", unix] and mac["command"] == shlex.join(mac["argv"]) and mac["needs"] == ["curl", "bash"]
           and mac["vendor"] == vendor and mac["source"].startswith("https://"), f"{ag} on a Mac: the vendor's script, shown as it runs")
     win = agent.install_cmd(ag, win=True)
     check(win["argv"] == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps]
@@ -46,9 +47,9 @@ check(agent.install_cmd("nope") is None, "an agent with no known installer -> No
 cfg = {"agent": "grok"}
 _real_cfg = agent._cfg
 agent._cfg = lambda: cfg
-check(agent.install_cmd(win=False)["command"] == LINES["grok"][0], "no agent named -> the selected one")
+check(agent.install_cmd(win=False)["argv"][-1] == LINES["grok"][0], "no agent named -> the selected one")
 cfg["agent"] = "claude"
-check(agent.install_cmd(win=False)["command"] == LINES["claude"][0], "Claude selected -> Claude's installer")
+check(agent.install_cmd(win=False)["argv"][-1] == LINES["claude"][0], "Claude selected -> Claude's installer")
 
 # ---------------------------------------------------------------- prereq
 _which = shutil.which
@@ -64,7 +65,7 @@ row = doctor.install_row("Claude", True)
 check(row["ok"] and "connect" not in row and row["fix"] == "", "installed -> green, no button")
 agent.WIN = False
 row = doctor.install_row("Claude", False)
-check(not row["ok"] and row["connect"] == "install" and row["command"] == LINES["claude"][0]
+check(not row["ok"] and row["connect"] == "install" and row["command"] == SHOWN("claude")
       and "Press Install Claude" in row["fix"] and "Anthropic" in row["fix"], "missing -> Install button, the command, who it comes from")
 have = {"bash"}
 row = doctor.install_row("Claude", False)
@@ -72,7 +73,7 @@ check("connect" not in row and "curl" in row["fix"] and "Ask IT" in row["fix"], 
 have = {"curl", "bash"}
 cfg["agent"] = "grok"
 row = doctor.install_row("Grok", False)
-check(row["connect"] == "install" and row["command"] == LINES["grok"][0] and "xAI" in row["fix"], "Grok selected -> Grok's installer")
+check(row["connect"] == "install" and row["command"] == SHOWN("grok") and "xAI" in row["fix"], "Grok selected -> Grok's installer")
 agent.shutil.which, agent._cfg, agent.WIN = _which, _real_cfg, sys.platform == "win32"
 
 # ---------------------------------------------------------------- /api/connect/install
@@ -158,11 +159,11 @@ try:
     row = lambda r: next(x for x in r["steps"] if x["id"] == "claude")
     code, doc = api("/api/doctor", {"force": True})
     check(code == 200 and not row(doc)["ok"] and row(doc).get("connect") == "install", "the checklist says Claude is missing, offers Install")
-    check(row(doc).get("command") == LINES["claude"][0], f"...and shows the exact command first (got {row(doc).get('command')!r})")
+    check(row(doc).get("command") == SHOWN("claude"), f"...and shows the exact command first (got {row(doc).get('command')!r})")
     login = next(x for x in doc["steps"] if x["id"] == "login")
     check("connect" not in login and login["fix"].startswith("Install Claude first"), "the sign-in row points at Install, offers no button yet")
     code, s = api("/api/connect/install")
-    check(code == 200 and s["running"] is False and s["rc"] is None and s["command"] == LINES["claude"][0],
+    check(code == 200 and s["running"] is False and s["rc"] is None and s["command"] == SHOWN("claude"),
           "GET /api/connect/install: idle, with the command it would run")
     code, _ = api("/api/connect/install", {}, origin="http://evil.example")
     check(code == 403, "a POST from another site is refused")
@@ -174,6 +175,8 @@ try:
     check(code == 200 and out == {"started": True}, "POST /api/connect/install starts it")
     s = wait_install()
     check(s["rc"] == 22 and "404" in s["last"], f"a failed download reports curl's exit code and error (got {s['rc']}, {s['last']!r})")
+    check(s["said"].startswith("Claude's installer") and "curl" not in s["said"] and "22" not in s["said"],
+          f"the page gets a plain sentence, not curl's error (got {s['said']!r})")
     (tmp / "bin" / "fail").unlink()
 
     # the real thing, with the fake installer
@@ -194,7 +197,7 @@ try:
     # Grok selected: its own installer, shown the same way (not run: nothing to prove twice)
     api("/api/config", {"agent": "grok"})
     code, s = api("/api/connect/install")
-    check(s["command"] == LINES["grok"][0], "with Grok selected the install step runs xAI's script")
+    check(s["command"] == SHOWN("grok"), "with Grok selected the install step runs xAI's script")
     code, out = api("/api/connect/login", {})
     check(code == 400, "the sign-in steps stay Claude-only")
 

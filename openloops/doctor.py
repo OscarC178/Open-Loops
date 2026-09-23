@@ -70,12 +70,12 @@ def install_row(label, have):
     ic = agent.install_cmd()
     missing = [t for t in (ic or {}).get("needs", []) if not agent.prereq().get(t)]
     if not ic:
-        r["fix"] = f"{label} isn't installed on this computer. Ask IT to install it, then press Check again."
+        r["fix"] = f"Open Loops couldn't find {label} on this computer. Ask IT to install it, then press Check again."
     elif missing:
-        r["fix"] = (f"{label} isn't installed, and this computer lacks a tool its installer needs ({', '.join(missing)}). "
-                    f"Ask IT to install {label}, then press Check again.")
+        r["fix"] = (f"Open Loops couldn't find {label} on this computer, and the installer can't run here because a tool "
+                    f"it needs is missing ({', '.join(missing)}). Ask IT to install {label}, then press Check again.")
     else:
-        r.update(fix=f"{label} isn't installed on this computer yet. Press Install {label}: it downloads {label} from "
+        r.update(fix=f"Open Loops couldn't find {label} on this computer. Press Install {label}: it downloads {label} from "
                      f"{ic['vendor']} and takes a minute or two.", connect="install", command=ic["command"])
     return r
 
