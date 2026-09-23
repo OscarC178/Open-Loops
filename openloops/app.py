@@ -14,7 +14,7 @@ STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
 VOICEF = ROOT / "voice.json"
-EDITABLE = ("agent", "model", "effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
+EDITABLE = ("agent", "model", "effort", "codex_model", "codex_effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
 import os
 def _port_arg():
     """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
@@ -141,8 +141,9 @@ def run_job(name, extra=None):
     return True
 
 
-# ---- Setup buttons: /api/connect/<step> runs agent.login_cmd(step) (Claude's sign-ins) or, for "install", the
-# selected AI's installer (agent.install_cmd, any agent) in the background ----
+# ---- Setup buttons: /api/connect/<step> runs agent.login_cmd(step) (Claude's sign-ins, Codex's `codex login`), opens
+# agent.connect_url(step) in the browser (Codex's Gmail / Slack: connected on ChatGPT's apps page), or, for "install",
+# runs the selected AI's installer (agent.install_cmd, any agent) in the background ----
 # Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
 # The log (state/connect-<step>.log) holds what the CLI printed, minus the sign-in link's query, for the page and Console.
 CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
@@ -265,9 +266,9 @@ def _connect_one(step, argv, log, deadline):
 
 
 def run_connect(step):
-    """Start a Claude setup step in the background -> (started, error). One run per step at a time."""
+    """Start a Claude or Codex setup step in the background -> (started, error). One run per step at a time."""
     from . import agent
-    if agent.name() != "claude" or step not in agent.CONNECT_STEPS:
+    if step not in agent.connect_steps():
         return False, "no such setup step for " + agent.display_name()
     with connect_lock:  # check and claim in one go
         if quit_requested:
@@ -280,6 +281,13 @@ def run_connect(step):
     def go():
         rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
+            url = agent.connect_url(step)
+            if url:  # a page to open, not a command: done once the browser has it; the user presses Check again after
+                with open(log, "a", encoding="utf-8") as f:
+                    f.write(f"opened {url} in the browser\n")
+                connects[step].update(url=url, opened=True)
+                rc = 0 if webbrowser.open(url) else 1
+                return
             for argv in agent.login_cmd(step) or []:
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
@@ -570,7 +578,10 @@ class H(BaseHTTPRequestHandler):
             import time as _t
             if body.get("force") or _t.time() - doctor_cache["at"] > 55:
                 gen = doctor_gen["n"]
-                args = [sys.executable, "-m", "openloops.doctor"] + (["--detect"] if body.get("detect") else [])
+                # --recheck: a press of Check again (or a finished setup step) asks Codex afresh instead of reusing
+                # its last answer about Gmail / Slack; Claude and Grok read their CLIs every time anyway
+                args = ([sys.executable, "-m", "openloops.doctor"] + (["--detect"] if body.get("detect") else [])
+                        + (["--recheck"] if body.get("force") else []))
                 for attempt in (1, 2):  # a check that produced nothing gets one quiet retry before anyone hears about it
                     try:
                         r = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
