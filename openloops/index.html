@@ -442,28 +442,34 @@ function paintConnect(){$('#st_connect').style.display='';
  const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
  $('#setup_steps').innerHTML=DOC.steps.map(s=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px">${s.ok?'✅':s.optional?'▫️':'⬜'}</span><div><b>${s.title}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,s.connect===first)}`}</div></div>`).join('')}
 
-// ---------- Claude setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
+// ---------- Setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
 // and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.
+// "install" (any AI) runs the installer command the row shows under its button, and shows the installer's last line as it goes.
 const CONNECT_WAIT_MS=5.5*60000;   // app.py CONNECT_TIMEOUT_S (5 min) plus a little: the page stops watching only once the app has stopped the run
-const CONNECT_LABEL={login:'Sign in',slack_install:'Install Slack plugin',slack:'Connect Slack',gmail:'Connect Gmail',miro:'Connect Miro'};
+const INSTALL_WAIT_MS=10.5*60000;  // app.py INSTALL_TIMEOUT_S (10 min) plus a little
+const CONNECT_LABEL={install:'Install',login:'Sign in',slack_install:'Install Slack plugin',slack:'Connect Slack',gmail:'Connect Gmail',miro:'Connect Miro'};
 const CONN={};   // step -> {busy, url, msg}: kept here because the rows are repainted on every tick
 const repaint=()=>{if(DOC&&stage()==='connect')paintConnect()};   // never bring the checklist back once the page has moved on
-function connectBtn(s,primary){if(!s.connect||(C&&C.agent)==='grok'||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
- if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}</div>`;
- return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${CONNECT_LABEL[s.connect]}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>`}
+function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
+ const cmd=s.command?`<div class="sub" style="margin-top:4px">${c.busy?'Running':'This runs'}: <code>${esc(s.command)}</code></div>`:'';   // shown before the press: nothing runs unseen
+ if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}</div>${cmd}`;
+ const label=s.connect==='install'?'Install '+agentLabel():CONNECT_LABEL[s.connect];
+ return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
 async function connectStep(step){
- CONN[step]={busy:true,msg:step==='slack_install'?'Installing the Slack plugin…':'Waiting for you in the browser: click Allow there.'};repaint();
+ const inst=step==='install',installing=`Installing ${agentLabel()}. This can take a few minutes.`;
+ CONN[step]={busy:true,msg:inst?installing:step==='slack_install'?'Installing the Slack plugin…':'Waiting for you in the browser: click Allow there.'};repaint();
  try{const r=await api('/api/connect/'+step,{});clog('setup: '+step+(r.started?' started':' already running'))}
- catch(e){CONN[step]={msg:"Couldn't start that. Try again, or use Open Claude (advanced)."};repaint();return}
+ catch(e){CONN[step]={msg:inst?"Couldn't start the install. Try again.":"Couldn't start that. Try again, or use Open Claude (advanced)."};repaint();return}
  const t0=Date.now();
- while(Date.now()-t0<CONNECT_WAIT_MS){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
+ while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
   if(s.url&&!CONN[step].url){CONN[step].url=s.url;repaint()}
+  if(inst&&s.running){const m=installing+(s.last?' '+s.last.slice(0,120):'');if(m!==CONN[step].msg){CONN[step].msg=m;repaint()}}   // progress: the installer's last line
   if(s.running)continue;
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
-  CONN[step]=s.rc===0?{}:{msg:"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open Claude (advanced).'};
+  CONN[step]=s.rc===0?{}:{msg:"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+(inst?'. Try again. If it fails again, paste the command below into Terminal (Windows: PowerShell) and press Enter.':'. Try again, or use Open Claude (advanced).')};
   await doctor(true);return}   // repaints the checklist: the row goes green, or offers its next step
- CONN[step]={msg:'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}
+ CONN[step]={msg:inst?'The install is taking longer than 10 minutes, so the app stopped it. Press Install again.':'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}
 
 // The Mac's weekday morning refresh did not start (doctor.py "schedule" row, #24). The checklist is only up while setting
 // up, so once set up the same row shows here, above everything: what happened, what to do, and the download page.
