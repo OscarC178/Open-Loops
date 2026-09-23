@@ -506,6 +506,8 @@ here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "calls-codex.txt"), "a") as f:
     f.write(" ".join(a) + "\n")
 if a == ["--version"]:
+    if os.path.exists(os.path.join(here, "slow")):   # a check that takes a while: the page must wait for it
+        import time; time.sleep(3)
     print("codex-cli 0.156.1"); sys.exit(0)
 if a[:2] == ["login", "status"]:
     print("Not logged in"); sys.exit(1)
@@ -594,11 +596,13 @@ def setup_js(port, scenario, tmp):
         cut("async function stageAuto(", "// Update Slack needs Slack"),
         cut("// Update Slack needs Slack", "\n// ---------- lists"),
         cut("const counts=()=>", "\n// ---------- day log"),
-        grab("async function openClaude("),
+        grab("async function openClaude("), grab("async function learnVoice("),
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),
         """const CALLS=[];const realFetch=global.fetch;
 const FAKE={};   // url -> [answer to a POST, answer to a GET]: a setup step the app itself never runs (no browser opens)
+const FAIL_ONCE=new Set();
 global.fetch=(u,o)=>{const post=!!(o&&o.method==='POST');if(post)CALLS.push(u+' '+(o.body||''));
+ if(FAIL_ONCE.has(u)){FAIL_ONCE.delete(u);return Promise.resolve({ok:false,status:500,text:async()=>'{"error":"boom"}'})}
  if(FAKE[u])return Promise.resolve({ok:true,status:200,json:async()=>FAKE[u][post?0:1],text:async()=>JSON.stringify(FAKE[u][post?0:1])});
  return realFetch(BASE+u,o)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -770,6 +774,41 @@ if NODE:
         check(out["checked"] == {"msg": messages.say("needs_signin", ai="ChatGPT"), "open": True},
               f"...Check again that finds Gmail still red says the row's own sentence in the pop-up ({out['checked']['msg']!r})")
         check(not (tmp / "opened.txt").exists(), "...and no browser was asked to open anything")
+    finally:
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7h. changing the AI: nothing starts until the new AI's check is in; not while a job runs; a failed check is not green
+    tmp = setup_install("openloops-setup-switch-", config={"slack_self_id": "U0TEST12345"})
+    (tmp / "bin" / "slack_ok").write_text("")
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ await boot();await tick();out.before=view();
+ fs.writeFileSync(BIN+'/slow','');const p=chooseAI('codex');await sleep(400);
+ out.pending={pend:aiPending(),v:view(),uslack:$('#uslack').style.display};
+ let n=CALLS.length;await startScan();await refresh();await learnVoice();out.pendCalls=CALLS.slice(n);out.pendToasts=TOASTS.slice();
+ await p;fs.unlinkSync(BIN+'/slow');out.after={pend:aiPending(),doc:DOC.agent,stage:stage()};
+ J.refresh=Object.assign({},J.refresh,{running:true});n=CALLS.length;TOASTS.length=0;await chooseAI('claude');
+ out.job={calls:CALLS.slice(n),toasts:TOASTS.slice(),agent:C.agent};J.refresh.running=false;
+ FAIL_ONCE.add('/api/doctor');n=CALLS.length;await chooseAI('claude');
+ out.failed={calls:CALLS.slice(n),stage:stage(),all_ok:DOC.all_ok,error:!!DOC.error,agent:C.agent,setup:$('#setup').style.display,shown:$('#st_checkfail').style.display};""", tmp)
+        b, pd = out["before"], out["pending"]
+        check(b["stage"] == "people" and b["start"] == "", "before: Claude ready, the first-scan box waits for its press")
+        check(pd["pend"] and pd["v"]["stage"] == "checking" and pd["v"]["setup"] == "" and "Checking Codex on this computer" in pd["v"]["ai"]["rows"]
+              and pd["v"]["ai"]["state"] == "In progress" and pd["v"]["start"] == "none" and pd["uslack"] == "none"
+              and "Checking Codex first" in pd["v"]["scan"],
+              f"while Codex's check is pending: Set-up says Checking Codex, and Start and Update Slack are gone ({pd['v']['stage']})")
+        check(out["pendCalls"] == [] and any("still checking Codex" in t for t in out["pendToasts"]),
+              f"...Start, Refresh and Learn my tone start nothing then, and say why ({out['pendCalls']}, {out['pendToasts'][-1:]})")
+        check(out["after"] == {"pend": False, "doc": "codex", "stage": "connect"}, f"once the check is in, the page follows Codex's own rows ({out['after']})")
+        check(out["job"]["calls"] == [] and out["job"]["agent"] == "codex"
+              and out["job"]["toasts"] == ["Open Loops is still running a job with Codex. Change your AI once it has finished."],
+              f"changing the AI while a job runs is refused, in a sentence ({out['job']['toasts']})")
+        f = out["failed"]
+        check(f["calls"][:2] == ['/api/config {"agent":"claude"}', '/api/doctor {"force":true,"detect":true}'] and f["error"] and f["all_ok"] is False
+              and f["stage"] == "checkfail" and f["shown"] == "" and f["setup"] == "none",
+              f"a failed check after the change keeps nothing of Codex's answer: not green, the 'couldn't run the check' box instead ({f['stage']})")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
