@@ -233,7 +233,8 @@ def install_cmd(agent=None, win=None):
     """How to install an agent's CLI (default: the selected one) -> dict, or None for an agent with no known installer:
       "steps"    [(kind, argv), ...] run in order, each only if the one before exited 0. kind is "download", "install"
                  or "check"; app.py names a failure by it. "download" saves the script to "script".
-      "command"  every step, one per line, as the page shows it before the button is pressed (Mac: joined by &&)
+      "command"  what the page shows before the button is pressed, and what to paste by hand: on a Mac every step,
+                 joined by && so each runs only if the last worked; on Windows one PowerShell block with the same gates
       "needs"    the tools the steps cannot run without (doctor.py says so, and offers no button, when one is missing)
       "agent", "id"  name exactly what the page showed; app.py refuses a press whose pair no longer matches
       "cli", "script", "source", "vendor"."""
@@ -246,19 +247,31 @@ def install_cmd(agent=None, win=None):
     folder = ROOT / "state" / "install"
     if win:
         script = str(folder / f"{who}-install.ps1")
-        q = script.replace("'", "''")  # a quote in the user's folder name, doubled as PowerShell's '...' wants
-        steps = [("download", _PS + ["-Command", f"Invoke-WebRequest -UseBasicParsing -Uri '{ps_url}' -OutFile '{q}'"]),
+        pq = lambda x: "'" + str(x).replace("'", "''") + "'"  # PowerShell '...' quoting: a quote is doubled
+        # The download fails as a whole (Stop), including an empty file, so a partial or empty script never runs
+        get = ["$ErrorActionPreference = 'Stop'",
+               f"New-Item -ItemType Directory -Force -Path {pq(folder)} | Out-Null",
+               f"Invoke-WebRequest -UseBasicParsing -Uri {pq(ps_url)} -OutFile {pq(script)}",
+               f"if ((Get-Item -LiteralPath {pq(script)}).Length -eq 0) {{ throw 'The download was empty.' }}"]
+        steps = [("download", _PS + ["-Command", "; ".join(get)]),
                  ("install", _PS + ["-File", script]),
                  ("check", [cli_, "--version"])]
-        show, needs, join = subprocess.list2cmdline, ["powershell"], "\n"  # PowerShell 5 has no &&: one per line
+        # Shown (and pasted by hand) as one PowerShell block with the same gates: it stops at the first failure,
+        # and throw ends only the block, not the PowerShell window it is pasted into.
+        command = "\n".join(["& {"] + ["  " + g for g in get] + [
+            f"  powershell -NoProfile -ExecutionPolicy Bypass -File {pq(script)}",
+            "  if ($LASTEXITCODE -ne 0) { throw \"The installer stopped with exit code $LASTEXITCODE.\" }",
+            f"  {cli_} --version", "}"])
+        needs = ["powershell"]
     else:
         script = str(folder / f"{who}-install.sh")
-        steps = [("download", ["curl", "-fsSL", "-o", script, url]),
+        steps = [("download", ["mkdir", "-p", str(folder)]),
+                 ("download", ["curl", "-fsSL", "-o", script, url]),
                  ("download", ["test", "-s", script]),  # an empty 200 is a failed download too
                  ("install", [shell, script]),
                  ("check", [cli_, "--version"])]
-        show, needs, join = shlex.join, ["curl", "bash"], " &&\n"  # pasted as is, each runs only if the last worked
-    command = join.join(show(a) for _, a in steps)
+        # pasted as is, each runs only if the last worked
+        command, needs = " &&\n".join(shlex.join(a) for _, a in steps), ["curl", "bash"]
     return {"steps": steps, "command": command, "needs": needs, "agent": who, "cli": cli_, "script": script,
             "source": src, "vendor": vendor,
             "id": hashlib.sha256((who + "\0" + command).encode("utf-8")).hexdigest()[:16]}

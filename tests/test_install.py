@@ -42,18 +42,26 @@ for ag, (url, shell, ps_url, cli, vendor) in LINES.items():
     mac = agent.install_cmd(ag, win=False)
     sc = mac["script"]
     check(sc == str(agent.ROOT / "state" / "install" / f"{ag}-install.sh") and mac["steps"] == [
+              ("download", ["mkdir", "-p", str(agent.ROOT / "state" / "install")]),
               ("download", ["curl", "-fsSL", "-o", sc, url]), ("download", ["test", "-s", sc]),
               ("install", [shell, sc]), ("check", [cli, "--version"])],
-          f"{ag} on a Mac: download to a file, check it is not empty, run it, then {cli} --version")
+          f"{ag} on a Mac: make the folder, download to a file, check it is not empty, run it, then {cli} --version")
     check(mac["command"] == " &&\n".join(shlex.join(a) for _, a in mac["steps"]) and mac["needs"] == ["curl", "bash"]
           and mac["vendor"] == vendor and mac["source"].startswith("https://"), f"{ag} on a Mac: shown exactly as it runs, joined by &&")
     win = agent.install_cmd(ag, win=True)
     ws = win["script"]
+    dl = win["steps"][0][1][-1]
     check([k for k, _ in win["steps"]] == ["download", "install", "check"] and ws.endswith(f"{ag}-install.ps1")
-          and win["steps"][0][1][-1] == f"Invoke-WebRequest -UseBasicParsing -Uri '{ps_url}' -OutFile '{ws}'"
+          and dl.startswith("$ErrorActionPreference = 'Stop'; New-Item -ItemType Directory -Force")
+          and f"Invoke-WebRequest -UseBasicParsing -Uri '{ps_url}' -OutFile '{ws}'" in dl
+          and dl.endswith(f"if ((Get-Item -LiteralPath '{ws}').Length -eq 0) {{ throw 'The download was empty.' }}")
           and win["steps"][1][1] == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ws]
-          and win["command"] == "\n".join(subprocess.list2cmdline(a) for _, a in win["steps"]) and win["needs"] == ["powershell"],
-          f"{ag} on Windows: Invoke-WebRequest to a file, then PowerShell -File, shown one per line")
+          and win["needs"] == ["powershell"], f"{ag} on Windows: a download that fails as a whole (empty too), then PowerShell -File")
+    lines = win["command"].splitlines()
+    check(lines[0] == "& {" and lines[-1] == "}" and [l.strip() for l in lines[1:5]] == dl.split("; ")
+          and lines[5].strip() == f"powershell -NoProfile -ExecutionPolicy Bypass -File '{ws}'"
+          and lines[6].strip().startswith("if ($LASTEXITCODE -ne 0) { throw") and lines[7].strip() == f"{cli} --version",
+          f"{ag} on Windows: the fallback is one block with the app's gates (stops on a failed or empty download, or a failed installer)")
     check(mac["id"] != win["id"] and mac["id"] != agent.install_cmd("grok" if ag != "grok" else "claude", win=False)["id"],
           f"{ag}: the command id differs per AI and platform")
 _root = agent.ROOT
@@ -67,7 +75,7 @@ _real_cfg = agent._cfg
 agent._cfg = lambda: cfg
 check(agent.install_cmd(win=False)["agent"] == "grok", "no agent named -> the selected one")
 cfg["agent"] = "claude"
-check(agent.install_cmd(win=False)["steps"][0][1][-1] == LINES["claude"][0], "Claude selected -> Claude's installer")
+check(agent.install_cmd(win=False)["steps"][1][1][-1] == LINES["claude"][0], "Claude selected -> Claude's installer")
 
 # ---------------------------------------------------------------- prereq
 _which = shutil.which
@@ -339,10 +347,21 @@ try:
     code, out = api("/api/connect/login", {})
     check(code == 400, "the sign-in steps stay Claude-only")
 
+    # the Mac fallback, pasted by hand into a fresh shell: works with no state/install/ yet, and a cut-off download
+    # stops it before anything runs, as with the button
+    shutil.rmtree(tmp / "state" / "install", ignore_errors=True)
+    fake.unlink()  # left by the good install above
+    use("partial")
+    r = subprocess.run(["bash", "-c", AT("claude")], env=env, capture_output=True, text=True)
+    check(r.returncode == 18 and not fake.exists(), f"the pasted fallback stops at a cut-off download (rc {r.returncode})")
+    use("ok")
+    r = subprocess.run(["bash", "-c", AT("claude")], env=dict(env, PATH=str(fake.parent) + os.pathsep + PATH), capture_output=True, text=True)
+    check(r.returncode == 0 and fake.exists() and "fake claude" in r.stdout, "the pasted fallback installs from scratch (mkdir included)")
+    fake.unlink()
+
     # Quit while an install runs: the installer is stopped and the server exits without waiting for it
     api("/api/config", {"agent": "claude"})
     use("hang")
-    fake.unlink()
     shown = {k: api("/api/connect/install")[1][k] for k in ("agent", "command_id")}
     code, out = api("/api/connect/install", shown)
     time.sleep(1)
