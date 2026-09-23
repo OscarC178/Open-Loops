@@ -1129,28 +1129,32 @@ def claude_failure(status, text):
 
 
 def _claude_json(out):
-    """The result object in `claude -p --output-format json` stdout -> dict, or None when it is not there. Tried in turn:
-    the whole output; from each line that starts with { or [ to the end (a warning line printed before the JSON, the
-    JSON itself on one line or many), first line first; then each such line alone, last first (one event per line)."""
-    out = (out or "").strip()
-    if not out:
-        return None
-    lines = out.splitlines()
-    starts = [i for i, ln in enumerate(lines) if ln.lstrip().startswith(("{", "["))]
-    tries = [out] + ["\n".join(lines[i:]) for i in starts] + [lines[i] for i in reversed(starts)]
-    dec = json.JSONDecoder()
-    for t in tries:
+    """The result object in `claude -p --output-format json` stdout -> dict, or None when it is not there.
+
+    Every top-level JSON value in the output is decoded, in order (a value may span lines; a line that does not start
+    one, such as a plain-text warning, is skipped), and a list is read as a stream of events. The LAST object whose
+    "type" is "result" wins (the key is required): a JSON diagnostic printed before or after it that happens to carry a
+    "result" or "is_error" field is never taken for it (#47 second review). With no such object, a single object that
+    carries "is_error" or "subtype" is used; anything else is not JSON output."""
+    text = (out or "").strip()
+    dec, objs, pos = json.JSONDecoder(), [], 0
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
         try:
-            j, end = dec.raw_decode(t.strip())
-        except ValueError:
+            v, pos = dec.raw_decode(text, pos)
+        except ValueError:  # not the start of a JSON value: skip the rest of this line
+            nl = text.find("\n", pos)
+            pos = len(text) if nl < 0 else nl + 1
             continue
-        if t.strip()[end:].strip() and not isinstance(j, dict):
-            continue  # a list followed by more text is not one stream of events
-        if isinstance(j, list):  # a stream of events: the last result in it
-            j = next((e for e in reversed(j) if isinstance(e, dict) and e.get("type") == "result"), None)
-        if isinstance(j, dict) and ("result" in j or "is_error" in j) and j.get("type", "result") == "result":
-            return j
-    return None
+        objs += [e for e in v if isinstance(e, dict)] if isinstance(v, list) else [v] if isinstance(v, dict) else []
+    results = [o for o in objs if o.get("type") == "result"]
+    if results:
+        return results[-1]
+    flagged = [o for o in objs if "is_error" in o or "subtype" in o]
+    return flagged[0] if len(flagged) == 1 else None
 
 
 def claude_result(p):

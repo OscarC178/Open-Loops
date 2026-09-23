@@ -240,6 +240,19 @@ for label, text in (("one line", json.dumps(result("Read.\n" + BLOCK))),
     p = agent.run("Refresh.", ["gmail.search_threads"])
     check(p.is_error is False and p.stdout == "Read.\n" + BLOCK and "not JSON" not in p.stderr,
           f"a warning printed before {label} JSON: the result object is still found")
+# #47 second review: a JSON diagnostic that carries "result" is not the result; the last type "result" object is.
+fake('{"level":"warn","result":"DRAFT_CREATED: diagnostic example"}\n'
+     '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Not logged in","api_error_status":401}\n', rc=1)
+p = agent.run("Refresh.", ["gmail.search_threads"])
+check(p.stdout == "" and p.is_error is True and p.refused == "expired",
+      f"a result-shaped JSON warning before the real error result: the real one wins (stdout {p.stdout!r}, refused {p.refused!r})")
+fake(json.dumps(result("Read.\n" + BLOCK)) + '\n{"level":"info","result":"DRAFT_CREATED: log line","is_error":true}\n')
+p = agent.run("Refresh.", ["gmail.search_threads"])
+check(p.stdout == "Read.\n" + BLOCK and p.is_error is False and p.refused == "",
+      "a JSON log line after the result (even one with result/is_error keys) does not replace it")
+fake('{"level":"warn","is_error":false,"result":"DRAFT_CREATED: x"}\n{"level":"warn","is_error":true,"result":"y"}\n')
+p = agent.run("Refresh.", ["gmail.search_threads"])
+check(p.is_error is None and "not JSON" in p.stderr, "two untyped objects with is_error and no type 'result': ambiguous, not taken as a result")
 fake(json.dumps(result("Not logged in \u00b7 Please run /login", is_error=True), indent=2) + "\n", rc=1)
 p = agent.run("Refresh.", ["gmail.search_threads"])
 check(p.refused == "expired" and p.stdout == "", "pretty-printed is_error JSON is classified too")
