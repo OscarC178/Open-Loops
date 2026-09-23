@@ -116,8 +116,16 @@ if [ "$SRC" = "$DEST" ]; then
 else
     say "Installing Open Loops to $DEST ..."
     mkdir -p "$DEST"
+    # Personal files are never copied over: the list, settings, tone, logs, the Grok project config the
+    # person may have edited (.grok), a Google OAuth client they downloaded, and anything private.
     rsync -a --exclude 'state' --exclude 'voice.json' --exclude 'state.json' --exclude 'config.json' \
-        --exclude 'people_suggested.json' --exclude '.git' "$SRC"/ "$DEST"/
+        --exclude 'people_suggested.json' --exclude '.git' --exclude '.grok' \
+        --exclude 'google_oauth_client.json' --exclude 'profiles' --exclude 'private' "$SRC"/ "$DEST"/
+fi
+# The shipped Grok project config (bundled Gmail server) only when the install has none of its own yet.
+if [ -f "$SRC/.grok/config.toml" ] && [ ! -e "$DEST/.grok/config.toml" ]; then
+    mkdir -p "$DEST/.grok"
+    cp "$SRC/.grok/config.toml" "$DEST/.grok/config.toml"
 fi
 mkdir -p "$DEST/state/logs"
 
