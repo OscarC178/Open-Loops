@@ -11,6 +11,7 @@ from pathlib import Path
 from . import agent
 from .paths import ROOT
 CONFIG = ROOT / "config.json"
+LOGS = ROOT / "state" / "logs"
 WIN = sys.platform == "win32"
 
 
@@ -208,6 +209,51 @@ def _save(updates, names=None):
     update_json(CONFIG, mutate)
 
 
+# What the page says when the Mac's weekday morning refresh (launchd, scripts/run-refresh.sh) did not start.
+# Plain words (issue #25): what happened in one sentence, what to do in one sentence, no jargon.
+SCHEDULE_MSG = {
+    "blocked": {"title": "The morning refresh was blocked by your Mac's privacy settings, so Open Loops only refreshes while this page is open.",
+                "fix": "Download and run the latest Open Loops installer: it keeps your list and settings, and moves Open Loops to a folder your Mac lets it use."},
+    "failed": {"title": "The morning refresh could not start on its own, so Open Loops only refreshes while this page is open.",
+               "fix": "Download and run the latest Open Loops installer; if this message comes back, press Copy all in the Console at the bottom of the page and send it to whoever set Open Loops up."},
+}
+# where "the latest installer" is: the page shows it as a link under the red row (the installer migrates old installs)
+DOWNLOAD_URL = "https://github.com/OscarC178/Open-Loops/releases/latest"
+
+
+def schedule_step(logs=None, root=None):
+    """Did the weekday morning refresh start last time? Returns a red checklist step, or None when there is
+    nothing wrong to report (no log yet = never due yet; the page's own timer is not proof either way).
+
+    launchd writes to state/logs/launchd.err.log when it cannot start the job at all; the classic case (#24) is
+    `/bin/bash: .../scripts/run-refresh.sh: Operation not permitted`, the Mac refusing a background job to read
+    ~/Documents. A job that did start leaves state/logs/runner-<date>.log, so a runner log newer than the error
+    log means it has recovered. Lines naming a run-refresh.sh that is neither this copy's nor still on disk are
+    ignored: an install moved out of ~/Documents by install.sh carries its old log along, and those lines are
+    about a path that no longer exists."""
+    logs, root = Path(logs or LOGS), Path(root or ROOT)
+    err = logs / "launchd.err.log"
+    try:
+        text, err_at = err.read_text(encoding="utf-8", errors="replace"), err.stat().st_mtime
+    except OSError:
+        return None
+    mine = str(root / "scripts" / "run-refresh.sh")
+    lines = []
+    for ln in text.splitlines():
+        m = re.search(r":\s(/[^:]*/scripts/run-refresh\.sh)", ln)
+        if ln.strip() and (not m or m.group(1) == mine or Path(m.group(1)).exists()):
+            lines.append(ln)
+    if not lines:
+        return None
+    ran = [f.stat().st_mtime for f in logs.glob("runner-*.log")]
+    if ran and max(ran) >= err_at:
+        return None  # a later run got going: the error is history
+    kind = "blocked" if any("operation not permitted" in ln.lower() for ln in lines) else "failed"
+    return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
+            "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
+            "detail": lines[-1][-300:]}  # developer detail for the console / diag, never shown in the sentence
+
+
 def main(detect=False):
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig")) if CONFIG.exists() else {}
     out = {"steps": [], "agent": agent.name()}
@@ -241,6 +287,12 @@ def main(detect=False):
                          "title": f"Knows who you are on Slack{(' (' + sid + ')') if sid else ''}",
                          "fix": ("This fills in by itself once Slack is connected - nothing to do."
                                  if slack else "Only needed if you connect Slack.") if not sid else ""})
+
+    # Mac only: the weekday morning refresh runs from launchd, and a failure there is otherwise silent (#24).
+    # Optional, so a broken schedule never sends a set-up user back to the connection steps.
+    sched = schedule_step() if sys.platform == "darwin" else None
+    if sched:
+        out["steps"].append(sched)
 
     out["all_ok"] = all(s["ok"] for s in out["steps"] if not s.get("optional"))
     out["email"] = email

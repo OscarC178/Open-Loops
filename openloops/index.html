@@ -48,6 +48,7 @@ pre.log{background:var(--card);border:1px solid var(--line);border-radius:8px;pa
 .pill{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--line);color:var(--mut)}
 details summary{cursor:pointer;color:var(--mut);font-size:12px}
 #banner{display:none;background:#fee2e2;color:#7f1d1d;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px}
+#sched_warn{display:none;background:#fee2e2;color:#7f1d1d;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px}#sched_warn div{margin:4px 0 8px}
 .steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}.steps span{font-size:12px;padding:3px 10px;border-radius:12px;border:1px solid var(--line);color:var(--mut)}
 .steps span.done{border-color:var(--g);color:var(--g)}.steps span.now{background:var(--b);border-color:var(--b);color:#fff}
 input[type=text],input:not([type]),textarea{font:inherit;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
@@ -83,6 +84,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 <span class="meta" id="meta"></span></header>
 <main>
 <div id="banner"></div>
+<div id="sched_warn" role="alert"></div>
 
 <!-- ================= HOME ================= -->
 <div id="page_home">
@@ -434,7 +436,7 @@ async function tick(){
  else if(st==='checkfail'){$('#st_checkfail').style.display='';$('#checkfail_msg').textContent=docFails>1?`tried ${docFails} times`:''}
  else if(st==='people'){$('#st_people').style.display='';await stagePeople()}
  else if(st==='voice'||st==='scan'){$('#st_auto').style.display='';await stageAuto(st)}
- renderLists();paintVoice();paintButtons(st)}
+ renderLists();paintVoice();paintButtons(st);paintSchedule(st)}
 
 function paintConnect(){$('#st_connect').style.display='';
  const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
@@ -462,6 +464,15 @@ async function connectStep(step){
   CONN[step]=s.rc===0?{}:{msg:"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open Claude (advanced).'};
   await doctor(true);return}   // repaints the checklist: the row goes green, or offers its next step
  CONN[step]={msg:'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}
+
+// The Mac's weekday morning refresh did not start (doctor.py "schedule" row, #24). The checklist is only up while setting
+// up, so once set up the same row shows here, above everything: what happened, what to do, and the download page.
+let schedSaid='';
+function paintSchedule(st){const w=$('#sched_warn'),s=DOC&&DOC.steps&&DOC.steps.find(x=>x.id==='schedule'&&!x.ok);
+ if(!s||st==='connect'){w.style.display='none';return}   // while connecting, the checklist row says it already
+ w.style.display='block';w.textContent='';const t=document.createElement('b'),f=document.createElement('div');t.textContent=s.title;f.textContent=s.fix;w.append(t,f);
+ if(s.link){const b=document.createElement('button');b.textContent='Open the download page';b.onclick=()=>window.open(s.link,'_blank','noopener');w.append(b)}
+ if(s.detail!==schedSaid){schedSaid=s.detail;clog('morning refresh did not start: '+(s.detail||s.kind))}}   // the developer detail goes to the Console only
 
 let peopleRendered='';
 async function stagePeople(){

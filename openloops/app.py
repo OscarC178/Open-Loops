@@ -339,11 +339,13 @@ class H(BaseHTTPRequestHandler):
             c = cfg()
             stamp = ROOT / "INSTALLED.txt"
             dl = ROOT / "state" / "logs" / "doctor-last.log"
+            le = ROOT / "state" / "logs" / "launchd.err.log"  # Mac: why the weekday morning refresh did not start (#24)
             self._json({"python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
                         "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
-                        "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else ""})
+                        "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
+                        "launchd_err_log": le.read_text(encoding="utf-8", errors="replace")[-2000:] if le.exists() else ""})
         elif self.path.split("?")[0] == "/api/daylog":
             from . import daylog
             q = self._query()
