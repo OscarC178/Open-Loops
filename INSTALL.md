@@ -93,7 +93,8 @@ fresh settings folder of its own under `state/codex-home/<account>/` (one per Ch
 share anything): a link to your `~/.codex/auth.json` and a generated `config.toml`, so your own Codex plugins, skills,
 memories and AGENTS.md are not loaded (measured on 2026-09-23: about 190k input tokens under a full `~/.codex`, 13k to
 40k here). The first run for an account is a short warm-up with every connector off, so Codex can load its list of
-ChatGPT connector tools.
+ChatGPT connector tools. A run's folder is removed when it ends; one left by a run that was killed part-way is removed
+at the next Codex run or app start, once its job has ended (or after an hour if it names no job).
 
 **Only the tools a job lists are switched on; anything else is switched off from the list Codex last fetched, and a
 tool added by OpenAI since then is refused after the call.** Each run's `config.toml` switches every ChatGPT connector off
@@ -116,9 +117,13 @@ slow) stops the job with that reason, within the job's own time limit.
 that ChatGPT account), a job runs without them and is told "Gmail is not connected in this ChatGPT account; skip email";
 the same for Slack. A refresh then keeps that source's cursor (`gmail_cursor` / `slack_cursor` in `state.json`) where it
 was, so nothing is skipped once it is connected. With neither connected, the job does not run and says so.
-Now and then a Codex session starts without one connector's tools (seen in real runs). A run that called no tool of a
-connector its job lists fails and saves nothing ("Codex couldn't reach its Gmail or Slack tools this time"), so a
-refresh never moves past mail or messages it did not read. It is retried once first, but only when the job can only
+Now and then a Codex session starts without one connector's tools (seen in real runs). Each run ends its reply with a
+`TOOLS_SEEN:` line naming the listed tools it could find (Open Loops removes the line before the job reads the reply;
+`codex exec --json` does not report a session's tool list itself). "Codex couldn't reach its Gmail or Slack tools this
+time" appears only when a run called no tool of a connector its job lists **and** that line does not name one of them
+(or is missing): the run fails and saves nothing, so a refresh never moves past mail or messages it did not read. A run
+that found the tools and chose not to call them (nothing to search, nothing it was allowed to do) is a normal result.
+The refusal is retried once first, but only when the job can only
 read (refresh, people, tone, day log, the checklist), and never after the first attempt called anything but a read tool,
 reported a draft or send, or failed on sign-in, allowance or time. Anything the first attempt called still counts: a
 tool off the list in attempt 1 fails the run even if attempt 2 was clean. Two things
