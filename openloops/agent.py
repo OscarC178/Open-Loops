@@ -162,13 +162,37 @@ CODEX_REFUSE = {  # the plain sentence a job prints (and the checklist shows) wh
     "signin": "Codex isn't signed in with a ChatGPT account. Press Sign in on the connection checklist.",
     "link": ("Open Loops couldn't link Codex's sign-in into its own settings folder, so it didn't run Codex. "
              "Check that the Open Loops folder isn't read-only, then press Check again."),
-    "cold": ("Codex hasn't loaded your ChatGPT connections yet, so Open Loops didn't run it. "
+    "cold": ("Codex is still getting ready (loading your ChatGPT connections), so Open Loops didn't run it. "
              "Press Check again on the connection checklist in a minute."),
+    "limit": ("Your ChatGPT plan's Codex allowance is used up for now, so Open Loops couldn't run Codex. "
+              "It comes back by itself, usually within a few hours."),
+    "expired": "Your ChatGPT sign-in has run out, so Open Loops couldn't run Codex. Press Sign in on the connection checklist.",
+    "failed": "Codex stopped with an error before it could start this job, so nothing was saved. Try again in a minute.",
     "unlisted": "Codex used a tool this job did not allow, so nothing was saved.",
+    "notools": "Codex couldn't reach its Gmail or Slack tools this time (twice), so nothing was saved. Try again in a minute.",
     "timeout": "Codex took longer than {limit}, so Open Loops stopped it and saved nothing.",
     "start": "Open Loops couldn't start Codex. Press Check again on the connection checklist; it offers Install Codex if it's missing.",
 }
 _CODEX_SAFE_BUILTINS = {"list_mcp_resources", "list_mcp_resource_templates"}  # Codex's own listing tools: harmless
+
+
+_LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota", re.I)
+_EXPIRED_RE = re.compile(r"\b401\b|unauthori[sz]ed|refresh token|token (?:is )?expired|sign in again|log in again|login again", re.I)
+SNAPSHOT_MAX_AGE_S = 24 * 3600  # an older connector list is refreshed by a warm-up before a job runs on it
+
+
+def codex_failure(rc, errors, codex_stderr):
+    """Why a finished `codex exec` failed -> "timeout" | "limit" | "expired" | "failed" | "" (it did not). One order
+    for every caller (jobs, the warm-up, doctor.py's probe): a timeout, then a spent allowance, then a sign-in that ran
+    out, then any other non-zero exit. Read from Codex's own error events and stderr, never from the model's text."""
+    said = "\n".join(errors or []) + "\n" + (codex_stderr or "")
+    if rc == 124:
+        return "timeout"
+    if _LIMIT_RE.search(said):
+        return "limit"
+    if _EXPIRED_RE.search(said):
+        return "expired"
+    return "failed" if rc != 0 else ""
 
 
 class CodexNotReady(Exception):
@@ -250,8 +274,9 @@ def codex_has_miro():
 
 
 def codex_connectors(home=None):
-    """Codex's cached list of connector tools in a job home -> {connector id: [tool name, ...]} (names as the runs see
-    them, "gmail.create_draft"), from the newest file Codex wrote. {} when Codex has not fetched it yet."""
+    """Codex's cached list of connector tools in a folder (a run folder's snapshot, or an account home) -> {connector
+    id: [tool name, ...]} (names as the runs see them, "gmail.create_draft"), from the newest file Codex wrote. A
+    connector the list names without any tool is left out, i.e. treated as absent. {} when there is no list yet."""
     d = (home or codex_home()) / "cache" / "codex_apps_tools"
     try:
         files = sorted((f for f in d.iterdir() if f.is_file() and f.stat().st_size), key=lambda f: f.stat().st_mtime)
@@ -265,6 +290,16 @@ def codex_connectors(home=None):
         if cid and "." in nm and re.fullmatch(r"[A-Za-z0-9_]+", cid):
             out.setdefault(cid, []).append(nm)
     return out
+
+
+def codex_snapshot_age(home):
+    """Seconds since Codex wrote the newest connector list in a folder, or None when there is none."""
+    try:
+        newest = max(f.stat().st_mtime for f in (home / "cache" / "codex_apps_tools").iterdir() if f.is_file())
+    except (OSError, ValueError):
+        return None
+    import time
+    return max(0.0, time.time() - newest)
 
 
 def _toml_str(v):
@@ -396,7 +431,7 @@ def codex_preamble(tools):
         # Wording matters (measured): "do not use any other tool" also kept the model from Codex's own tool search,
         # which is how app tools are found, so it then saw none. Finding tools is allowed; calling others is not.
         head += ("The only tools you may call are:\n" + "\n".join(lines) +
-                 "\nYou may search for these tools first if they are not already loaded. Do not call any other app or "
+                 "\nThey may not be loaded at the start: search for them by name first. Do not call any other app or "
                  "connector tool, do not run shell commands, do not read or write files, do not search the web, do not "
                  "install anything. If a tool you need is missing or fails, carry on without it and say so where the "
                  "instructions ask.\n")
@@ -460,36 +495,85 @@ def codex_timeout():
 
 
 def _refused(args, why, detail=""):
-    said = CODEX_REFUSE[why].format(store=codex_keyring_store(), limit="")
+    said = CODEX_REFUSE[why].format(store=codex_keyring_store(), limit="the time allowed")
     p = subprocess.CompletedProcess(args, 3, stdout=said + "\n", stderr=f"codex: not run ({why}){': ' + detail if detail else ''}\n")
     p.refused, p.tools_used, p.tools_ok, p.errors, p.codex_stderr = why, [], [], [], ""
     return p
 
 
-def _codex_exec(prompt, tools, allow_toml, timeout, effort_):
-    """Run `codex exec` once in a fresh run home with the given allow-list appended to its config
-    -> (rc, events dict, codex's own stderr, final message, args, account home). Raises CodexNotReady (not run)."""
-    env, run, acct = codex_job_env()
+def _codex_exec(home, prompt, tools, allow_toml, timeout, effort_):
+    """Run `codex exec` once in a run folder made by codex_job_env, with the allow-list appended to its config
+    -> (rc, events dict, codex's own stderr, final message, args). The caller removes the folder (_codex_done)."""
+    env, run, acct = home
     out = run / "last-message.txt"
     args = codex_args(run, out, effort_)
-    try:  # the run home goes whatever happens: a launch that fails, a timeout, an interrupt
-        with open(run / "config.toml", "a", encoding="utf-8") as f:
-            f.write(allow_toml)
-        try:
-            p = subprocess.run(args, input=codex_preamble(tools) + prompt, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", env=env, cwd=str(ROOT), timeout=timeout, shell=WIN)
-            rc, events, err = p.returncode, p.stdout or "", p.stderr or ""
-        except subprocess.TimeoutExpired as e:
-            rc, err = 124, f"codex: stopped after {timeout} seconds without an answer\n"
-            events = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        try:
-            final = out.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            final = ""
-    finally:
+    with open(run / "config.toml", "a", encoding="utf-8") as f:
+        f.write(allow_toml)
+    try:
+        p = subprocess.run(args, input=codex_preamble(tools) + prompt, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env, cwd=str(ROOT), timeout=timeout, shell=WIN)
+        rc, events, err = p.returncode, p.stdout or "", p.stderr or ""
+    except subprocess.TimeoutExpired as e:
+        rc, err = 124, f"codex: stopped after {timeout} seconds without an answer\n"
+        events = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+    try:
+        final = out.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        final = ""
+    return rc, _codex_events(events), err, final, args
+
+
+def _codex_done(home):
+    """A run folder's end: whatever connector list Codex fetched in it goes to the account; the folder goes."""
+    _, run, acct = home
+    try:
         _codex_keep_cache(run, acct)
+    finally:
         shutil.rmtree(run, ignore_errors=True)
-    return rc, _codex_events(events), err, final, args, acct
+
+
+def _codex_warmup(budget):
+    """One short run with every connector off, so Codex fetches (or refreshes) the account's connector list
+    -> (rc, events dict, codex's own stderr). Measured: Codex fetches the list even with every connector off."""
+    home = codex_job_env()
+    try:
+        rc, ev, err, _, _ = _codex_exec(home, "Reply with exactly: OK", [], "", max(1, int(budget)), "low")
+    finally:
+        _codex_done(home)
+    return rc, ev, err
+
+
+def _codex_once(prompt, tools, needed, left, effort_):
+    """One job run bound to one snapshot -> (rc, events, codex stderr, final message, args, allowed tool names).
+    Raises CodexNotReady when the snapshot lacks a tool the job lists even after one warm-up, or the warm-up failed."""
+    for attempt in (1, 2):
+        # ONE snapshot binds policy and execution: the run folder gets its copy of the connector list first, and the
+        # allow-list below is generated from that copy, never from the account's list read earlier (another job's
+        # warm-up may replace that meanwhile). What Codex runs with is what the deny-list was made from.
+        home, result = codex_job_env(), None
+        try:
+            snap = codex_connectors(home[1])
+            have = {t for names in snap.values() for t in names}
+            age = codex_snapshot_age(home[1])
+            complete = needed <= have
+            fresh = age is not None and age < SNAPSHOT_MAX_AGE_S
+            if complete and (fresh or not needed or attempt == 2):
+                # Fail closed: a job runs only when every tool it lists is in the snapshot. A tool OpenAI added to a
+                # connector after this snapshot is not on its deny-list: it is refused only after the call (the
+                # unlisted check in codex_run, rc 3), until a warm-up refreshes the list - at most SNAPSHOT_MAX_AGE_S later.
+                allow_toml, allowed = codex_allow_toml(tools, snap)
+                result = _codex_exec(home, prompt, tools, allow_toml, left(), effort_) + (allowed,)
+        finally:
+            _codex_done(home)
+        if result:
+            return result
+        if attempt == 2:
+            raise CodexNotReady("cold")  # a warm-up ran and the list still lacks a tool this job needs
+        # Missing, incomplete or stale list: one warm-up within this run's time budget; its failure is this run's
+        wrc, wev, werr = _codex_warmup(min(120, left() or 120))
+        why = codex_failure(wrc, wev["errors"], werr)
+        if why:
+            raise CodexNotReady(why)
 
 
 def codex_run(prompt, tools, timeout=None, effort_=None):
@@ -497,48 +581,57 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
     is Codex's own plus one summary line (tools used, tokens). Extra attributes for doctor.py: refused (a key of
     CODEX_REFUSE, or ""), tools_used, tools_ok, errors, codex_stderr.
 
-    Not run at all (rc 3, the reason as stdout) when there is no file sign-in, the job home cannot be linked, or the
-    connector list cannot be loaded. Failed (rc 3, "nothing was saved") when the run called a tool off the job's list:
-    the stdout then holds no result for the job to apply."""
+    Not run at all (rc 3, the reason as stdout) when there is no file sign-in, the job home cannot be linked, the
+    warm-up failed (its own reason: timeout, spent allowance, expired sign-in, error), or even after a warm-up the
+    connector list lacks a tool the job lists ("cold"). Failed (rc 3, "nothing was saved") when the run called a tool
+    off the job's list: the stdout then holds no result for the job to apply. The warm-up and the job share `timeout`."""
     import time
     timeout = timeout if timeout is not None else codex_timeout()
-    auth = codex_auth()
+    deadline = time.time() + timeout if timeout else None
+    left = lambda: None if deadline is None else max(1, deadline - time.time())
+    needed = {q for q in _qualify(tools) if "." in q}  # connector tools this job lists ("miro" is a server, not here)
+    services = {q.split(".", 1)[0] for q in needed}  # "gmail", "slack": each must be reached for the run to count
+    blind_note = ""
     try:
-        connectors = codex_connectors(codex_home(auth["account"])) if auth["account"] else {}
-        if not connectors and any("." in q for q in _qualify(tools)):
-            # A new account home: Codex fetches its connector list in the background, and the first session starts
-            # before it arrives. One warm-up with every connector off lets it arrive (it does, measured).
-            _codex_exec("Reply with exactly: OK", [], "", 120, "low")
-            for _ in range(20):
-                connectors = codex_connectors(codex_home(auth["account"]))
-                if connectors:
-                    break
-                time.sleep(0.5)
-            if not connectors:
-                return _refused([cli(), "exec"], "cold")
-        allow_toml, allowed = codex_allow_toml(tools, connectors)
-        rc, ev, err, final, args, _ = _codex_exec(prompt, tools, allow_toml, timeout, effort_)
+        for tries in (1, 2):
+            rc, ev, err, final, args, allowed = _codex_once(prompt, tools, needed, left, effort_)
+            # Measured on real runs: a session now and then starts without one connector's tools (in one of three
+            # probes Gmail's were simply not there, with Slack's present). A refresh would then report "no Gmail"
+            # and move its cursor past mail it never read. So a run that did not call a tool of every connector it
+            # lists is retried once, and if it happens again it fails like any other and saves nothing.
+            reached = {u.split("/", 1)[1].split(".", 1)[0] for u in ev["used"] if u.startswith("codex_apps/")}
+            missed = sorted(services - reached) if rc == 0 else []
+            if not missed:
+                break
+            blind_note = (f"; RETRIED: no {', '.join(missed)} tool was called (it said: "
+                          + " ".join((final or ev["msg"]).split())[:200] + ")")
+            if tries == 2 or (deadline is not None and deadline - time.time() < 30):
+                break
     except CodexNotReady as e:
         return _refused([cli(), "exec"], e.why)
-    except OSError as e:  # the CLI missing or not runnable: the run home is gone already (_codex_exec's finally)
+    except OSError as e:  # the CLI missing or not runnable (the run folder is gone already)
         return _refused([cli(), "exec"], "start", f"{type(e).__name__}: {e}")
     servers = {q for q in _qualify(tools) if "." not in q}  # a whole MCP server the job allows ("miro")
     extra = [u for u in ev["used"] if u.split("/", 1)[-1] not in allowed | _CODEX_SAFE_BUILTINS
              and u.split("/", 1)[0] not in servers]
-    note = "codex: tools used: " + (", ".join(ev["used"]) or "none")
+    note = "codex: tools used: " + (", ".join(ev["used"]) or "none") + blind_note
     if ev["usage"]:
         u = ev["usage"]
         note += f"; tokens in {u.get('input_tokens', '?')} (cached {u.get('cached_input_tokens', '?')}), out {u.get('output_tokens', '?')}"
     stdout = final or ev["msg"]
+    blind = bool(missed)
     if extra:
         note += "; REFUSED: used a tool the job did not list: " + ", ".join(extra)
         rc, stdout = 3, CODEX_REFUSE["unlisted"] + "\n"
+    elif blind:  # the model's own words are in the note: with the tools not called, they hold no mail or messages
+        note += "; REFUSED: no " + ", ".join(missed) + " tool was called"
+        rc, stdout = 3, CODEX_REFUSE["notools"] + "\n"
     elif rc == 124:
         n = timeout or 0
         stdout = CODEX_REFUSE["timeout"].format(limit=f"{n // 60} minutes" if n >= 120 else f"{n} seconds") + "\n"
     out_err = err + ("\n" if err and not err.endswith("\n") else "") + note + "\n" + "".join(f"codex error: {x}\n" for x in ev["errors"])
     done = subprocess.CompletedProcess(args, rc, stdout=stdout, stderr=out_err)
-    done.refused = "unlisted" if extra else ""
+    done.refused = "unlisted" if extra else "notools" if blind else ""
     done.tools_used, done.tools_ok, done.errors, done.codex_stderr = ev["used"], ev["ok"], ev["errors"], err
     return done
 
