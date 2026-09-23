@@ -133,11 +133,12 @@ FAILURES = {
         "fix": "Press Check again: it asks Slack again.",
         "button": None},
 
-    # ---- a refresh reading state.json (refresh.parse_when, #51): a cursor that is not a date. Printed on stderr (the
-    # job's log and the page's Console); the refresh carries on.
+    # ---- a refresh reading state.json (refresh.parse_when, #51): a stored cursor that is not a date. The refresh
+    # refuses (reading back a guessed window would bring closed email loops back as new ones, #52 review); the job
+    # prints this and records it (report_refusal), so the page's toast says it.
     "cursor_unreadable": {
-        "what": "Open Loops couldn't read the date its last scan stopped at, so this refresh looks back {days} days instead.",
-        "fix": "Nothing to do: the next refresh carries on from this one.",
+        "what": "Open Loops can't read when it last checked.",
+        "fix": "Press Start over in Settings, or fix state.json.",
         "button": None},
 
     # ---- the Mac's weekday morning refresh (doctor.schedule_step, #24 / #31)
@@ -545,7 +546,12 @@ def report(p, job, ai=None):
         lead = FAILURES[fid]["what"].split("{")[0].strip()
         first = ((p.stdout or "").strip().splitlines() or [""])[0].strip()
         rec["said"] = first if lead and first.startswith(lead) else say(fid, limit="the time allowed", store="your system keychain")
-    try:  # written whole, then renamed into place: a reader never sees half a record
+    _write_failure(job, rec)
+
+
+def _write_failure(job, rec):
+    """This run's failure_file(job) = rec, written whole, then renamed into place: a reader never sees half a record."""
+    try:
         FAILURE_DIR.mkdir(parents=True, exist_ok=True)
         f = failure_file(job)
         tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
@@ -553,6 +559,18 @@ def report(p, job, ai=None):
         os.replace(tmp, f)
     except OSError:
         pass  # the page falls back to "didn't finish"
+
+
+# Failures a job finds itself, before any AI run, whose sentence job_failure() shows as it is (no {job}, no {ai})
+JOB_OWN_IDS = ("cursor_unreadable",)
+
+
+def report_refusal(job, fid):
+    """For a job about to exit 1 without running the AI, for a reason of its own (a JOB_OWN_IDS id): record it as
+    report() does, so the page says this sentence rather than the plain "didn't finish"."""
+    rid = os.environ.get("OPENLOOPS_RUN_ID", "")
+    _write_failure(job, {"run_id": rid if RUN_ID_RE.fullmatch(rid) else "scheduled", "failure": fid, "ai": "",
+                         "at": datetime.now().astimezone().isoformat(timespec="seconds")})
 
 
 def job_failure(name, rc, log, ai="Claude", failure=None):
@@ -568,4 +586,6 @@ def job_failure(name, rc, log, ai="Claude", failure=None):
         return fid, rec.get("said") or say(fid, limit="the time allowed", store="your system keychain")
     if fid in ("job_signed_out", "job_usage_limit", "job_network"):
         return fid, say(fid, job=job, ai=ai)
+    if fid in JOB_OWN_IDS:
+        return fid, say(fid)
     return "job_failed", say("job_failed", job=job)

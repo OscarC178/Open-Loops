@@ -18,8 +18,9 @@ The final write goes through store.update_state, so anything the page changed wh
 was running (a note, a snooze, a done click) is kept.
 
 Every cursor read from state.json goes through parse_when() (#51): a naive value (a hand-edited state.json, a very
-early build) is local time, and one that is not a date at all falls back to Settings > History with a plain line on
-stderr, so a refresh never stops on a TypeError comparing naive and aware times.
+early build) is local time, so a refresh never stops on a TypeError comparing naive and aware times. A stored cursor
+that is not a date at all stops the refresh with a plain sentence (messages.py "cursor_unreadable") before anything is
+read: guessing a window would bring back loops closed long ago as new ones (#52 review).
 """
 import json, re, sys
 from datetime import datetime, timedelta
@@ -203,25 +204,24 @@ def history_days():
         return 30
 
 
-_when_warned = set()   # each unreadable value is reported once per run, not once per source that falls back to it
+class CursorUnreadable(ValueError):
+    """A cursor is stored in state.json but is not a date: main() refuses the refresh (messages "cursor_unreadable")."""
 
 
 def parse_when(v, now=None, days=None):
     """A cursor or last_refresh from state.json -> an aware datetime (#51).
     - aware ISO ("2026-09-01T09:00+01:00"): as it is;
     - naive ISO ("2026-09-01T09:00", a hand-edited or very old state.json): local time, like the rest of the app;
-    - missing or not a date: now minus Settings > History, with the plain-words line on stderr (the job's log and
-      the page's Console), never a traceback."""
+    - missing (None or ""): a state.json with no cursor yet, as a fresh install without the installer's: now minus
+      Settings > History, the first scan's window;
+    - anything else: raises CursorUnreadable. Never a guessed window (#52 review: it re-found loops closed long ago)."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return (now or datetime.now().astimezone()) - timedelta(days=history_days() if days is None else days)
     try:
         d = datetime.fromisoformat(str(v).strip())
-        return d if d.tzinfo is not None else d.astimezone()   # astimezone() on a naive value takes it as local time
     except (TypeError, ValueError):
-        days = history_days() if days is None else days
-        key = repr(v)
-        if key not in _when_warned:
-            _when_warned.add(key)
-            print(messages.say("cursor_unreadable", days=days), file=sys.stderr)
-        return (now or datetime.now().astimezone()) - timedelta(days=days)
+        raise CursorUnreadable(repr(v)[:80]) from None
+    return d if d.tzinfo is not None else d.astimezone()   # astimezone() on a naive value takes it as local time
 
 
 def when_str(d):
@@ -408,7 +408,13 @@ def main():
     if SLACK_ONLY and not slack_on:
         print("SKIPPED: Slack is off or your Slack id is not known yet - run a full Refresh"); sys.exit(2)
     s = load_state()
-    prompt, n_open = build_prompt(s, SLACK_ONLY, slack_on)
+    try:
+        prompt, n_open = build_prompt(s, SLACK_ONLY, slack_on)
+    except CursorUnreadable as e:   # nothing is read: the person decides (Start over, or mend state.json)
+        print(messages.say("cursor_unreadable"))
+        print(f"(unreadable cursor in state.json: {e})", file=sys.stderr)
+        messages.report_refusal("refresh", "cursor_unreadable")
+        sys.exit(1)
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     kind = "refresh-slack" if SLACK_ONLY else "refresh"
     print(f"[{stamp}] {kind}: {n_open} open loops, cursor {s.get('slack_cursor') or s.get('cursor') if SLACK_ONLY else s.get('cursor')}")
