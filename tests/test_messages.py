@@ -488,7 +488,9 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
  DOC={all_ok:false,steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:false,title:'Signed in to Claude',fix:MSG.signin_needed.what+' '+MSG.signin_needed.fix,connect:'login'},
   {id:'slack',ok:false,optional:true,title:'Slack connected (optional)',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected (optional)',fix:'Sign in to Claude first (the row above).'},
   {id:'channel',ok:false,title:'At least one source connected (Slack or Gmail)',fix:'Sign in to Claude first (the row above).'},{id:'self',ok:false,optional:true,title:'Knows who you are on Slack',fix:'Sign in to Claude first (the row above).'}]};
- document.querySelectorAll('#page_home>div').forEach(e=>{if(e.id!=='st_connect'&&e.id!=='steps')e.style.display='none'});$('#st_connect').style.display='';paintConnect();
+ // the set-up page as #28 builds it: its cards (checkRow rows) and, opened, "Every check" holding the whole checklist
+ document.querySelectorAll('#page_home>div').forEach(e=>{if(e.id!=='setup'&&e.id!=='steps')e.style.display='none'});
+ try{paintSetup('connect')}catch(e){r.setupErr=String(e)}$('#setup').style.display='';$('#su_all').open=true;$('#st_connect').style.display='';paintConnect();
  const frames=n=>new Promise(res=>{const f=()=>--n<=0?res():requestAnimationFrame(f);requestAnimationFrame(f)});
  const box=e=>e.getBoundingClientRect(),hdr=document.querySelector('header');
  // what of each row can be seen: the part below the sticky header (a row scrolled under the header was hidden before
@@ -498,7 +500,7 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
   return {rows:rows.length,toasts:ts.length,hit:ts.some(a=>rows.some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom))}};
  const burst=()=>{for(let i=0;i<5;i++)toast('Toast '+i+': a long sentence that wraps over two or three lines on a narrow phone screen, so it takes real room.',{err:i%2===1,ms:600000})};
  // 1. at the top of the page
- burst();await frames(2);r={w:innerWidth,...measure(),first:(document.querySelector('#toasts .toast')||{}).textContent||''};
+ burst();await frames(2);r={...r,w:innerWidth,...measure(),cards:document.querySelectorAll('#su_ai_rows .row,#su_src_rows .row').length,total:document.querySelectorAll('.row').length,first:(document.querySelector('#toasts .toast')||{}).textContent||''};
  // 2. scrolled: a row sits just below the sticky header when the toasts arrive; it must still be below it after
  document.querySelectorAll('#toasts .toast').forEach(e=>e.remove());const pad=document.createElement('div');pad.style.height='3000px';document.querySelector('main').append(pad);
  await frames(2);const row=document.querySelectorAll('.row')[3];scrollTo(0,box(row).top+scrollY-box(hdr).height-4);await frames(2);
@@ -524,7 +526,7 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
             lay = json.loads(json.loads(rc_.stdout.strip().splitlines()[-1]))
         except (ValueError, IndexError, TypeError):
             lay = {"error": (rc_.stdout + rc_.stderr)[-300:]}
-        check(not lay.get("error") and lay["w"] == w_ and lay["rows"] >= 6 and lay["toasts"] == 3 and lay["first"].startswith("Toast 2")
+        check(not lay.get("error") and lay["w"] == w_ and lay["total"] >= 6 and lay["cards"] >= 2 and not lay.get("setupErr") and lay["toasts"] == 3 and lay["first"].startswith("Toast 2")
               and lay["hit"] is False,
               f"at {w_} px: five toasts leave the newest three (the oldest go), and none overlaps a checklist row ({lay})")
         sc = lay.get("scrolled") or {}
