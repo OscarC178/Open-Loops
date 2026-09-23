@@ -76,12 +76,12 @@ Reply with ONLY a JSON object between the markers, nothing else ("slack_availabl
   "new_loops": [{{"id": "<owner-slug>-<topic-slug>", "owner": "...", "owner_email": "... or null",
                   "owner_id": "Slack user id of the owner, or null", "ask_ts": "Slack ts of the asking message, or null",
                   "ask": "one line", "channel": "slack|email", "thread": "DM <name> <channel id> <ask ts> | #<channel> <channel id> <thread ts> <ask ts> | email subject",
-                  "link": "Slack message permalink or gmail search url", "asked_at": "ISO datetime",
+                  "link": "Slack message permalink (required for Slack) or gmail search url", "asked_at": "ISO datetime",
                   "status": "waiting, or needs_me for inbound", "inbound": false, "notes": "",
                   "priority": "high|normal|low", "theme": "2-4 words",
                   "links": [{{"url": "https://...", "label": "short label"}}]}}],
   "updates": [{{"id": "<existing id>", "status": "waiting|needs_me|done", "last_reply_at": "ISO or null",
-                "reply_snippet": "<=120 chars", "reply_ts": "Slack ts of that reply, or null", "asked_at": "ISO (only if a new ask by {name})",
+                "reply_snippet": "<=120 chars", "reply_ts": "Slack ts of that reply, or null", "reply_link": "Slack permalink of that reply (required for Slack)", "asked_at": "ISO (only if a new ask by {name})",
                 "priority": "high|normal|low (only if it changed)", "theme": "2-4 words (only if missing)",
                 "links": [{{"url": "https://...", "label": "short label"}}]}}],
   "gmail_available": true, "slack_available": true
@@ -122,61 +122,76 @@ def ask_ts(l):
 
 
 def same_asker(a, b):
-    """Slack user ids when both loops have one, else the full names - never just a first name."""
+    """Slack user ids when both loops have one; otherwise the full names, and only when both have one.
+    Two missing identities are not the same person."""
     ia, ib = str(a.get("owner_id") or "").strip().upper(), str(b.get("owner_id") or "").strip().upper()
-    return ia == ib if ia and ib else words(a.get("owner")) == words(b.get("owner"))
+    if ia and ib:
+        return ia == ib
+    na, nb = words(a.get("owner")), words(b.get("owner"))
+    return bool(na and nb) and na == nb
 
 
-def ts_after(ts, iso):
-    """Whether Slack ts `ts` is later than ISO time `iso` (a naive one is local time)."""
+def sent_before_close(ts, iso):
+    """Whether Slack ts `ts` is no later than ISO `closed_at` (a naive one is local time). A missing or
+    malformed date is not evidence: False."""
     try:
-        return datetime.fromtimestamp(float(ts)).astimezone() > datetime.fromisoformat(str(iso)).astimezone()
+        return datetime.fromtimestamp(float(ts)).astimezone() <= datetime.fromisoformat(str(iso)).astimezone()
     except (TypeError, ValueError):
         return False
 
 
+def link(l, key="link"):
+    return str(l.get(key) or "").strip()
+
+
+# Principle: a missing ts or permalink is never proof that two messages are the same. With no evidence
+# the candidate becomes its own loop - a duplicate row the owner can press done on beats an ask that
+# silently never shows.
 def known_ask(c, loops):
-    """Whether Slack inbound candidate c is an ask already on the list. Message ts first:
+    """Whether Slack inbound candidate c is an ask already on the list. Evidence, strongest first:
     - both have a ts: the same ts is the same message, open or closed (the agent may re-report a closed
       one); a different ts is a different message, whatever the wording;
-    - c has a ts, an existing loop has none: same asker + same wording is that loop - it takes the ts
-      (unless it was closed before c was sent: then c is a fresh ask);
-    - c has no ts: same asker + same wording as a loop still open is that loop."""
-    conv, ts = slack_conv(c), ask_ts(c)
+    - the same permalink (it embeds the message ts): the same message; a loop with no ts takes c's ts -
+      unless it is closed and c was not provably sent before it closed;
+    - neither side has a ts or a permalink: the same asker, the same wording, asked the same day, and
+      the loop still open.
+    Anything else is a new loop."""
+    conv, ts, lk = slack_conv(c), ask_ts(c), link(c)
     for l in loops:
         if slack_conv(l) != conv:
             continue
-        lts = ask_ts(l)
+        lts, llk = ask_ts(l), link(l)
         if ts and lts:
             if ts == lts:
                 return True
             continue
-        if not (same_asker(c, l) and words(c.get("ask")) == words(l.get("ask"))):
-            continue
-        is_open = l.get("status") in ("waiting", "needs_me")
-        if ts:   # l has no ts: upgrade it, unless it closed before this message
-            if is_open or not ts_after(ts, l.get("closed_at")):
+        if lk and llk:
+            if lk != llk:
+                continue
+            if l.get("status") == "done" and not (ts and sent_before_close(ts, l.get("closed_at"))):
+                continue
+            if ts:
                 l["ask_ts"] = ts
-                return True
-        elif is_open:
+            return True
+        if ts or lts or lk or llk:
+            continue   # one side has evidence the other lacks: not proof either way
+        day = str(c.get("asked_at") or "")[:10]
+        if (l.get("status") in ("waiting", "needs_me") and same_asker(c, l) and words(c.get("ask")) == words(l.get("ask"))
+                and len(day) == 10 and day == str(l.get("asked_at") or "")[:10]):
             return True
     return False
 
 
 def reply_seen(c, replies):
-    """Whether Slack inbound candidate c is a reply this run already reported on one of the owner's loops
-    (loop, update). As in known_ask: when both have a ts, the ts alone decides (a different ts is a different
-    message, whatever it says); when either has none, the same asker + the same wording."""
-    conv, ts = slack_conv(c), ask_ts(c)
+    """Whether Slack inbound candidate c is the very reply this run already reported on one of the owner's
+    loops (loop, update): the reply's ts is c's ask ts, or the reply's permalink is c's permalink. Wording
+    is not evidence; a reply reported with neither says nothing about c."""
+    conv, ts, lk = slack_conv(c), ask_ts(c), link(c)
     for l, u in replies:
         if slack_conv(l) != conv:
             continue
         rts = str(u.get("reply_ts") or "").strip()
-        if ts and SLACK_TS.fullmatch(rts):
-            if ts == rts:
-                return True
-            continue
-        if same_asker(c, l) and words(u.get("reply_snippet")) and words(u.get("reply_snippet")) == words(c.get("ask")):
+        if (ts and SLACK_TS.fullmatch(rts) and ts == rts) or (lk and lk == link(u, "reply_link")):
             return True
     return False
 
@@ -220,7 +235,7 @@ def build_prompt(s, slack_only, slack_on):
             "specific action or answer and that {n} has not answered since (a later message from someone else "
             "does not cancel it). Slack loops: channel \"slack\", "
             'thread "DM <asker> <DM channel id> <ask ts>" or "#<channel> <channel id> <thread ts> <ask ts>" '
-            "(<ask ts> = the ts of the message that asks), link = that message's permalink. Several asks in one "
+            "(<ask ts> = the ts of the message that asks), link = that message's permalink (required). Several asks in one "
             "DM/thread are separate loops; a message you report as a reply in updates is not also a new loop."
             .format(n=name, u=SELF_ID, d=slack_date))
     inbound = ("1b. ASKS OF {n} (inbound). Search what others sent {n}:\n{parts}\n   These become new loops with "

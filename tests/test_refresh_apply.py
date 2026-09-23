@@ -160,10 +160,10 @@ check(n == (2, 1) and "jo-rota" in ids, f"REGRESSION: a new ask survives the old
 check("jo-nums-again" in ids, "the same ask made again after it closed (no ts, same words) is a fresh loop")
 s = base()
 s["loops"].append({"id": "jo-nums", "owner": "Jo", "ask": "send the numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}",
-                   "status": "needs_me", "inbound": True})
-refresh.apply(s, {"new_loops": [{"id": "jo-nums-2", "owner": "Jo", "ask": "send the numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}", "inbound": True}]},
+                   "status": "needs_me", "inbound": True, "asked_at": "2026-09-15T09:00"})
+refresh.apply(s, {"new_loops": [{"id": "jo-nums-2", "owner": "Jo", "ask": "send the numbers", "channel": "slack", "thread": f"DM Jo {JO_DM}", "inbound": True, "asked_at": "2026-09-15T11:30"}]},
               slack_only=True, now=NOW)
-check("jo-nums-2" not in [l["id"] for l in s["loops"]], "without an ask ts, the same words in the same open DM are the same ask")
+check("jo-nums-2" not in [l["id"] for l in s["loops"]], "with no ts or permalink either side, same asker + words + day in the same open DM are the same ask")
 
 # REGRESSION: one reply seen by both searches - an update on my loop AND a new inbound ask - is one Needs me row
 s = base()
@@ -183,7 +183,7 @@ n = refresh.apply(s, {"new_loops": [
                 {"id": "sam-thread", "status": "needs_me", "reply_snippet": "Tue or Wed?", "reply_ts": "1757900000.000800"}]}, slack_only=True, now=NOW)
 ids = [l["id"] for l in s["loops"]]
 check("sam-format" not in ids and "sam-date" not in ids, "REGRESSION: a reply already reported on my loop is not a second, inbound Needs me row")
-check("sam-format-nots" not in ids, "...also matched by its words when the agent gave no ask ts")
+check("sam-format-nots" in ids, "...but the same words with no ts or permalink are not evidence: kept (a duplicate beats a loss)")
 check("viv-date" in ids, "someone else's ask in that same thread still is")
 check("sam-lunch" in ids, "REGRESSION: a later, separate ask in that DM in the same run is kept")
 s = base()
@@ -214,29 +214,42 @@ def run(loops, new, updates=()):
 s, ids, _ = run([inb("jo-a", "Jo", "sign off the budget", f"DM Jo {JO_DM} 1757800000.000100", status="needs_me")],
                 [inb("jo-b", "Jo", "approve the Q4 budget", f"DM Jo {JO_DM} 1757800000.000100")])
 check("jo-b" not in ids, "the same message reworded between runs is the same ask (ts, never wording)")
-s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me")],
-                [inb("jo-b", "Jo", "Send the numbers", f"DM Jo {JO_DM} 1757800000.000100")])
+PL = "https://x.slack.com/archives/D0JODM0001/p1757800000000100"
+s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me", link=PL)],
+                [inb("jo-b", "Jo", "Send the numbers", f"DM Jo {JO_DM} 1757800000.000100", link=PL)])
 check("jo-b" not in ids and next(l for l in s["loops"] if l["id"] == "jo-a")["ask_ts"] == "1757800000.000100",
-      "a ts appearing between runs upgrades the existing loop (takes the ts) instead of adding one")
+      "a ts appearing between runs, same permalink: the existing loop takes the ts, no new row")
+s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me")],
+                [inb("jo-b", "Jo", "send the numbers", f"DM Jo {JO_DM} 1757800000.000100")])
+check("jo-b" in ids and "ask_ts" not in next(l for l in s["loops"] if l["id"] == "jo-a"),
+      "a ts appearing with no permalink to prove it: a new loop, the old one untouched (no upgrade on wording)")
+s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM} 1757800000.000100", status="needs_me", link=PL)],
+                [inb("jo-b", "Jo", "send the numbers", f"DM Jo {JO_DM}", link=PL)])
+check("jo-b" not in ids, "a ts disappearing between runs, same permalink: the same ask")
 s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM} 1757800000.000100", status="needs_me")],
                 [inb("jo-b", "Jo", "send the numbers", f"DM Jo {JO_DM}")])
-check("jo-b" not in ids, "a ts disappearing between runs is still the same ask (same asker + wording, open)")
+check("jo-b" in ids, "a ts disappearing with no permalink: a new loop (a duplicate beats a loss)")
 s, ids, _ = run([inb("sam-j", "Sam Jones", "can you review?", "#ops C0OPSCH001", status="needs_me", owner_id="U0SAMJONES")],
                 [inb("sam-l", "Sam Lee", "can you review?", "#ops C0OPSCH001", owner_id="U0SAMLEE01")])
 check("sam-l" in ids, "two askers with the same first name and wording (no ts) are two asks (Slack user ids)")
-s, ids, _ = run([inb("sam-j", "Sam Jones", "can you review?", "#ops C0OPSCH001", status="needs_me")],
-                [inb("sam-l", "Sam Lee", "can you review?", "#ops C0OPSCH001"), inb("sam-j2", "sam  jones", "Can you review?", "#ops C0OPSCH001")])
+s, ids, _ = run([inb("sam-j", "Sam Jones", "can you review?", "#ops C0OPSCH001", status="needs_me", asked_at="2026-09-15T09:00")],
+                [inb("sam-l", "Sam Lee", "can you review?", "#ops C0OPSCH001", asked_at="2026-09-15T10:00"),
+                 inb("sam-j2", "sam  jones", "Can you review?", "#ops C0OPSCH001", asked_at="2026-09-15T10:00")])
 check("sam-l" in ids and "sam-j2" not in ids, "...and without ids the full names tell them apart (and match the same person)")
 s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001 1757800000.000100", status="done", closed_at="2026-09-14T09:00")],
                 [inb("kit-b", "Kit", "review the rota pls", "#ops C0OPSCH001 1757800000.000100"),
                  inb("kit-c", "Kit", "review the rota", "#ops C0OPSCH001 1757900000.000200")])
 check("kit-b" not in ids, "a closed message rediscovered with the same ts is not a second (needs_me) row")
 check("kit-c" in ids, "a newer message after it closed is a fresh ask")
-s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001", status="done", closed_at="2026-09-14T09:00")],
-                [inb("kit-old", "Kit", "review the rota", "#ops C0OPSCH001 1757800000.000100"),     # 2025-09-13: before it closed
-                 inb("kit-new", "Kit", "review the rota", "#ops C0OPSCH001 1789500000.000100")])    # 2026-09-15: after it closed
-check("kit-old" not in ids, "a closed loop with no ts takes a ts sent before it closed: same message")
-check("kit-new" in ids, "...and the same words sent after it closed are a fresh ask")
+KPL = "https://x.slack.com/archives/C0OPSCH001/p1757800000000100"
+s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001", status="done", closed_at="2026-09-14T09:00", link=KPL)],
+                [inb("kit-old", "Kit", "review the rota", "#ops C0OPSCH001 1757800000.000100", link=KPL),     # 2025-09-13: before it closed
+                 inb("kit-new", "Kit", "review the rota", "#ops C0OPSCH001 1789500000.000100")])              # 2026-09-15, own message
+check("kit-old" not in ids, "a closed loop with no ts, same permalink, sent before it closed: the same message")
+check("kit-new" in ids, "...and the same words in a later message of its own are a fresh ask")
+s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001", status="done", link=KPL)],
+                [inb("kit-old", "Kit", "review the rota", "#ops C0OPSCH001 1757800000.000100", link=KPL)])
+check("kit-old" in ids, "a closed loop with no closed_at to compare against: no merge, a new loop")
 s, ids, _ = run([{"id": "sam-deck", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757800000.000500", "status": "waiting"}],
                 [inb("sam-q", "Sam", "which format?", "DM Sam D0SAMDM001 1757950000.000900")],
                 [{"id": "sam-deck", "status": "needs_me", "reply_snippet": "which format?", "reply_ts": "1757900000.000700"}])
@@ -244,7 +257,7 @@ check("sam-q" in ids, "a new message repeating (quoting) the reply's words but w
 s, ids, _ = run([{"id": "sam-deck", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757800000.000500", "status": "waiting"}],
                 [inb("sam-q", "Sam", "Which format?", "DM Sam D0SAMDM001 1757950000.000900")],
                 [{"id": "sam-deck", "status": "needs_me", "reply_snippet": "which format?", "reply_ts": None}])
-check("sam-q" not in ids, "a reply reported without reply_ts matches a ts-carrying ask by asker + wording (no second row)")
+check("sam-q" in ids, "a reply reported with no reply_ts or permalink is no evidence: the ask is kept (a duplicate beats a loss)")
 s, ids, n = run([], [{"id": "ro-plan", "owner": "Ro", "ask": "send the plan", "channel": "slack", "thread": "DM Ro D0RODM0001 1757800000.000100", "status": "waiting"},
                      inb("ro-q", "Ro", "which plan?", "DM Ro D0RODM0001 1757900000.000200")],
                 [{"id": "ro-plan", "status": "needs_me", "reply_snippet": "which plan?", "reply_ts": "1757900000.000200"}])
