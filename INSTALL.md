@@ -10,7 +10,7 @@ behalf — chases are created as **drafts** in the original thread and you press
 |---|---|---|
 | Windows 10/11, or macOS | Task Scheduler + Desktop shortcut (Windows) / `launchd` + Desktop launcher (Mac) | — |
 | Python 3.11+ (stdlib only, no pip installs) | runs the page and the scripts | `python --version` (Windows) / `python3 --version` (Mac) |
-| An AI CLI, logged in — Claude Code (default) or Grok | does the reading/classifying via headless runs (`agent.py`) | `claude --version` / `grok --version`. Claude: the checklist's **Sign in** button runs `claude auth login` |
+| An AI CLI, logged in — Claude Code (default) or Grok | does the reading/classifying via headless runs (`agent.py`) | Nothing to do beforehand: the checklist's **Install** button installs it (the command is shown first), then Claude's **Sign in** button runs `claude auth login`. Check by hand: `claude --version` / `grok --version` |
 | Slack connected in that CLI *(optional)* | reads your DMs/channels, creates Slack drafts | Claude: the checklist's **Install Slack plugin** / **Connect Slack** buttons (fallback: *Open Claude (advanced)* → `/mcp` → *slack* → Authenticate) · Grok: off unless ⚙ Settings → *Use Slack*, then `/mcps`, select *slack*, press `i` |
 | Gmail connected *(optional)* | reads sent mail/threads, creates Gmail drafts | Claude: the checklist's **Connect Gmail** button (Gmail must be added at claude.ai → Settings → Connectors first; fallback: `/mcp` → *claude.ai Gmail* → Authenticate) · Grok: see **Gmail with Grok** below |
 
@@ -24,6 +24,17 @@ slack@claude-plugins-official`, `claude mcp login <server>`), your browser opens
 `claude mcp list`, not from a trial prompt. What each command printed is in `state/connect-<step>.log`. If a button
 doesn't do it, *Open Claude (advanced)* opens a terminal running `claude`, where `/mcp` lists every connection.
 Open Loops stores no tokens for this: the sign-ins stay wherever the Claude CLI keeps them.
+
+**Installing the AI CLI: one button.** Apart from Python, nothing needs installing first. When the selected
+AI's CLI is missing, the checklist's first row shows **Install Claude** (or Grok) with the exact command underneath;
+nothing downloads until you press it. It runs the vendor's own installer, which needs no Node or Homebrew, logs to
+`state/connect-install.log`, and the row ticks when it finishes. If the button fails, run the same command yourself:
+
+| AI | Mac (Terminal) | Windows (PowerShell) | Source |
+|---|---|---|---|
+| Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` | [code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup) (also `brew install --cask claude-code`, `winget install Anthropic.ClaudeCode`) |
+| Codex (once it can be chosen, #12) | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` | [github.com/openai/codex](https://github.com/openai/codex) (also `npm i -g @openai/codex`, `brew install --cask codex`) |
+| Grok | `curl -fsSL https://x.ai/cli/install.sh \| bash` | `irm https://x.ai/cli/install.ps1 \| iex` | [docs.x.ai/build/overview](https://docs.x.ai/build/overview) (lands in `~/.grok/bin`) |
 
 **Accounts / permissions this touches**
 - **Slack**: whatever your Slack user can already see. The tool never posts; it only uses `slack_send_message_draft`.
