@@ -11,7 +11,9 @@ import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, 
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-PORT = 8805
+with socket.socket() as _s:  # a port nothing else holds, so the checks never talk to some other server
+    _s.bind(("127.0.0.1", 0))
+    PORT = _s.getsockname()[1]
 t0 = time.time()
 sys.path.insert(0, str(REPO))
 from openloops import agent, doctor  # noqa: E402
