@@ -138,6 +138,7 @@ def claude_steps(steps):
         routes[k] = (routes[k][0], "unsupported", "")
     (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (routes[k] for k in ("slack", "gmail", "miro"))
     names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
+    names.update({k: "" for k in odd})   # "": forget a name saved by an earlier check, so jobs cannot fall back to it (#27)
     slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
     # the step that blocks every source row: installing Claude, else signing in (#25: not "Sign in" before it exists)
     first = say("needs_install", ai="Claude") if not have else say("needs_signin", ai="Claude")
@@ -480,13 +481,14 @@ def codex_steps(steps, recheck=False):
 def _save(updates, names=None):
     """Write doctor's own keys into config.json as it is now, under its cross-process lock: a check can take minutes
     (claude mcp list, the Slack-id prompt), and Settings saved meanwhile must survive. names (service -> server
-    name) are merged into the claude_servers the file holds now, not the copy read at the start."""
+    name) are merged into the claude_servers the file holds now, not the copy read at the start; a name of "" removes
+    that service's entry (its listed name was rejected, so an older saved one must not be used either, #27)."""
     from .store import update_json
 
     def mutate(cfg):
         new = dict(updates)
         if names:
-            new["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
+            new["claude_servers"] = {k: v for k, v in {**(cfg.get("claude_servers") or {}), **names}.items() if v}
         if all(cfg.get(k) == v for k, v in new.items()):
             return False  # already so: leave the file alone
         cfg.update(new)

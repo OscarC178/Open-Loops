@@ -210,13 +210,26 @@ rows = {r["id"]: r for r in steps}
 doctor.run, doctor.shutil.which = _real
 check(rows["slack"]["ok"] and rows["gmail"]["ok"] and slack_ok and gmail_ok and s_src == "plugin",
       "renamed Slack plugin and Gmail connector: both ticked, on their usual routes")
-check(names == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Next"},
-      f"...the names saved for the jobs are the ones listed; the unusable Miro name is not saved (got {names})")
+check(names == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Next", "miro": ""},
+      f"...the names saved for the jobs are the ones listed; the unusable Miro name is not saved, and marks Miro's for removal (got {names})")
 check(not rows["miro"]["ok"] and not miro_ok and "connect" not in rows["miro"]
       and rows["miro"]["fix"] == messages.say("server_unsupported", service="Miro")
       and rows["miro"]["detail"] == "listed as plugin:miro:x & calc.exe" and "calc" not in rows["miro"]["fix"],
       "a connected server under a name Open Loops won't use: red, unsupported in plain words, no button; the name goes to the Console only")
-cfg.update(slack_source=s_src, miro_source=m_src, claude_servers=names)
+# persisted as doctor.main() does, through _save() into a real config.json that holds names from an earlier check
+_cfgdir = Path(tempfile.mkdtemp(prefix="openloops-doctor-names-"))
+_real_cfg, doctor.CONFIG = doctor.CONFIG, _cfgdir / "config.json"
+doctor.CONFIG.write_text(json.dumps({"agent": "claude", "miro_source": "plugin", "claude_servers":
+                                     {"miro": "plugin:miro-old:miro", "slack": "plugin:slack-old:slack"}}), encoding="utf-8")
+doctor._save({"slack_source": s_src, "miro_source": m_src}, names)
+cfg.clear()
+cfg.update(json.loads(doctor.CONFIG.read_text(encoding="utf-8")))
+doctor.CONFIG = _real_cfg
+shutil.rmtree(_cfgdir, ignore_errors=True)
+check(cfg["claude_servers"] == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Next"},
+      f"saved: the new names replace the old, and Miro's older saved name is removed, not kept (got {cfg['claude_servers']})")
+check(agent._qualify(["miro.*"]) == ["mcp__plugin_miro_miro"] and agent.login_cmd("miro")[0][3] == "plugin:miro:miro",
+      "...so Miro's jobs and sign-in cannot fall back to the stale saved name")
 got = agent._qualify(["slack.search_users", "gmail.search_threads"])
 check(got == ["mcp__plugin_slack-next_slack__slack_search_users", "mcp__claude_ai_Gmail_Next__search_threads"],
       f"...and the jobs allow the renamed servers' own tool ids (got {got})")
