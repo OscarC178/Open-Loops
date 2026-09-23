@@ -470,12 +470,14 @@ window.addEventListener('error',e=>clog('script error: '+e.message+' ('+(e.filen
 window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e.reason.message)||e.reason)));
 // ---------- feedback: a toast for every action (Doherty), with Undo where it is cheap (Postel) ----------
 const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
+// under 600 px wide three toasts took about 40% of the screen (#56): two there
+const toastMax=()=>typeof innerWidth==='number'&&innerWidth<600?2:TOAST_MAX;
 function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
  // The header grows by the toast; with the page scrolled, the browser's scroll anchoring would keep the rows where they
  // were, i.e. under the grown header. Off for this one layout, the rows move down with it and stay in view (#52 review).
  const box=$('#toasts'),de=document.documentElement;de.style.overflowAnchor='none';
- while(box.children.length>=TOAST_MAX)box.firstElementChild.remove();
+ while(box.children.length>=toastMax())box.firstElementChild.remove();
  box.appendChild(t);requestAnimationFrame(()=>requestAnimationFrame(()=>{de.style.overflowAnchor=''}));
  setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
 // ---------- one dialog for snooze / note / link / vault close ----------

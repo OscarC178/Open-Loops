@@ -459,7 +459,8 @@ check(html.count("<b>Open Claude (advanced)</b>") == 2 and html.count('<span cla
 check("${CON.length} lines" not in html and "${CON.length} line${CON.length===1?'':'s'}" in html, "Console: '1 line', not '1 lines'")
 check(re.search(r'<header>.*<div id="toasts" aria-live="polite"></div></header>', html, re.S)
       and "#toasts{flex-basis:100%" in html and "position:" not in html.split("#toasts{")[1].split("}")[0]
-      and "while(box.children.length>=TOAST_MAX)box.firstElementChild.remove()" in html and "const TOAST_MAX=3;" in html,
+      and "while(box.children.length>=toastMax())box.firstElementChild.remove()" in html and "const TOAST_MAX=3;" in html
+      and "innerWidth<600?2:TOAST_MAX" in html,
       "toasts are a full-width line of the sticky header (in the flow, not over the page), at most 3 at once")
 check("double-click the Open Loops icon to start it again" not in html and "$('#quit_again').textContent=restartSaid();" in html
       and "You can close this tab. '+restartSaid())" in html and "function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)" in html,
@@ -513,6 +514,7 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
 </script>"""
     node_ = shutil.which("node")
     for w_ in (400, 1280) if node_ else ():
+        keep_ = 2 if w_ < 600 else 3   # index.html toastMax(): three toasts took about 40% of a 400 px screen (#56)
         work = Path(tempfile.mkdtemp(prefix="openloops-layout-"))
         try:
             (work / "page.html").write_text(html.replace("</body>", LAYOUT + "</body>"), encoding="utf-8")
@@ -526,11 +528,11 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
             lay = json.loads(json.loads(rc_.stdout.strip().splitlines()[-1]))
         except (ValueError, IndexError, TypeError):
             lay = {"error": (rc_.stdout + rc_.stderr)[-300:]}
-        check(not lay.get("error") and lay["w"] == w_ and lay["total"] >= 6 and lay["cards"] >= 2 and not lay.get("setupErr") and lay["toasts"] == 3 and lay["first"].startswith("Toast 2")
+        check(not lay.get("error") and lay["w"] == w_ and lay["total"] >= 6 and lay["cards"] >= 2 and not lay.get("setupErr") and lay["toasts"] == keep_ and lay["first"].startswith(f"Toast {5 - keep_}")
               and lay["hit"] is False,
-              f"at {w_} px: five toasts leave the newest three (the oldest go), and none overlaps a checklist row ({lay})")
+              f"at {w_} px: five toasts leave the newest {keep_} (the oldest go; two under 600 px, #56), and none overlaps a checklist row ({lay})")
         sc = lay.get("scrolled") or {}
-        check(sc.get("y", 0) > 0 and sc.get("toasts") == 3 and sc.get("hit") is False and sc.get("rowTop", -1) >= sc.get("hdrBottom", 1e9)
+        check(sc.get("y", 0) > 0 and sc.get("toasts") == keep_ and sc.get("hit") is False and sc.get("rowTop", -1) >= sc.get("hdrBottom", 1e9)
               and sc.get("fullBefore", 0) >= 1 and sc.get("stillClear") == sc.get("fullBefore"),
               f"at {w_} px, scrolled: toasts arriving while a row sits just below the sticky header neither cover it nor push it under the header ({sc})")
     if not node_:
