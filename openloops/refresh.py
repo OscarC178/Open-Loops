@@ -10,7 +10,9 @@ back into state.json. Never sends anything.
 
 Two cursors. A slack-only run advances only `slack_cursor`; the full run advances both. If the
 quick pass moved the shared cursor, every email ask made between two Slack runs would be skipped
-forever by the next full refresh.
+forever by the next full refresh. Gmail reads from `gmail_cursor` (falling back to the shared `cursor`),
+which, like `slack_cursor`, moves only when Gmail was searched: a run without Gmail (Codex on a ChatGPT
+account with no Gmail connector, or a run reporting "gmail_available": false) leaves it where it was.
 
 The final write goes through store.update_state, so anything the page changed while the agent
 was running (a note, a snooze, a done click) is kept.
@@ -194,7 +196,7 @@ def build_prompt(s, slack_only, slack_on):
     open_loops = [l for l in s["loops"] if in_scope(l, slack_only, recent)]
     slack_since = s.get("slack_cursor") or s["cursor"]
     slack_date = (datetime.fromisoformat(slack_since) - timedelta(days=1)).date().isoformat()
-    gmail_date = (datetime.fromisoformat(s["cursor"]) - timedelta(days=1)).date().isoformat()
+    gmail_date = (datetime.fromisoformat(s.get("gmail_cursor") or s["cursor"]) - timedelta(days=1)).date().isoformat()
     name = CFG.get("owner_name") or "the owner"
     sources = []
     if slack_on:
@@ -261,10 +263,11 @@ def merge_links(loop, links):
         seen.add(url)
 
 
-def apply(s, out, slack_only, now, slack_on=True):
+def apply(s, out, slack_only, now, slack_on=True, gmail_on=True):
     """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated).
     slack_on: whether this run searched Slack at all (a full run with Slack off did not); an agent
-    that reports "slack_available": false (the searches failed) leaves the Slack cursor where it was."""
+    that reports "slack_available": false (the searches failed) leaves the Slack cursor where it was.
+    gmail_on / "gmail_available": the same for Gmail and gmail_cursor."""
     by_id = {l["id"]: l for l in s["loops"]}
     n_new = n_upd = 0
 
@@ -346,9 +349,12 @@ def apply(s, out, slack_only, now, slack_on=True):
         # Slack's cursor moves only when Slack was searched; with Slack off (or failing) it stays where Slack
         # coverage stopped (first time: the old shared cursor), so the next working run catches up from there
         s["slack_cursor"] = now if searched else (s.get("slack_cursor") or s.get("cursor"))
+        # Gmail likewise: its cursor moves only when Gmail was searched (missing flag -> trust the run, as for Slack)
+        mailed = gmail_on and str(out.get("gmail_available", True)).lower() == "true"
+        s["gmail_cursor"] = now if mailed else (s.get("gmail_cursor") or s.get("cursor"))
         s["cursor"] = now
         s["last_refresh"] = now
-        s["gmail_available"] = bool(out.get("gmail_available"))
+        s["gmail_available"] = bool(out.get("gmail_available")) and gmail_on
     return n_new, n_upd
 
 
@@ -366,6 +372,10 @@ def main():
     now = datetime.now().astimezone().isoformat(timespec="minutes")
     p = agent.run(prompt, tools)
     (LOG / f"{kind}-{stamp}.log").write_text(p.stdout + "\n--- stderr ---\n" + p.stderr, encoding="utf-8")
+    if getattr(p, "refused", "") == "nosources":  # Codex: neither source is connected in the ChatGPT account
+        print("SKIPPED: " + p.stdout.strip()); sys.exit(2)
+    # Codex drops a source that is not connected in the ChatGPT account; that source's cursor must not move
+    dropped = set(getattr(p, "dropped", []) or [])
     # some agents drop the markers and emit bare JSON - accept that too
     m = re.search(r"<<<OPENLOOPS>>>(.*?)<<<END>>>", p.stdout, re.S) or re.search(r'(\{\s*"new_loops"\s*:.*\})', p.stdout, re.S)
     if not m:
@@ -375,7 +385,9 @@ def main():
     out = json.loads(m.group(1))
     counts = {}
     # re-read state.json at write time: the page may have added notes or snoozes meanwhile
-    s = update_state(lambda fresh: counts.update(zip(("new", "upd"), apply(fresh, out, SLACK_ONLY, now, slack_on))))
+    s = update_state(lambda fresh: counts.update(zip(("new", "upd"), apply(fresh, out, SLACK_ONLY, now,
+                                                                           slack_on and "slack" not in dropped,
+                                                                           "gmail" not in dropped))))
     gm = "" if SLACK_ONLY else f", gmail={'yes' if s.get('gmail_available') else 'NO'}"
     print(f"done: {counts['new']} new, {counts['upd']} updated{gm}")
 

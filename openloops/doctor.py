@@ -267,6 +267,8 @@ CODEX_SAID = {
     "expired": "Your ChatGPT sign-in has run out. Press Sign in to sign in again.",
     "failed": "Couldn't ask Codex about your connections just now. Press Check again.",
     "warming": "Codex is still getting ready (loading your ChatGPT connections). Press Check again in a minute.",
+    "stale": ("Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old). "
+              "Press Check again in a minute."),
 }
 _codex_found = {}  # what the probe learnt that main() uses: the Slack user id, and which account it was
 
@@ -325,15 +327,18 @@ def codex_probe(sig, want_miro, recheck=False, now=None):
                         timeout=PROBE_TIMEOUT_S, effort_="low")
     got = parse_probe(p.stdout)
     for x in ("gmail", "slack"):
-        if x not in srcs:
+        if x not in srcs or x in (getattr(p, "dropped", []) or []):
             got[x] = False  # not in Codex's list: not connected in ChatGPT
     ok = set(getattr(p, "tools_ok", []) or [])
     refused = getattr(p, "refused", "") or ""
-    if refused:  # not run, or failed: keyring / signin / link go on the sign-in row; a warm-up's failure is its own
+    if refused == "nosources":  # the list has neither Gmail nor Slack: both not connected in ChatGPT
+        why = ""
+        got.update(gmail=False, slack=False)
+    elif refused:  # not run, or failed: keyring / signin / link go on the sign-in row; a warm-up's failure is its own
         why = {"cold": "warming", "unlisted": "failed", "start": "failed", "notools": "failed"}.get(refused, refused)
     else:  # the same order as agent.codex_failure: a failed run beats whatever text came back
         why = agent.codex_failure(p.returncode, getattr(p, "errors", []), getattr(p, "codex_stderr", "")) or (
-            "failed" if all(got[x] is None for x in srcs if x in ("gmail", "slack")) else "")
+            "failed" if all(got[x] is None for x in srcs if x in ("gmail", "slack") and x not in (getattr(p, "dropped", []) or [])) else "")
     if why:
         got.update(gmail=None, slack=None, miro=None, slack_id="")
     else:
