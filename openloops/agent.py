@@ -126,6 +126,47 @@ def _qualify(tools):
     return list(dict.fromkeys(out))
 
 
+# Claude setup steps the checklist can start from a button (doctor.py names them in each red row's
+# "connect" key, app.py's /api/connect/<step> runs them). The server names are what `claude mcp list`
+# prints on Claude Code 2.1.x; doctor.py matches them exactly and falls back to a looser match.
+CLAUDE_SERVERS = {
+    "slack": {"plugin": "plugin:slack:slack", "connector": "claude.ai Slack"},
+    "gmail": {"connector": "claude.ai Gmail"},
+    "miro":  {"plugin": "plugin:miro:miro", "connector": "claude.ai Miro", "server": "miro"},
+}
+CONNECT_STEPS = ("login", "slack_install", "slack", "gmail", "miro")
+_MARKETPLACE = "claude-plugins-official"  # where the Slack plugin lives
+_MARKETPLACE_SRC = "anthropics/claude-plugins-official"
+
+
+def _has_marketplace():
+    """Whether `claude plugin marketplace list` already knows the official marketplace."""
+    try:
+        p = subprocess.run(["claude", "plugin", "marketplace", "list"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60, shell=WIN)
+        return _MARKETPLACE in (p.stdout or "")
+    except Exception:
+        return False  # adding it again is harmless; failing to add it breaks the install
+
+
+def login_cmd(step):
+    """The commands for one Claude setup step, run in order -> [argv, ...], or None (unknown step, or not Claude).
+
+    Each opens the browser at most once and needs nothing typed: the user only clicks Allow. `mcp login`
+    gets --no-browser off Windows because app.py runs it on a pseudo-terminal, reads the sign-in link it
+    prints and opens that itself (the CLI refuses to wait for the browser when stdin is not a terminal).
+    On Windows app.py gives it a console window of its own instead, and the CLI opens the browser."""
+    if name() != "claude" or step not in CONNECT_STEPS:
+        return None
+    if step == "login":
+        return [["claude", "auth", "login"]]
+    if step == "slack_install":
+        add = [] if _has_marketplace() else [["claude", "plugin", "marketplace", "add", _MARKETPLACE_SRC]]
+        return add + [["claude", "plugin", "install", f"slack@{_MARKETPLACE}"]]
+    src = {"slack": slack_source, "miro": miro_source}.get(step, lambda: "connector")()
+    return [["claude", "mcp", "login", CLAUDE_SERVERS[step][src]] + ([] if WIN else ["--no-browser"])]
+
+
 def model():
     """config.json "model": the Claude model the jobs run on. An alias (sonnet, haiku, opus) or a
     full id. Blank means whatever `claude` defaults to on this machine, which is usually the most
