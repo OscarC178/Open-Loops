@@ -60,7 +60,13 @@ for said, want_text, want_seen in (
         ("TOOLS_SEEN: gmail.search_emails\nOK", "TOOLS_SEEN: gmail.search_emails\nOK", None),
         ("OK\nTOOLS_SEEN: none\nTOOLS_SEEN: gmail.search_emails", "OK\nTOOLS_SEEN: none\nTOOLS_SEEN: gmail.search_emails", None),
         ("```\nOK\nTOOLS_SEEN: gmail.search_emails", "```\nOK\nTOOLS_SEEN: gmail.search_emails", None),
-        ("```\nx\n```\nOK\nTOOLS_SEEN: gmail.search_emails", "```\nx\n```\nOK", {"gmail.search_emails"})):
+        ("```\nx\n```\nOK\nTOOLS_SEEN: gmail.search_emails", "```\nx\n```\nOK", {"gmail.search_emails"}),
+        ("````text\n```\nTOOLS_SEEN: gmail.search_emails", "````text\n```\nTOOLS_SEEN: gmail.search_emails", None),
+        ("```text\n```not-a-close\nTOOLS_SEEN: gmail.search_emails", "```text\n```not-a-close\nTOOLS_SEEN: gmail.search_emails", None),
+        ("~~~text\nTOOLS_SEEN: gmail.search_emails", "~~~text\nTOOLS_SEEN: gmail.search_emails", None),
+        ("~~~~\nx\n~~~\n```\nOK\nTOOLS_SEEN: gmail.search_emails", "~~~~\nx\n~~~\n```\nOK\nTOOLS_SEEN: gmail.search_emails", None),
+        ("~~~\nx\n~~~~  \nOK\nTOOLS_SEEN: gmail.search_emails", "~~~\nx\n~~~~  \nOK", {"gmail.search_emails"}),
+        ("I will explain TOOLS_SEEN below.\nTOOLS_SEEN: gmail.search_emails", "I will explain TOOLS_SEEN below.", {"gmail.search_emails"})):
     got = agent.codex_tools_seen(said)
     check(got == (want_text, want_seen), f"only one final, unquoted TOOLS_SEEN line is read and removed: {said!r} -> {got!r}")
 allowed = {"gmail.search_emails", "slack.slack_read_channel"}

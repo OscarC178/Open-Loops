@@ -204,21 +204,34 @@ CODEX_SEEN_ASK = ("When you have finished, end your reply with one more line: TO
 _CODEX_SEEN_LINE = re.compile(r"[*_`]*TOOLS_SEEN[*_`]*[ \t]*:(.*)", re.I)  # the whole last line, no quote or bullet
 
 
+_FENCE_OPEN = re.compile(r"(`{3,}|~{3,})")          # CommonMark: a fence opens with 3+ backticks or 3+ tildes
+
+
 def codex_tools_seen(text):
     """A run's final message -> (the message without its TOOLS_SEEN line, the names on it as a set, or None when there
-    is no usable line). Usable means strict (review of #45): exactly one line in the reply mentions TOOLS_SEEN, it is the
-    last non-empty line, it is not quoted ("> ...") or a list item, and it is not inside an unclosed ``` block. Anything
-    else counts as no line (the refusal path) and the text is returned untouched. "none" (or nothing) after the colon is
-    an empty set: the run saw none."""
+    is no usable line). Usable means strict (review of #45): outside code fences there is exactly one footer-shaped line
+    (TOOLS_SEEN: at the start of the line, not quoted ("> ...") or a list item), and it is the last non-empty line.
+    Fences follow CommonMark: one opens with 3+ backticks or 3+ tildes and closes only with a line of the same character,
+    at least as many, and nothing else; lines inside, and after an unclosed opening, are never footers. Prose that merely
+    mentions TOOLS_SEEN does not count. Anything else counts as no line (the refusal path) and the text is returned
+    untouched. "none" (or nothing) after the colon is an empty set: the run saw none."""
     text = text or ""
     lines = text.splitlines()
-    if sum("tools_seen" in ln.lower() for ln in lines) != 1:
-        return text, None
+    fence, footers = None, []  # fence: (character, count) of the open fence, or None
+    for i, ln in enumerate(lines):
+        st = ln.strip()
+        if fence is None:
+            m = _FENCE_OPEN.match(st)
+            if m:
+                fence = (m.group(1)[0], len(m.group(1)))
+            elif _CODEX_SEEN_LINE.fullmatch(st):
+                footers.append(i)
+        elif re.fullmatch(re.escape(fence[0]) + "{%d,}" % fence[1], st):
+            fence = None  # a closing fence: same character, at least as many, nothing else
     last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
-    m = _CODEX_SEEN_LINE.fullmatch(lines[last].strip()) if last >= 0 else None
-    if not m or sum(ln.lstrip().startswith("```") for ln in lines[:last]) % 2:
+    if len(footers) != 1 or footers[0] != last:
         return text, None
-    raw = m.group(1).strip().strip("`*_ ")
+    raw = _CODEX_SEEN_LINE.fullmatch(lines[last].strip()).group(1).strip().strip("`*_ ")
     seen = set() if raw.lower() in ("", "none", "none.") else {t.strip("`*_.;") for t in re.split(r"[,\s]+", raw) if t.strip("`*_.;")}
     return "\n".join(lines[:last]).rstrip(), seen
 
