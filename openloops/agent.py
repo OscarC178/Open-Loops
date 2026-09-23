@@ -285,7 +285,7 @@ INSTALL_SAID = {
     "check":   "{ai} was installed but won't start. Press Install {ai} to try again, or ask IT to install {ai}.",
     "install": "{ai}'s installer stopped with an error. Press Install {ai} to try again. If it fails again, paste the "
                "commands below into Terminal (Windows: PowerShell) and press Enter.",
-    "timeout": "The install took longer than 10 minutes, so Open Loops stopped it. Press Install {ai} to try again.",
+    "timeout": "The install took longer than {limit}, so Open Loops stopped it. Press Install {ai} to try again.",
     "start":   "Open Loops couldn't start {ai}'s installer. Press Install {ai} to try again.",
     "changed": "The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. "
                "Press Check again.",

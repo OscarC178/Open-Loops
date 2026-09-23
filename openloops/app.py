@@ -3,7 +3,7 @@
     python3 -m openloops.app            -> http://localhost:8765
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
-import json, re, shlex, socket, subprocess, sys, threading, time, webbrowser
+import json, re, shlex, shutil, socket, subprocess, sys, threading, time, webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -355,12 +355,15 @@ def run_install(body):
                 if kind == "install" and not (script.is_file() and script.stat().st_size):  # Windows has no test -s step
                     rc, why = 1, "download"
                     break
-                if kind == "check":  # the installer exited 0: now its folder goes on PATH, and the CLI must answer
-                    add_install_dirs()
+                if kind == "check":  # the installer exited 0: find the new CLI in its folders, PATH untouched for now
+                    look = os.pathsep.join([os.environ.get("PATH", "")] + [str(d) for d in agent.install_dirs()])
+                    argv = [shutil.which(argv[0], path=look) or argv[0]] + argv[1:]
                 rc, late = _install_one(step, argv, log, deadline)
                 if rc != 0:
                     why = "timeout" if late else kind
                     break
+            else:  # every step worked, the CLI answered --version: only now its folder goes on this process's PATH
+                add_install_dirs()
         except Exception as e:  # bash or PowerShell missing, say: in the log and as "start", rather than hang as "running"
             rc, why = -1, why or ("check" if kind == "check" else "start")  # no CLI to run after the install: "check"
             with open(log, "a", encoding="utf-8") as f:
@@ -400,7 +403,10 @@ def connect_status(step):
             ic = agent.install_cmd() or {}  # A running install keeps reporting its own agent and command instead.
             c.update(agent=ic.get("agent", ""), command=ic.get("command", ""), command_id=ic.get("id", ""))
         if c.get("why"):  # the page shows this sentence, never the installer's raw last line ("last", for the Console)
-            c["said"] = agent.INSTALL_SAID.get(c["why"], agent.INSTALL_SAID["install"]).format(ai=agent.display_name(ran or c["agent"]))
+            n = INSTALL_TIMEOUT_S  # the limit actually in force, in the unit a person would say it
+            limit = f"{n // 60} minutes" if n >= 120 and n % 60 == 0 else "1 minute" if n == 60 else f"{n} seconds"
+            c["said"] = agent.INSTALL_SAID.get(c["why"], agent.INSTALL_SAID["install"]).format(
+                ai=agent.display_name(ran or c["agent"]), limit=limit)
     return c
 
 

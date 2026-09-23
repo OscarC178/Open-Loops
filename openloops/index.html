@@ -479,7 +479,7 @@ async function connectStep(step){
   CONN[step]=s.rc===0?{}:{msg:inst?(s.said||`${ai}'s installer stopped with an error. Press Install ${ai} to try again.`)
    :"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open Claude (advanced).'};
   await doctor(true);return}   // repaints the checklist: the row goes green, or offers its next step
- CONN[step]={msg:inst?'The install is taking longer than 10 minutes, so the app stopped it. Press Install again.':'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}
+ CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(CONN[step].agent||row.agent)} to try again.`:'Still waiting for the browser. Finish there and the tick appears within a minute. The app gives up on its own after 5 minutes; press the button again after that.'};repaint()}
 
 // The Mac's weekday morning refresh did not start (doctor.py "schedule" row, #24). The checklist is only up while setting
 // up, so once set up the same row shows here, above everything: what happened, what to do, and the download page.

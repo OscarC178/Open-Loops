@@ -140,9 +140,28 @@ check(app._install_one("t", argv, lg, time.time() + 20) == (3, False), "Windows 
 text = lg.read_text(encoding="utf-8")
 check(text.startswith("$ " + subprocess.list2cmdline(argv)) and "installing" in text, "Windows branch: command and output land in the log")
 app.INSTALL_TIMEOUT_S = 1
-check(app._install_one("t", [sys.executable, "-c", "import time; time.sleep(3)"], lg, time.time() + 1) == (-1, True),
-      "Windows branch: the deadline is reported as a timeout")
+pidf = _logdir / "child.pid"
+sleeper = [sys.executable, "-c", f"import os, time; open({str(pidf)!r}, 'w').write(str(os.getpid())); time.sleep(30)"]
+check(app._install_one("t", sleeper, lg, time.time() + 1) == (-1, True), "Windows branch: the deadline is reported as a timeout")
 check("stopped: the install did not finish within 1 seconds" in lg.read_text(encoding="utf-8"), "Windows branch: the log says why")
+
+
+def _gone(pid, secs=5):
+    """True once no process has this pid (os.kill with signal 0 only asks; it raises when there is none)."""
+    for _ in range(secs * 10):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:  # someone else's process now holds the pid: ours is gone
+            return True
+        time.sleep(0.1)
+    return False
+
+
+if sys.platform != "win32":  # os.kill(pid, 0) is a liveness probe only off Windows
+    check(_gone(int(pidf.read_text())), "Windows branch: the timed-out child is actually gone")
+check("t" not in app.connect_procs, "Windows branch: _reap stopped tracking it")
 app.WIN = sys.platform == "win32"
 shutil.rmtree(_logdir, ignore_errors=True)
 _ic = agent.install_cmd()
@@ -298,7 +317,8 @@ try:
     s = wait_install()
     check(fake.exists() and s["rc"] != 0 and s["why"] == "check" and "won't start" in s["said"], f"a CLI that won't start fails the check step (got {s['why']!r})")
     code, doc = api("/api/doctor", {})
-    check(not row(doc)["ok"] and "won't start" in row(doc)["fix"] and row(doc)["connect"] == "install", "the row says it won't start, offers Install again")
+    check(not row(doc)["ok"] and row(doc)["connect"] == "install" and row(doc)["fix"].startswith("Open Loops couldn't find Claude"),
+          "the row stays red with Install again: a CLI that failed --version was not added to the app's PATH")
     fake.unlink()
 
     # an installer that asks a question: no terminal, empty stdin, so it fails straight away instead of hanging
@@ -317,7 +337,7 @@ try:
     log = (tmp / "state" / "connect-install.log").read_text(encoding="utf-8")
     check(s["rc"] == -1 and s["why"] == "timeout" and f"stopped: the install did not finish within {TIMEOUT_S} seconds" in log,
           f"the deadline stops it and says so (got {s['rc']}, {s['why']!r})")
-    check(s["said"].startswith("The install took longer than 10 minutes") and not waiting() and not fake.exists(),
+    check(s["said"].startswith(f"The install took longer than {TIMEOUT_S} seconds") and not waiting() and not fake.exists(),
           "the page says it took too long; no installer is left running")
 
     # the real thing, with the fake installer
@@ -335,8 +355,8 @@ try:
     check(s["url"] == "", "an installer's output is not taken for a sign-in link")
     check(calls()[-1] == f"-fsSL -o {tmp}/state/install/claude-install.sh https://claude.ai/install.sh", f"curl saved Anthropic's installer, as shown (calls: {calls()[-1:]})")
     log = (tmp / "state" / "connect-install.log").read_text(encoding="utf-8")
-    check(all("$ " + line.rstrip(" &") in log for line in AT("claude").splitlines()) and "Downloading Claude Code" in log,
-          "state/connect-install.log has every command and what it printed")
+    check(all("$ " + line.rstrip(" &") in log for line in AT("claude").splitlines()[:-1]) and "Downloading Claude Code" in log
+          and f"$ {fake} --version" in log, "state/connect-install.log has every command (the check by the path it found) and what it printed")
     code, doc = api("/api/doctor", {})  # not forced: the finished install must have dropped the cached answer
     check(row(doc)["ok"] and "connect" not in row(doc), "the re-check finds the new claude in ~/.local/bin: green")
 
