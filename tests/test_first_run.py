@@ -1196,11 +1196,20 @@ try:
           and not (home / "Library" / "LaunchAgents").exists() and not (tmp / "launchctl.log").exists(),
           "--isolated implies --no-app and --no-task: no app, no launchd job, launchctl never called")
     check("Isolated test copy" in r.stdout, "the installer says what kind of copy it made")
+    check("Skipped Open Loops.app (test copy)" in r.stdout and "Skipped the weekday refresh (test copy)" in r.stdout
+          and "(--no-app)" not in r.stdout and "(--no-task)" not in r.stdout,
+          "#56: --isolated says 'test copy', not the flags it implies")
+    check("Start this copy with:" in r.stdout and f'cd "{dest}" && python3 -m openloops.app' in r.stdout
+          and "http://localhost:8790" in r.stdout and "Your first name: Test (used so messages sound like you)" in r.stdout,
+          f"#56: the output gives the start command, the address with its port, and the --name ({r.stdout[-260:]!r})")
     cursor = datetime.fromisoformat(json.loads((dest / "state.json").read_text(encoding="utf-8"))["cursor"])
     want = datetime.now().astimezone() - timedelta(days=30)
     check(abs((cursor - want).total_seconds()) < 600, f"the first-scan cursor is history_days (30) back, as the page says, not a week ({cursor})")
-    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch")
+    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--name", "Other")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
+    check("(--no-app)" in r.stdout and "(--no-task)" in r.stdout and "http://localhost:8790" in r.stdout
+          and "Kept the name this copy already has: Test (--name only names a new copy)" in r.stdout,
+          "without --isolated the flags are named; the port comes from config.json; a later --name is said to be kept out")
     check(r.returncode == 0 and "isolated" not in cfg and cfg.get("test_copy") is True and cfg.get("owner_name") == "Test",
           "a re-run without --isolated takes the mark off (still a test copy by its flags), keeping the rest")
     # a copy that has the weekday job, then made isolated: its job goes

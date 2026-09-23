@@ -298,8 +298,9 @@ cd ~/OpenLoops-test && python3 -m openloops.app --no-browser &   # answers on 87
 ```
 
 Opening its page then runs only the connection checklist, which with Slack connected makes one quick call to find
-your Slack id; nothing is scanned until you press **Start the first scan** or **Update Slack** (**Refresh** appears
-once the first scan has run). Stop it with `python3 -m openloops.app --stop --port 8790`.
+your Slack id; nothing is scanned until you press **Start the first scan** (**Refresh** and **Update Slack** appear
+once the first scan has run). The installer prints the command to start the copy and its address,
+`http://localhost:8790`; skipped steps say *(test copy)* when `--isolated` was given. Stop it with `python3 -m openloops.app --stop --port 8790`.
 
 The other flags:
 

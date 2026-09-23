@@ -263,6 +263,24 @@ PYEOF
 )
 fi
 ok "Files in place"
+# --name only names a new copy (config.json "owner_name"); say which name this copy uses either way (#56)
+OWNER=$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("owner_name") or "")
+except Exception: print("")' "$CFG_FILE")
+if [ -n "$OWNER" ]; then
+    if [ -n "$NAME" ] && [ "$NAME" != "$OWNER" ]; then
+        ok "Kept the name this copy already has: $OWNER (--name only names a new copy)"
+    else
+        ok "Your first name: $OWNER (used so messages sound like you)"
+    fi
+fi
+# The port this copy answers on, for the address printed at the end: --port, else config.json "port", else 8765 (app.py)
+SHOW_PORT=$(python3 -c 'import json,sys
+try: print(int(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("port") or 8765))
+except Exception: print(8765)' "$CFG_FILE")
+[ -n "$PORT" ] && SHOW_PORT="$PORT"
+# Why a step was skipped, in the words the person typed: --isolated is "test copy", not the flags it implies (#56)
+if [ "$ISOLATED" -eq 1 ]; then SKIP_APP="test copy"; SKIP_TASK="test copy"; else SKIP_APP="--no-app"; SKIP_TASK="--no-task"; fi
 if [ "$ISOLATED" -eq 1 ]; then
     ok "Isolated test copy: it reads no to-do file and starts no scan until you press Start the first scan"
 fi
@@ -270,7 +288,7 @@ fi
 # ---------- 4. App with logo (Dock + Desktop) ----------
 # Real .app so it can sit in the Dock. The zip's Open Loops.command is only first-run install.
 if [ "$NO_APP" -eq 1 ]; then
-    ok "Skipped Open Loops.app (--no-app). Start this copy with: cd \"$DEST\" && python3 -m openloops.app"
+    ok "Skipped Open Loops.app ($SKIP_APP): start this copy from Terminal, as shown at the end"
 else
     mkdir -p "$HOME/Applications" "$HOME/Desktop"
     DOCK_FLAG=""
@@ -304,7 +322,7 @@ then
     ok "Removed this copy's weekday refresh (--isolated: it starts no scan by itself)"
 fi
 if [ "$NO_TASK" -eq 1 ]; then
-    ok "Skipped the weekday refresh (--no-task): whatever this Mac already had registered is unchanged"
+    ok "Skipped the weekday refresh ($SKIP_TASK): whatever this Mac already had registered is unchanged"
 else
     bash "$DEST/scripts/register-task.sh" --at "$AT" --dest "$DEST"
     ok "Will refresh itself weekdays at $AT"
@@ -318,6 +336,13 @@ else
     cd "$DEST"
     nohup python3 -m openloops.app ${PORT:+--port "$PORT"} >/dev/null 2>&1 &
     disown
+fi
+if [ "$NO_APP" -eq 1 ]; then
+    # no icon to start it from: the command, and the address it answers on (#56)
+    echo ""
+    echo "  Start this copy with:"
+    echo "    cd \"$DEST\" && python3 -m openloops.app"
+    echo "  It opens at http://localhost:$SHOW_PORT"
 fi
 echo ""
 echo "  Done. You can close this window."
