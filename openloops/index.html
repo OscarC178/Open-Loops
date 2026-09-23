@@ -273,7 +273,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   <div class="sub" id="allow_msg" style="margin-top:8px"></div>
   <div style="margin-top:14px;display:flex;gap:8px">
    <button class="primary" id="allow_check" onclick="allowCheck()" style="display:none">Check again</button>
-   <button type="button" onclick="allowClose()">Close</button>
+   <button type="button" onclick="allowDismiss()">Close</button>
   </div>
 </div></dialog>
 
@@ -663,6 +663,7 @@ async function connectWatch(step,row){const inst=step==='install';
  while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
   if(s.url&&!CONN[step].url){CONN[step].url=s.url;repaint()}
+  if(s.started&&!CONN[step].started)CONN[step].started=s.started;   // which run this is: a pop-up closed for it stays closed after a reload
   if(inst&&s.running&&(s.agent!==CONN[step].agent||s.command!==CONN[step].command)){Object.assign(CONN[step],{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
   if(inst&&s.running&&s.last&&s.last!==CONN[step].last){CONN[step].last=s.last;clog('install: '+s.last)}   // raw progress: Console only
   if(s.running)continue;
@@ -697,8 +698,8 @@ async function connectReattach(){if(aiGate())return false;const was=(C&&C.agent)
   if(aiGate()||((C&&C.agent)||'claude')!==was)return false;   // the AI changed meanwhile: not this AI's run; asked again later
   if(!s.running||(CONN[step]&&CONN[step].busy))return true;   // finished (or never ran): the row stays as the check paints it
   const inst=step==='install';clog('setup: '+step+' still running, picked up again');
-  CONN[step]={busy:true,msg:connectWaitSaid(step,s.agent),url:s.url||'',...(inst?{agent:s.agent,command:s.command}:{})};repaint();
-  if(ALLOW_ROW[step]&&!ALLOW)allowOpen(step);   // the pop-up with the fallback link, as the press opens it
+  CONN[step]={busy:true,msg:connectWaitSaid(step,s.agent),url:s.url||'',started:s.started||'',...(inst?{agent:s.agent,command:s.command}:{})};repaint();
+  if(ALLOW_ROW[step]&&!ALLOW&&!(s.started&&allowGone()[step]===s.started))allowOpen(step);   // the pop-up with the fallback link, as the press opens it, unless closed for this run
   connectWatch(step,inst?{agent:s.agent}:{}).catch(e=>clog('setup: '+step+': '+e));return true};
  try{return (await Promise.all(CONNECT_ALL.map(one))).every(Boolean)}finally{clearTimeout(dl)}}
 
@@ -844,6 +845,13 @@ async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&
  if(!a.url){try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&s.url)a.url=s.url}catch(e){}}   // the fallback link, from the run's own status
  allowPaint()}
 function allowClose(){const a=ALLOW;ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close();if(a)allowFocus(a.step)}
+// #27: the person closed the pop-up (Close, or Escape) while its step still runs: remember that run (step + the app's
+// "started") for this tab, so a reload shows the row's spinner and link again but not the pop-up. A new run opens it.
+const ALLOW_GONE='ol.allowDismissed';
+function allowGone(){try{return JSON.parse(sessionStorage.getItem(ALLOW_GONE)||'{}')||{}}catch(e){return {}}}
+function allowForget(step){const c=CONN[step]||{};if(!c.busy||!c.started)return;
+ try{const g=allowGone();g[step]=c.started;sessionStorage.setItem(ALLOW_GONE,JSON.stringify(g))}catch(e){}}
+function allowDismiss(){if(ALLOW)allowForget(ALLOW.step);allowClose()}
 // after the pop-up: focus back on that step's Connect / Sign in button, or on its card once the row has gone green
 function allowFocus(step){if(typeof document==='undefined'||!document.querySelector)return;
  const b=document.querySelector(`#setup button[onclick="connectStep('${step}')"]`),t=b||document.querySelector(step==='login'?'#su_ai':'#su_src');if(t&&t.focus)t.focus()}
@@ -1210,7 +1218,7 @@ async function quitApp(){const b=$('#quitbtn');b.disabled=true;try{const r=await
 // How to start it again, as the offline banner says it: the icon on an install, the command on a test copy (#50)
 function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)||'To start again, double-click the Open Loops icon.'}
 $('#quit_again').textContent=restartSaid();
-setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a)allowFocus(a.step)});
+setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a){allowForget(a.step);allowFocus(a.step)}});   // a (not allowClose's): Escape
 cfgRestore();
 // the to-do file example, as a path on this computer looks; and a name for the AI picker, which has no <label> of its own
 $('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';

@@ -591,7 +591,7 @@ def real_clis_ran(tmp):
     return [f"{k}={v}" for k, v in found.items() if not (v and str(v).startswith(str(tmp / "bin")))]
 
 
-def setup_js(port, scenario, tmp):
+def setup_js(port, scenario, tmp, session=None):
     """The served page's Set-up view with everything it calls (stage machine, tick, checklist rows and buttons,
     connectStep, doctor), a stub DOM whose elements keep what they are given, talking to the real app on `port`."""
     html = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read().decode("utf-8")
@@ -599,7 +599,7 @@ def setup_js(port, scenario, tmp):
     grab = lambda start: next(l for l in lines if l.startswith(start))
     cut = lambda a, b: html[html.index(a):html.index(b, html.index(a))]
     parts = [
-        f"const BASE='http://127.0.0.1:{port}';const SS={{}};const BIN={json.dumps(str(tmp / 'bin'))};",
+        f"const BASE='http://127.0.0.1:{port}';const SS={json.dumps(session or {})};const BIN={json.dumps(str(tmp / 'bin'))};",
         "const fs=require('fs');const seen=()=>{const f=BIN+'/prompts.txt';return fs.existsSync(f)?fs.readFileSync(f,'utf8').split(/\\s+/).filter(Boolean):[]};",
         "const sessionStorage={getItem:k=>k in SS?SS[k]:null,setItem:(k,v)=>{SS[k]=String(v)},removeItem:k=>{delete SS[k]}};",
         "const els={};const mk=id=>({id,style:{},dataset:{},textContent:'',innerHTML:'',disabled:false,title:'',open:false,className:'',kids:[],"
@@ -953,7 +953,9 @@ if NODE:
     # 7k. #27: the page reloads while a sign-in is waiting in the browser. The app started it for an earlier load of the
     # page (a POST this page never made); the new page's first poll asks the app, finds it running and shows the spinner,
     # the fallback link and the Allow pop-up again; a step that has finished leaves its row as the check paints it.
-    # After the offline banner clears it asks again, without watching the same run twice. Then Allow finishes it.
+    # After the offline banner clears it asks again, without watching the same run twice. Closing the pop-up is
+    # remembered for that run: a second reload (a new page, with this tab's sessionStorage) brings back the busy row but
+    # not the pop-up. Then Allow finishes it.
     tmp = setup_install("openloops-setup-reattach-")
     srv, port = start_app(tmp, setup_env(tmp))
     try:
@@ -968,8 +970,7 @@ if NODE:
  out.after={n,busy:CONN.slack.busy,url:CONN.slack.url,msg:CONN.slack.msg,gmail:CONN.gmail===undefined,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,
   link:$('#allow_link').innerHTML,rows:$('#su_src_rows').innerHTML,state:$('#su_src_state').textContent};
  await loop();out.n2=n;offline=true;await loop();await sleep(300);out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
- fs.writeFileSync(BIN+'/allow','');await until(()=>!$('#allow_dlg').open,30000);
- out.done={busy:!!(CONN.slack&&CONN.slack.busy),ok:DOC.steps.find(x=>x.id==='slack').ok,toasts:TOASTS.slice(),rows:$('#su_src_rows').innerHTML};
+ allowDismiss();out.dismissed={open:$('#allow_dlg').open,busy:CONN.slack.busy,started:CONN.slack.started};out.SS=SS;
  // review of #58: an answer that arrives while the AI is being changed, or after it changed, restores nothing
  const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login'};
  const quiet=()=>({busy:!!(CONN.login&&CONN.login.busy),open:$('#allow_dlg').open});
@@ -995,15 +996,27 @@ if NODE:
         check(a["gmail"], "a step that finished before the reload leaves its row as the check paints it (no spinner, no old message)")
         check(out["n2"] == 1 and out["n3"] == 2 and out["picked"] == 1,
               f"later polls do not ask again; once the offline banner clears they do, without watching the same run twice ({out['n2']}, {out['n3']}, {out['picked']})")
-        d = out["done"]
-        check(d["busy"] is False and d["ok"] is True and "Slack connected." in d["toasts"] and "spin" not in d["rows"],
-              f"clicking Allow finishes it as if pressed on this page: the row turns green and the pop-up closes ({d['toasts']})")
+        ds = out["dismissed"]
+        gone = json.loads(out["SS"].get("ol.allowDismissed") or "{}")
+        check(not ds["open"] and ds["busy"] and ds["started"] and gone == {"slack": ds["started"]},
+              f"Close on the pop-up: closed, the row still busy, and that run remembered for this tab ({gone})")
         check(out["gated"] == {"ok": False, "busy": False, "open": False} and out["changed"] == {"ok": False, "busy": False, "open": False}
               and out["during"] is False,
               f"a reattach answer arriving during an AI change, or after one, restores no busy row and no pop-up, and is asked again later ({out['gated']}, {out['changed']})")
         sw = out["sweep"]
         check(sw["ok"] is False and sw["miro"] and sw["url"] == "https://example.invalid/authorize?state=miro" and 1400 <= sw["ms"] < 5000,
               f"one step's status failing and another's never answering stop neither the rest (Miro restored) nor the sweep's deadline ({sw})")
+        out = setup_js(port, """
+ await boot();await tick();await loop();await until(()=>CONN.slack&&CONN.slack.busy,10000);
+ out.again={busy:CONN.slack.busy,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML};
+ fs.writeFileSync(BIN+'/allow','');await until(()=>!(CONN.slack&&CONN.slack.busy)&&DOC.steps.find(x=>x.id==='slack').ok,30000);
+ out.done={ok:DOC.steps.find(x=>x.id==='slack').ok,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML};""", tmp, session=out["SS"])
+        ag = out["again"]
+        check(ag["busy"] and not ag["open"] and '<span class="spin"></span>' in ag["rows"] and "Open the sign-in page" in ag["rows"],
+              "a reload after closing the pop-up: the row is busy again with its link, but the pop-up stays closed for that run")
+        d = out["done"]
+        check(d["ok"] is True and not d["open"] and "spin" not in d["rows"],
+              "clicking Allow finishes it as if pressed on this page: the row turns green")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
