@@ -1167,7 +1167,7 @@ async function startOver(){if(!confirm('Wipe the list, people picks and learned 
 async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').textContent=agentLabel()+' window opened — finish there, then come back. The ticks update by themselves.'}
 
 // ---------- doctor + the main loop ----------
-let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0;
+let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0,docReread='';   // docReread: the agent a mismatch last re-read settings for
 // The page's own limit on one check. app.py's /api/doctor makes up to two attempts of 240 s each, 2 s apart (482 s at most),
 // so a request still open after 500 s never will answer. It then counts as a check that did not run (the Retry box), and
 // whatever waited on it (an AI change) lets go. A timer bounds it too where the browser has no AbortController.
@@ -1187,6 +1187,11 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
   if(docFails<4){clearTimeout(docT);docT=setTimeout(()=>doctor(true).catch(()=>{}),15000)}}   // three quiet retries, then the normal once-a-minute rhythm
  else{if(docFails)clog('connection check ran fine again');docFails=0;DOC=r;
   if(aiSwitching&&r.agent===aiSwitching&&C&&C.agent===aiSwitching)aiSwitching='';   // the new AI's own answer is in: however the change went, the gate lets go
+  // A good answer for another AI with no change under way here: another tab changed it, or a save went through but its
+  // answer was lost. This tab's settings are stale, and aiPending() would keep the picker disabled for good, so read
+  // them again, once per mismatch (review of #59).
+  if(r.agent&&C&&r.agent!==(C.agent||'claude')&&!aiSwitching&&docReread!==r.agent){docReread=r.agent;clog('set-up: the check was for '+r.agent+', settings re-read');try{await loadCfg()}catch(e){}}
+  else if(r.agent&&C&&r.agent===(C.agent||'claude'))docReread='';
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
 let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set(),reattached=false,reattaching=false;   // #27: a whole connectReattach() sweep has answered / one is under way

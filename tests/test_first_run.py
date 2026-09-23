@@ -901,6 +901,9 @@ if NODE:
  const d0=DOC;DOC=Object.assign({},d0,{agent:'claude'});paintSetup(stage());
  out.gap={pend:aiPending(),busy:suBusy,disabled:dis()};n=CALLS.length;await chooseAI('grok');out.gap.calls=CALLS.slice(n);out.gap.agent=C.agent;
  DOC=d0;paintSetup(stage());out.gap.after=dis();
+ // review of #59: another tab switched to Codex; this one still caches Claude. A good Codex answer re-reads settings once
+ C.agent='claude';paintSetup(stage());out.stale={pend:aiPending(),disabled:dis()};await doctor(true);paintSetup(stage());
+ out.stale.after={pend:aiPending(),agent:C.agent,disabled:dis(),reread:CON.filter(l=>l.includes('settings re-read')).length};
  J.refresh=Object.assign({},J.refresh,{running:true});n=CALLS.length;TOASTS.length=0;await chooseAI('claude');
  out.job={calls:CALLS.slice(n),toasts:TOASTS.slice(),agent:C.agent};J.refresh.running=false;
  FAIL_ONCE.add('/api/doctor');n=CALLS.length;await chooseAI('claude');
@@ -917,6 +920,9 @@ if NODE:
         g = out["gap"]
         check(g["pend"] is True and g["busy"] == "" and g["disabled"] == 3 and g["calls"] == [] and g["agent"] == "codex" and g["after"] == 0,
               f"#56: check resolved but not yet for the new AI: all three choices disabled and a press starts nothing ({g})")
+        st_ = out["stale"]
+        check(st_["pend"] is True and st_["disabled"] == 3 and st_["after"] == {"pend": False, "agent": "codex", "disabled": 0, "reread": 1},
+              f"another tab switched the AI: the next good check re-reads settings once and the picker is usable again ({st_})")
         check(out["job"]["calls"] == [] and out["job"]["agent"] == "codex"
               and out["job"]["toasts"] == ["Open Loops is still running a job with Codex. Change your AI once it has finished."],
               f"changing the AI while a job runs is refused, in a sentence ({out['job']['toasts']})")
