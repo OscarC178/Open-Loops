@@ -637,8 +637,15 @@ SD_CASES = {
                        "Setup is done; Claude just needs installing again. Press Install Claude below."),
     "sign-in under way": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Claude", "connect": "login"}],
                           "Setup is done; Claude just needs signing in again. Please wait while that finishes."),
-    "slack stopped": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": False, "optional": True, "title": "Slack connected (optional)", "connect": "slack"}],
+    # Slack was the only source and stopped: "At least one source" fails, and the fix named is Slack's own Connect
+    "slack stopped": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": False, "optional": True, "title": "Slack connected", "connect": "slack"},
+                                 {"id": "channel", "ok": False, "title": "At least one source connected (Slack or Gmail)"}],
                       "Setup is done; one connection just needs attention. Press Connect Slack below."),
+    # #56: an optional row that was never connected (Miro, or Gmail beside a working Slack) is an extra: no line at all
+    "miro never connected": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": True, "optional": True},
+                                        {"id": "gmail", "ok": False, "optional": True, "title": "Gmail connected", "connect": "gmail"},
+                                        {"id": "miro", "ok": False, "optional": True, "title": "Miro connected (optional, for the Roadmap card)", "connect": "miro"},
+                                        {"id": "channel", "ok": True}], ""),
 }
 for name_, (ai_, steps_, want_) in SD_CASES.items():
     js = ("const els={};const $=s=>els[s]||(els[s]={style:{},textContent:\"1 · Let's get you connected\",dataset:{}});"

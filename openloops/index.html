@@ -604,7 +604,11 @@ const setupDone=()=>!!(S&&S.setup_done);
 // draws it), otherwise "follow the <row> row" (Grok's Open Grok, a Codex keyring sign-in, no installer here).
 function paintSetupDone(){const h=$('#st_connect_h'),intro=$('#st_connect_intro');if(!h)return;if(h.dataset.first===undefined)h.dataset.first=h.textContent;
  const done=setupDone(),steps=(DOC&&DOC.steps)||[],row=id=>steps.find(x=>x.id===id),inst=row('claude'),login=row('login');
- const bad=(inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.connect||x.alert)))||null;
+ // an optional row (Miro, or the other source once one is in) is an extra, not a failing connection: only a required
+ // row or an alert (the morning refresh) puts the repair line up, so all green is reachable without Miro (#56).
+ // With no source left (the required "At least one source" row), the fix is a source's own Connect: name that one.
+ let bad=(inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.alert)))||null;
+ if(bad&&bad.id==='channel')bad=steps.find(x=>!x.ok&&(x.id==='slack'||x.id==='gmail')&&x.connect)||bad;
  if(done&&!bad){h.textContent='';h.style.display='none';if(intro)intro.style.display='none';return}   // set up and nothing failing: no line at all (#52 review)
  h.style.display='';if(!bad){h.textContent=h.dataset.first;if(intro)intro.style.display='';return}   // not set up yet: the plain heading
  const id=bad===inst?'setup_done_install':bad===login?'setup_done_signin':'setup_done_other';
