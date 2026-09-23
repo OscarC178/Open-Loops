@@ -228,7 +228,7 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
 3. When green it says what the first scan will read and roughly how long it takes ("Looking back 30 days across Slack
    and Gmail. The first pass can take ten minutes.", from ⚙ Settings → History and what is connected) and waits for
    **Start the first scan** (or **Not now**). Nothing reads your accounts before that press; the page remembers the
-   answer until the browser is closed. Then it shows **Who's who?** (`people.py`): the 12–15 people the user messages
+   answer until this tab is closed (another tab asks again). Then it shows **Who's who?** (`people.py`): the 12–15 people the user messages
    most, each with a sample line and a guessed *senior / peer / junior / external* to correct with radio buttons.
    Saving writes `config.people`, then runs *Learn my tone* (`voice.py`) and the first scan automatically. With Gmail
    not connected, the first scan is the Slack-only pass (**Update Slack**), and setup finishes when it has run.
@@ -250,7 +250,7 @@ bash install.sh --dest ~/OpenLoops-test --isolated --port 8790 --name "Test"
 Gmail and Miro accounts: the checklist asks that CLI what is connected (and, with Slack connected, asks Claude once
 for your Slack id), and every scan it runs reads your real messages. Scans only read: nothing is sent or drafted
 unless you press *draft chase* (or turn on sending in Settings). Without `--isolated`, one press of **Start the first
-scan** is remembered until the browser closes and the page then carries on with the setup scans by itself, reloads
+scan** is remembered until that tab is closed and the page then carries on with the setup scans by itself, reloads
 included (they fill the copy's own `people_suggested.json` and use your AI plan's allowance), and a to-do file named in
 its Settings is read, and written back when you press *done*.
 `--isolated` is recommended for every test copy:

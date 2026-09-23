@@ -143,7 +143,7 @@ def page_js(port, session, scenario, tmp):
         cut("const counts=()=>", "\n// ---------- day log"),
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),   # doctor(), the poll loop, finished() (#49)
         """const CALLS=[];const realFetch=global.fetch;
-global.fetch=(u,o)=>{if(o&&o.method==='POST')CALLS.push(u+' '+(o.body||''));return realFetch(BASE+u,o)};
+let OFF=false;global.fetch=(u,o)=>{if(OFF)return Promise.reject(new TypeError('Failed to fetch'));if(o&&o.method==='POST')CALLS.push(u+' '+(o.body||''));return realFetch(BASE+u,o)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(f,ms=60000){const end=Date.now()+ms;while(!f()){if(Date.now()>end)throw new Error('timed out');await sleep(100)}}
 async function waitJob(n){await sleep(300);const end=Date.now()+90000;while(true){await loadState();if(!running(n))return J[n];if(Date.now()>end)throw new Error(n+' still running');await sleep(200)}}
@@ -222,7 +222,7 @@ if NODE:
         shutil.rmtree(tmp, ignore_errors=True)
 
     # ------------------------------------------------------------ 2. the gate
-    say("2. nothing runs before Start the first scan; Not now and Start are remembered for the session")
+    say("2. nothing runs before Start the first scan; Not now and Start are remembered for the tab")
     tmp = install_with_fake("openloops-firstrun-gate-")
     srv, port = start_app(tmp, env_for(tmp))
     try:
@@ -233,7 +233,7 @@ if NODE:
               and not any(j["running"] or "rc" in j for j in st["jobs"].values()) and "people" not in prompts(tmp),
               "five ticks and Not now: no job started, by the page or on the server")
         check(out["after"]["later"] == "Not started. Press Start the first scan when you're ready." and out["SS"] == {"ol.firstscan": "later"},
-              f"Not now says so and is remembered for the session ({out['after']['later']!r}, {out['SS']})")
+              f"Not now says so and is remembered for the tab ({out['after']['later']!r}, {out['SS']})")
         out = page_js(port, {"ol.firstscan": "later"}, "await boot();await tick();await tick();out.reload=snap();", tmp)
         check(out["reload"]["shown"] == ["start"] and out["reload"]["jobs"] == [] and out["reload"]["later"].startswith("Not started."),
               "a reload after Not now still waits, and still says so")
@@ -325,6 +325,13 @@ else:
             check(not rows["self"]["ok"] and rows["self"]["fix"] == signin, f"'Knows who you are on Slack' is not ticked while signed out ({rows['self']})")
             check(not rows["channel"]["ok"] and rows["channel"]["fix"] == signin, f"'At least one source' says sign in first ({rows['channel']['fix']!r})")
             check(out["watch"] == [], "page: back to the slow poll once the job's end was seen")
+            out = page_js(port, {}, """
+ const realST=global.setTimeout;const delays=[];global.setTimeout=(f,ms)=>{if(f===loop)delays.push(ms);return realST(f,ms)};
+ await boot();await loop();jobStarted('refresh');await loop();out.watching=delays.slice(-1)[0];
+ OFF=true;await loop();out.offline=delays.slice(-1)[0];OFF=false;await loop();out.back=delays.slice(-1)[0];
+ stopped=true;const n=delays.length;pollSoon();out.afterQuit=delays.length-n;""", tmp)
+            check(out["watching"] == 1500 and out["offline"] == 60000 and out["back"] == 1500 and out["afterQuit"] == 0,
+                  f"page: fast polls while watching a job, the slow interval while the app does not answer, none after quit ({out})")
             (tmp / "bin" / "signed_out").unlink()
             out = page_js(port, {}, """
      await boot();await loop();

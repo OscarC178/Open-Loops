@@ -475,7 +475,7 @@ const slackOnlyScan=()=>slackOk()&&!srcOk('gmail');
 const scanSources=()=>srcOk('slack')&&srcOk('gmail')?'Slack and Gmail':srcOk('slack')?'Slack':srcOk('gmail')?'Gmail':'Slack and Gmail';
 const histDays=()=>Math.min(+(C&&C.history_days)||30,365);   // app.py history_days(): how far back the first scan reads
 // Nothing reads your accounts by itself: the first automatic job (who's who, tone, first scan) waits for Start the first
-// scan, remembered for this browser session (#38). An isolated test copy (#36) never goes on by itself, not even after a
+// scan, remembered for this tab (sessionStorage: another tab asks again) (#38). An isolated test copy (#36) never goes on by itself, not even after a
 // reload: only a press on this page load starts it.
 const GO_KEY='ol.firstscan';let GO=null,ISO=false,pressed=false;try{GO=sessionStorage.getItem(GO_KEY)}catch(e){}
 const scanAllowed=()=>pressed||(!ISO&&GO==='go');
@@ -865,7 +865,7 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
  else{if(docFails)clog('connection check ran fine again');docFails=0;DOC=r;
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
-let loopT=null,inLoop=false,runSeen=new Set();
+let loopT=null,inLoop=false,offline=false,runSeen=new Set();
 // A job's end is noticed by its "seq" (app.py _ended: one number per job end, always going up), never by seeing it
 // running and then not (#49): a job that fails within a second is over before the next poll, and was never seen
 // running. SEEN holds the last seq handled per job (null until the first poll, which only takes note: nothing that
@@ -896,10 +896,10 @@ async function loop(){clearTimeout(loopT);inLoop=true;try{
   if(ended.length){await loadCfg();await loadDaylog();await loadRm();finished(ended)}   // a job just ended: pick up new people/voice/config/day log/roadmap, say what happened
   const st=stage();
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
-  await tick();banner('');
- }catch(e){appDown(e)}
+  await tick();banner('');offline=false;
+ }catch(e){offline=true;appDown(e)}   // not answering: no fast polls until it does (below)
  inLoop=false;if(stopped)return;const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
- loopT=setTimeout(loop,Object.keys(WATCH).length?1500:(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
+ loopT=setTimeout(loop,offline?60000:Object.keys(WATCH).length?1500:(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped)loop()});
 window.addEventListener('pagehide',()=>{if(stopped)return;const b=new Blob([JSON.stringify({page:PAGE})],{type:'application/json'});if(!(navigator.sendBeacon&&navigator.sendBeacon('/api/bye',b)))fetch('/api/bye',{method:'POST',body:b,keepalive:true}).catch(()=>{})});
 // Back/forward cache restore: reload, so the page's copy of the wording (MSG) and its code are the app's current ones.
