@@ -97,8 +97,11 @@ FAKE = r'''#!PYTHON
 # It honours the run's allow-list the way the real CLI was measured to (apps._default off, an app on, a tool off),
 # fetches its connector list into CODEX_HOME/cache during a run when none is there (as the real one does), and can be
 # told by flag files to misbehave: call a send tool anyway, echo the question, report a 401, run out of allowance.
-# When the preamble asks for it, the reply ends with a TOOLS_SEEN line naming the listed tools the session "got"
-# (flags: "blind" got none, "half" got no Gmail, "shy" got them all but calls none, "nofooter" leaves the line out).
+# Four things are set separately. What the session exposes: the listed tools the allow-list enables, less "blind" (none)
+# or "half" (no Gmail). What the model calls: every exposed tool, or none with "shy". What its TOOLS_SEEN line claims
+# (only when the preamble asks for one): the exposed tools; with "liar" every listed tool, exposed or not; "nofooter"
+# leaves it out, "quoted" writes it as "> TOOLS_SEEN: ...", "midfooter" puts it before the last line. What a refresh
+# reply says about availability: the file "avail" holds true (default), false or missing.
 import json, os, re, sys, time
 a = sys.argv[1:]
 here = os.path.dirname(os.path.abspath(__file__))
@@ -172,8 +175,9 @@ if a[:1] == ["exec"]:
         ev(type="error", message="unexpected status 401 Unauthorized: token expired")
         text = "GMAIL: CONNECTED\nSLACK: CONNECTED\nSLACK_ID: U0TESTSELF1"
         open(out, "w").write(text); sys.exit(1)
-    listed = [t for t in re.findall(r"^- ((?:gmail|slack)\.\w+)", data, re.M) if enabled(t)]
-    seen = [] if flag("blind") else [t for t in listed if not (flag("half") and t.startswith("gmail."))]
+    listed = re.findall(r"^- ((?:gmail|slack)\.\w+)", data, re.M)
+    exposed = [] if flag("blind") else [t for t in listed if enabled(t) and not (flag("half") and t.startswith("gmail."))]
+    claimed = listed if flag("liar") else exposed
     if "GMAIL: CONNECTED or NOT-CONNECTED" in data:
         if flag("echo"):
             text = "GMAIL: CONNECTED or NOT-CONNECTED\nSLACK: CONNECTED or NOT-CONNECTED\nSLACK_ID: NONE"
@@ -202,17 +206,18 @@ if a[:1] == ["exec"]:
             open(os.path.join(here, "forbid1.done"), "w").close()
             call("gmail.read_email")
             text = "OK"
-        else:  # a working run calls the tools its session got (flags: "blind" got none, "half" no Gmail's)
-            for t in seen:
-                if not flag("shy"):  # "shy": the tools are there, the model calls none of them
+        else:  # a working run calls the tools its session exposes, unless "shy"
+            for t in exposed:
+                if not flag("shy"):
                     call(t)
             text = "SENT: thread 1" if flag("marker") else "OK"
             if "<<<OPENLOOPS>>>" in data:  # refresh.py's contract; claims Gmail was searched, whatever it was given
-                on = "false" if flag("shy") else "true"  # ...unless it searched nothing, and says so
-                text = ('<<<OPENLOOPS>>>{"new_loops": [], "updates": [], "gmail_available": %s, '
-                        '"slack_available": %s}<<<END>>>' % (on, on))
+                av = open(os.path.join(here, "avail")).read().strip() if flag("avail") else "true"
+                flags_ = "" if av == "missing" else ', "gmail_available": %s, "slack_available": %s' % (av, av)
+                text = '<<<OPENLOOPS>>>{"new_loops": [], "updates": []%s}<<<END>>>' % flags_
     if "TOOLS_SEEN" in data and not flag("nofooter"):
-        text += "\nTOOLS_SEEN: " + (", ".join(seen) or "none")
+        line = ("> " if flag("quoted") else "") + "TOOLS_SEEN: " + (", ".join(claimed) or "none")
+        text = (text + "\n" + line) if not flag("midfooter") else (line + "\n" + text)
     ev(type="item.completed", item={"type": "agent_message", "text": text})
     ev(type="turn.completed", usage={"input_tokens": 27000, "cached_input_tokens": 13000, "output_tokens": 50})
     open(out, "w", encoding="utf-8").write(text)
@@ -367,6 +372,21 @@ p = agent.run("Draft a chase.", ["gmail.search_threads", "gmail.create_draft"])
 flag("blind", False)
 check(p.returncode == 3 and p.refused == "notools" and len(execs()) == n + 1,
       "the session lacked the tools on a job that can write: refused at once, no retry")
+for fl, what in (("quoted", "a quoted footer (> TOOLS_SEEN: ...)"), ("midfooter", "a footer that is not the last line")):
+    flag("shy"); flag(fl)
+    n = len(execs())
+    p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+    flag("shy", False); flag(fl, False)
+    check(p.returncode == 3 and p.refused == "notools" and len(execs()) == n + 2 and "tools seen: not said" in p.stderr,
+          f"{what} with no call is no footer: retried, then refused")
+# KNOWN RISK, asserted so it stays visible (INSTALL.md says so): the footer is the model's word. A session that lacked
+# the tools, a model that called nothing and a footer claiming them all is taken as a normal result.
+flag("blind"); flag("liar")
+n = len(execs())
+p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+flag("blind", False); flag("liar", False)
+check(p.returncode == 0 and not p.refused and len(execs()) == n + 1 and p.tools_used == [],
+      "a dishonest footer (claims tools the session lacked, no calls) passes as a normal result: the documented risk")
 
 # #42: run folders left by killed runs are swept; a fresh one and a live job's are kept
 import contextlib, io
@@ -542,11 +562,12 @@ check(p.refused == "timeout" and time.time() - t < 20 and not runs_left(),
 auth("chatgpt")
 
 # review 3: retry safety
-flag("forbid1")
+flag("forbid1"); flag("nofooter")  # no footer, so Slack counts as missed and the retry-safety guard is what stops it
 n = len(execs())
 p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
-flag("forbid1", False); flag("forbid1.done", False)
-check(p.returncode == 3 and p.refused == "unlisted" and "codex_apps/gmail.read_email" in p.tools_used and len(execs()) == n + 1,
+flag("forbid1", False); flag("forbid1.done", False); flag("nofooter", False)
+check(p.returncode == 3 and p.refused == "unlisted" and "codex_apps/gmail.read_email" in p.tools_used and len(execs()) == n + 1
+      and "no slack tool was called in attempt 1" in p.stderr,
       "a forbidden call in attempt 1 fails the run (rc 3), stays in tools_used, and is not retried away")
 flag("blind"); flag("marker")
 n = len(execs())
@@ -603,23 +624,27 @@ check(p.refused == "nosources" and "Neither Gmail nor Slack" in p.stdout, "neith
 (ROOT / "config.json").write_text(json.dumps(cj))
 auth("chatgpt")
 
-# #44 end to end: a refresh whose model had both tools, called neither and said it searched neither is applied as is
+# #44 end to end: a refresh whose model had both tools and called neither is applied as is; its cursors follow the
+# availability flags in its reply (true or missing: moved; false: held)
 auth("chatgpt", account="acct-Q")
 write_cache(JOBS / agent.codex_auth()["account"], ["gmail.search_emails", "gmail.read_email_thread", "slack.slack_read_channel",
                                                     "slack.slack_read_thread", "slack.slack_search_public_and_private", "slack.slack_search_users"])
 cj = json.loads((ROOT / "config.json").read_text())
 (ROOT / "config.json").write_text(json.dumps(dict(cj, slack_self_id="U0TESTSELF1")))
 old = "2026-09-01T09:00+01:00"
-(ROOT / "state.json").write_text(json.dumps({"cursor": old, "slack_cursor": old, "gmail_cursor": old, "loops": []}))
-flag("shy")
-n = len(execs())
-r = subprocess.run([sys.executable, "-m", "openloops.refresh"], cwd=ROOT, capture_output=True, text=True, timeout=60)
-flag("shy", False)
-st = json.loads((ROOT / "state.json").read_text())
-check(r.returncode == 0 and len(execs()) == n + 1 and "gmail.search_emails" in execs()[-1]["stdin_head"]
-      and "slack.slack_search_public_and_private" in execs()[-1]["stdin_head"], f"a refresh with both tools runs once ({r.stdout[-300:]}{r.stderr[-300:]})")
-check(st["cursor"] != old and st["gmail_cursor"] == old and st["slack_cursor"] == old and st["gmail_available"] is False,
-      "...its output is applied: the run's cursor moves, while Gmail's and Slack's hold, as its availability flags say")
+for av, moves in (("true", True), ("false", False), ("missing", True)):
+    (ROOT / "state.json").write_text(json.dumps({"cursor": old, "slack_cursor": old, "gmail_cursor": old, "loops": []}))
+    (BIN / "avail").write_text(av)
+    flag("shy")
+    n = len(execs())
+    r = subprocess.run([sys.executable, "-m", "openloops.refresh"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    flag("shy", False); flag("avail", False)
+    st = json.loads((ROOT / "state.json").read_text())
+    check(r.returncode == 0 and len(execs()) == n + 1 and "gmail.search_emails" in execs()[-1]["stdin_head"]
+          and "slack.slack_search_public_and_private" in execs()[-1]["stdin_head"],
+          f"tools seen, none called, availability {av}: the refresh runs once and is applied ({r.stderr[-200:]})")
+    check(st["cursor"] != old and (st["gmail_cursor"] != old) == moves and (st["slack_cursor"] != old) == moves,
+          f"...and the Gmail and Slack cursors {'move' if moves else 'hold'} (availability {av})")
 (ROOT / "config.json").write_text(json.dumps(cj))
 auth("chatgpt")
 
