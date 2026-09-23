@@ -664,19 +664,24 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
         u = ev["usage"]
         note += f"; tokens in {u.get('input_tokens', '?')} (cached {u.get('cached_input_tokens', '?')}), out {u.get('output_tokens', '?')}"
     stdout = final or ev["msg"]
-    blind = bool(missed) and not codex_failure(rc, ev["errors"], err)
+    # A run Codex reports as failed (a timeout, a spent allowance, a 401, any other error) is a failed run even if it
+    # exited 0 and left a result behind: its text never reaches the job, so nothing half-done is applied.
+    failed = codex_failure(rc, ev["errors"], err)
+    blind = bool(missed) and not failed
     if extra:
         note += "; REFUSED: used a tool the job did not list: " + ", ".join(extra)
         rc, stdout = 3, CODEX_REFUSE["unlisted"] + "\n"
+    elif failed:
+        note += "; FAILED: " + failed
+        n = timeout or 0
+        rc = 124 if failed == "timeout" else (rc or 3)
+        stdout = CODEX_REFUSE[failed].format(limit=f"{n // 60} minutes" if n >= 120 else f"{n} seconds") + "\n"
     elif blind:  # the model's own words are in the note: with the tools not called, they hold no mail or messages
         note += "; REFUSED: no " + ", ".join(missed) + " tool was called"
         rc, stdout = 3, CODEX_REFUSE["notools"] + "\n"
-    elif rc == 124:
-        n = timeout or 0
-        stdout = CODEX_REFUSE["timeout"].format(limit=f"{n // 60} minutes" if n >= 120 else f"{n} seconds") + "\n"
     out_err = err + ("\n" if err and not err.endswith("\n") else "") + note + "\n" + "".join(f"codex error: {x}\n" for x in ev["errors"])
     done = subprocess.CompletedProcess(args, rc, stdout=stdout, stderr=out_err)
-    done.refused = "unlisted" if extra else "notools" if blind else ""
+    done.refused = "unlisted" if extra else failed or ("notools" if blind else "")
     done.tools_used, done.tools_ok, done.errors, done.codex_stderr = used_all, ok_all, errs_all, err
     done.dropped = dropped  # sources skipped because they are not connected in this ChatGPT account
     return done

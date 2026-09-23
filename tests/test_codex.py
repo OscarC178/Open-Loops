@@ -137,6 +137,10 @@ if a[:1] == ["exec"]:
         ev(type="error", message="You've hit your usage limit. Try again in 3 hours.")
         ev(type="turn.failed", error={"message": "You've hit your usage limit."}); sys.exit(1)
     call = lambda t: ev(type="item.completed", item={"type": "mcp_tool_call", "server": "codex_apps", "tool": t, "status": "completed"})
+    if flag("e401_rc0"):  # an error event, yet exit 0 with a result left behind
+        ev(type="error", message="unexpected status 401 Unauthorized: token expired")
+        text = '<<<OPENLOOPS>>>{"new_loops": [], "updates": [], "gmail_available": true, "slack_available": true}<<<END>>>'
+        open(out, "w").write(text); sys.exit(0)
     if flag("e401"):
         ev(type="error", message="unexpected status 401 Unauthorized: token expired")
         text = "GMAIL: CONNECTED\nSLACK: CONNECTED\nSLACK_ID: U0TESTSELF1"
@@ -460,6 +464,11 @@ n = len(execs())
 p = agent.run("Read.", ["gmail.search_threads"])
 flag("e401", False)
 check(p.returncode != 0 and len(execs()) == n + 1 and "401" in p.stderr, "a 401 in attempt 1 stops: no retry")
+flag("e401_rc0")
+p = agent.run("Refresh.", ["gmail.search_threads"])
+flag("e401_rc0", False)
+check(p.returncode != 0 and p.refused == "expired" and "<<<OPENLOOPS>>>" not in p.stdout and "{" not in p.stdout
+      and "sign-in has run out" in p.stdout, "a 401 event with exit 0: non-zero, plain sentence, no OPENLOOPS JSON for refresh to apply")
 
 # review 3: stale snapshots refuse
 for label, when in (("more than a day old", time.time() - 25 * 3600), ("dated in the future", time.time() + 3600)):
