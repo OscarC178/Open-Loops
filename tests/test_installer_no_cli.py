@@ -9,8 +9,12 @@ chatgpt.com, x.ai), so a vendor script run by the installer, piped or not, is ca
   2. With an AI already there (on PATH, or only in ~/.local/bin or ~/.grok/bin): no sentence, still exit 0.
   3. The app started from that install, with the same PATH and a temp HOME: the checklist's first row offers
      Install (connect "install") for the configured agent, Claude by default and Grok once config.json says grok.
-  4. setup.ps1 (cannot run here): no Invoke-Expression / iex / irm, no Claude download, no winget Claude block,
-     Python via winget kept, and the same sentence.
+  4. setup.ps1 (cannot run here): no Invoke-Expression / iex / irm / Invoke-RestMethod, and no other download
+     route either (iwr, Invoke-WebRequest, Start-BitsTransfer, WebClient DownloadFile / DownloadString); no Claude
+     URL, no winget Claude block, Python via winget kept, and the same sentence. Limits: this is a text check on the
+     script with comment lines removed. It cannot catch a download built at run time (a name assembled from strings,
+     a call through another script or module), a winget/choco install of some other AI package under a new id, or
+     anything setup.ps1 starts (register-task.ps1, the app). Running it on Windows is still the real test.
   5. Nothing tracked in the repo pipes a download into a shell (curl ... | bash / sh, irm ... | iex).
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request
@@ -41,7 +45,9 @@ def script(path, text):
 say("4. setup.ps1 installs no AI (static: PowerShell cannot run here)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))  # the script, not its comments
-check(not re.search(r"Invoke-Expression|\biex\b|\birm\b|Invoke-RestMethod", code, re.I), "no Invoke-Expression / iex / irm")
+check(not re.search(r"Invoke-Expression|\biex\b|\birm\b|Invoke-RestMethod|\biwr\b|Invoke-WebRequest|Start-BitsTransfer"
+                     r"|DownloadFile|DownloadString", code, re.I),
+      "no Invoke-Expression / iex / irm / iwr / Invoke-WebRequest / Start-BitsTransfer / DownloadFile / DownloadString")
 check("claude.ai/install" not in ps and not re.search(r"winget\s+install[^\n]*Anthropic", ps, re.I),
       "no Claude download and no winget Claude block")
 check(re.search(r"winget\s+install\s+--id\s+Python\.Python", code) is not None, "Python is still installed with winget")
