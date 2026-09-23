@@ -4,7 +4,7 @@
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
 import itertools, json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -791,36 +791,40 @@ class H(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if self.path == "/api/cursor/forget":
             # "Forget where I was" (#56), offered on the cursor_unreadable toast: a cursor in state.json that is not a
-            # date stops every refresh (refresh.parse_when). Only the unreadable cursors change. Each takes the last
-            # refresh's time when that is readable, so nothing closed before it is found again (#52 review: a guessed
-            # window re-found old loops); with none, it goes, and the next refresh reads Settings > History back.
+            # date stops every refresh (refresh.parse_when). Only the unreadable cursors change, each from what is
+            # recorded about its own source (refresh.apply), never from a time that does not prove that source was read:
+            # - cursor (the shared one): last_refresh, written with it by every full run;
+            # - slack_cursor: last_slack_refresh, written only when a Slack-only pass searched Slack;
+            # - gmail_cursor: nothing records when Gmail was last searched (last_refresh moves on runs that could
+            #   not reach Gmail too), so it is always the History window.
+            # With no such time the cursor is set to the start of Settings > History, the first scan's window (not
+            # removed: a missing slack/gmail cursor falls back to the shared one, which proves nothing for them).
             # The list, people picks and learned tone are kept: that is what Start over would wipe.
-            def readable(v):
-                if v is None or (isinstance(v, str) and not v.strip()):
-                    return True   # missing is not unreadable: refresh.parse_when gives it the History window
+            def when(v):
                 try:
-                    datetime.fromisoformat(str(v).strip())
-                    return True
+                    return datetime.fromisoformat(str(v).strip())
                 except (TypeError, ValueError):
-                    return False
+                    return None
+
+            def readable(v):
+                return v is None or (isinstance(v, str) and not v.strip()) or when(v) is not None
+            proof = {"cursor": "last_refresh", "slack_cursor": "last_slack_refresh", "gmail_cursor": None}
+            window = (datetime.now().astimezone() - timedelta(days=history_days())).isoformat(timespec="minutes")
             done = {}
 
             def forget(s):
-                bad = [k for k in ("cursor", "slack_cursor", "gmail_cursor") if k in s and not readable(s[k])]
+                bad = [k for k in proof if k in s and not readable(s[k])]
                 if not bad:
                     return False   # nothing unreadable: nothing is written
-                last = s.get("last_refresh") if s.get("last_refresh") and readable(s.get("last_refresh")) else None
                 for k in bad:
-                    if last:
-                        s[k] = last
-                    elif k == "cursor":
-                        s[k] = None   # as a fresh state.json has it
-                    else:
-                        s.pop(k)      # slack_cursor / gmail_cursor fall back to the shared cursor
-                done.update(keys=bad, since="last_refresh" if last else "history")
+                    src = proof[k] and s.get(proof[k])
+                    ok = bool(src) and when(src) is not None
+                    s[k] = src if ok else window
+                    done[k] = proof[k] if ok else "history"
             if update_json(STATE, forget) is False:
                 return self._json({"ok": False, "error": messages.say("server_error")}, 500)
-            return self._json({"ok": True, "forgot": done.get("keys", []), "since": done.get("since", "")})
+            since = "" if not done else "history" if "history" in done.values() else "recorded"
+            return self._json({"ok": True, "forgot": sorted(done), "how": done, "since": since})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":

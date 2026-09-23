@@ -8,6 +8,7 @@ Slack id, the day log is written with --digest-only, and every Roadmap mode that
 Miro is refused before it starts (not configured / no confirm).
 """
 import json, shutil, subprocess, sys, time, urllib.error, urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from _helpers import fresh_install, isolated_env, start_app, stop
@@ -214,24 +215,33 @@ try:
     check(code == 200 and d["port"] == PORT and d["build"] == "checkout" and "python" in d and "up_since" in d, "diag names port, build, python, start time")
     check("refresh" in d["jobs"] and "rc" in d["jobs"]["refresh"] and "doctor" in d, "diag carries job results and the last check")
 
-    # ---- "Forget where I was" (#56): only an unreadable cursor changes, to the last refresh's time; the rest is kept
+    # ---- "Forget where I was" (#56, review of #59): only unreadable cursors change, each from its own source's record
     keep = (tmp / "state.json").read_text(encoding="utf-8")
     s0 = json.loads(keep)
-    s0.update(cursor="not-a-date", slack_cursor="2026-09-01T09:00+01:00", gmail_cursor="junk", last_refresh="2026-09-20T09:00+01:00")
+    hist = lambda v: abs((datetime.fromisoformat(v) - (datetime.now().astimezone() - timedelta(days=30))).total_seconds()) < 600
+    s0.update(cursor="not-a-date", slack_cursor="junk", gmail_cursor="junk", last_refresh="2026-09-20T09:00+01:00",
+              last_slack_refresh="2026-09-18T09:00+01:00")
     (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
     code, r = api("/api/cursor/forget", {})
     s1 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
-    check(code == 200 and r["since"] == "last_refresh" and sorted(r["forgot"]) == ["cursor", "gmail_cursor"]
-          and s1["cursor"] == s1["gmail_cursor"] == "2026-09-20T09:00+01:00" and s1["slack_cursor"] == "2026-09-01T09:00+01:00"
-          and s1["loops"] == s0["loops"], f"Forget where I was: the unreadable cursors take the last refresh's time, the rest is kept ({r})")
-    s0.update(cursor="not-a-date", gmail_cursor="junk", last_refresh=None)
+    check(code == 200 and r["forgot"] == ["cursor", "gmail_cursor", "slack_cursor"] and s1["cursor"] == "2026-09-20T09:00+01:00"
+          and s1["slack_cursor"] == "2026-09-18T09:00+01:00" and hist(s1["gmail_cursor"]) and r["since"] == "history"
+          and s1["loops"] == s0["loops"],
+          f"Forget where I was: shared cursor from last_refresh, Slack from last_slack_refresh, Gmail (nothing records it) from the History window ({r})")
+    s0.update(cursor="2026-09-20T09:00+01:00", slack_cursor="junk", gmail_cursor="2026-09-19T09:00+01:00")
     (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
     code, r = api("/api/cursor/forget", {})
     s1 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
-    check(code == 200 and r["since"] == "history" and s1["cursor"] is None and "gmail_cursor" not in s1 and s1["slack_cursor"] == "2026-09-01T09:00+01:00",
-          f"...with no readable last refresh, they go, and the next refresh reads the History window ({r})")
+    check(code == 200 and r["since"] == "recorded" and r["forgot"] == ["slack_cursor"] and s1["slack_cursor"] == "2026-09-18T09:00+01:00"
+          and s1["gmail_cursor"] == "2026-09-19T09:00+01:00", f"...a readable cursor is left alone; all recorded: 'recorded' ({r})")
+    s0.update(slack_cursor="junk", last_slack_refresh=None)
+    (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
     code, r = api("/api/cursor/forget", {})
-    check(code == 200 and r["forgot"] == [], "...and with nothing unreadable, nothing changes")
+    s1 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+    check(code == 200 and r["since"] == "history" and hist(s1["slack_cursor"]),
+          f"...no Slack-only pass recorded: Slack reads the History window, not last_refresh ({r})")
+    code, r = api("/api/cursor/forget", {})
+    check(code == 200 and r["forgot"] == [] and r["since"] == "", "...and with nothing unreadable, nothing changes, and it says so (not the History sentence)")
     (tmp / "state.json").write_text(keep, encoding="utf-8")
 
     # ---- page has the new controls
@@ -239,7 +249,7 @@ try:
     for needle in ('id="console_wrap"', "function clog(", "'/api/diag'", 'id="st_checkfail"', "return 'checkfail'", "function personRow(", "class=\"blk ", "function priSel(", "setSort("):
         check(needle in html, f"page has {needle}")
     check("Check failed" not in html, "no bare 'Check failed' anywhere on the page")
-    check("j.failure==='cursor_unreadable'?{undo:forgetCursor,undoLabel:'Forget where I was'" in html and "api('/api/cursor/forget',{})" in html,
+    check("j.failure==='cursor_unreadable'?{undo:forgetCursor,undoLabel:'Forget where I was'" in html and "msg('cursor_fine')" in html and "api('/api/cursor/forget',{})" in html,
           "the unreadable-cursor toast carries Forget where I was (#56)")
     check("x.id==='self'&&x.ok" in html, "Update Slack is shown only when Slack is connected and the owner's id is known")
     for needle in ('id="uslack"', 'id="cfg_model"', 'id="cfg_effort"', 'id="cfg_standing"', 'standingCreate(', 'id="pins"', 'pinEmbed(', "linkify(", "addLink(", "noteFor(", 'id="dl_run"', 'id="rm_postbtn"', 'id="cfg_rm_board"', 'id="cs_personal"', 'id="cs_app"', 'cfgRestore(', "ol.settings.open", 'id="hs_needs"', 'id="hs_waiting"', 'id="hs_rest"', 'id="n3"'):

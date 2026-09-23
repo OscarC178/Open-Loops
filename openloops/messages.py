@@ -145,17 +145,22 @@ FAILURES = {
         "what": "Open Loops can't read when it last checked.",
         # the light fix first (#56): "Forget where I was" on the toast (app.py /api/cursor/forget) keeps the list,
         # people and tone; Start over wipes them, so it is named last
-        "fix": "Press Forget where I was on the message and the next refresh picks up from your last refresh; Start over in Settings is only the last resort.",
+        "fix": "Press Forget where I was on the message and the next refresh picks up from where each source was last read; Start over in Settings is only the last resort.",
         "button": None},
 
-    # after Forget where I was: from the last refresh, or (none readable) Settings > History back, the first scan's window
+    # after Forget where I was (app.py /api/cursor/forget): each source from when it was last read; a source with no
+    # such record from Settings > History back, the first scan's window; and nothing unreadable at all
     "cursor_forgotten": {
-        "what": "Done: the next refresh picks up from your last refresh, and nothing else changed.",
+        "what": "Done: the next refresh picks up from where each source was last read, and nothing else changed.",
         "fix": "Run it again when you're ready.",
         "button": None},
     "cursor_forgotten_window": {
-        "what": "Done: with no earlier refresh to go by, the next one reads back as far as Settings → History says.",
+        "what": "Done: for a source with no record of when it was last read, the next refresh reads back as far as Settings → History says.",
         "fix": "Run it again when you're ready.",
+        "button": None},
+    "cursor_fine": {
+        "what": "Nothing needed forgetting: Open Loops can read where it got to with every source.",
+        "fix": "Run the refresh again, and if it stops the same way press Copy all in the Console and send it to whoever set Open Loops up.",
         "button": None},
 
     # ---- the Mac's weekday morning refresh (doctor.schedule_step, #24 / #31)

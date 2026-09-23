@@ -1209,7 +1209,7 @@ function newlyEnded(){const out=[];if(!J)return out;
  return out}
 function ack(keys,seqs){keys.forEach((k,i)=>{SEEN[k]=seqs[i];delete WATCH[k]})}
 // "Forget where I was" (#56): the app replaces only the unreadable cursors, with the last refresh's time when it has one
-async function forgetCursor(){try{const r=await api('/api/cursor/forget',{});toast(r.since==='last_refresh'?msg('cursor_forgotten'):msg('cursor_forgotten_window'),{ms:8000})}
+async function forgetCursor(){try{const r=await api('/api/cursor/forget',{});toast(r.since==='recorded'?msg('cursor_forgotten'):r.since==='history'?msg('cursor_forgotten_window'):msg('cursor_fine'),{ms:8000})}
  catch(e){toast(errSaid(e),{err:true})}}   // its own sentence, not the toast's "Undo failed"
 // Peak-End: when a job ends, say what it did and what is next - never just let the spinner vanish
 function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.running||j.rc===undefined)continue;
