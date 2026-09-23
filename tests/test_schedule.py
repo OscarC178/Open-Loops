@@ -5,12 +5,14 @@
 launchd writes state/logs/launchd.err.log when it cannot start scripts/run-refresh.sh at all; the case that hid
 for a week was "/bin/bash: .../run-refresh.sh: Operation not permitted" (macOS privacy protection refusing a
 background job a script under ~/Documents). Checks, all against temp folders, never the real install:
-  1. doctor.schedule_step: missing log, empty log, the blocked line, a later successful run, an older run,
-     another failure, and lines left behind by an install that moved.
+  1. doctor.schedule_step: missing log, empty log, the blocked line, a later run ("started", green), an
+     older run, another failure, the LATEST failure deciding, and lines about any other install ignored.
   2. the user-facing sentences follow #25's plain-words rules.
   3. doctor.main() adds the row on a Mac (optional, so setup is not sent back to step 1) and only there.
-  4. /api/diag carries the tail of launchd.err.log, and "" when there is none.
-  5. the page has somewhere to show the row once set up.
+  4. /api/diag carries the tail of launchd.err.log, and "" when there is none; /api/schedule/status answers
+     the same check without the CLI.
+  5. the page shows the row once set up, re-checks it, puts the download button in the checklist too, and
+     does not promise a morning refresh while the row is red.
 """
 import contextlib, inspect, io, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
@@ -68,9 +70,16 @@ try:
     check("Operation not permitted" in s["detail"], "... the raw line is kept as developer detail")
 
     touch(logs / "runner-2026-09-22.log", "=== refresh 09:15:01\n", ago=3600)
-    check(doctor.schedule_step(logs, root) is not None, "a runner log OLDER than the error: still red")
-    touch(logs / "runner-2026-09-23.log", "=== refresh 09:15:01\n", ago=0)
-    check(doctor.schedule_step(logs, root) is None, "a runner log NEWER than the error (it ran since): no row")
+    check(doctor.schedule_step(logs, root)["ok"] is False, "a runner log OLDER than the error: still red")
+    touch(logs / "runner-2026-09-23.log", "=== refresh 09:15:01\nrefresh exit 1\n", ago=0)
+    s = doctor.schedule_step(logs, root)
+    check(s["ok"] is True and s["kind"] == "started" and "started" in s["title"] and "fix" in s and not s["fix"],
+          "a runner log NEWER than the error: green, and it says 'started' (not 'worked': that run exited 1)")
+    for f in logs.glob("runner-*.log"):
+        f.unlink()
+    err.unlink()
+    touch(logs / "runner-2026-09-23.log", "weekend - skipped\n")
+    check(doctor.schedule_step(logs, root)["kind"] == "started", "runner log and no error log at all: green 'started'")
     for f in logs.glob("runner-*.log"):
         f.unlink()
 
@@ -78,15 +87,22 @@ try:
     s = doctor.schedule_step(logs, root)
     check(s is not None and s["kind"] == "failed" and s["title"] == doctor.SCHEDULE_MSG["failed"]["title"],
           "another start failure: red row, the general wording")
+    touch(err, blocked * 3 + f"/bin/bash: {root}/scripts/run-refresh.sh: No such file or directory\n")
+    s = doctor.schedule_step(logs, root)
+    check(s["kind"] == "failed" and "No such file" in s["detail"], "older privacy lines, newer other failure: the LATEST decides")
+    touch(err, f"/bin/bash: {root}/scripts/run-refresh.sh: No such file or directory\n" + blocked)
+    check(doctor.schedule_step(logs, root)["kind"] == "blocked", "... and the other way round")
+    touch(err, "some other launchd complaint without a script path\n")
+    check(doctor.schedule_step(logs, root) is None, "a line that names no run-refresh.sh: not counted")
 
     gone = tmp / "Documents" / "OpenLoops"   # an install that install.sh has since moved: the path no longer exists
     touch(err, f"/bin/bash: {gone}/scripts/run-refresh.sh: Operation not permitted\n" * 3)
     check(doctor.schedule_step(logs, root) is None, "lines about a moved-away install (path gone): no row")
 
-    other = tmp / "other"                    # a path that does exist is not stale: still reported
+    other = tmp / "other"                    # another install that exists: still not ours, so not reported here
     touch(other / "scripts" / "run-refresh.sh", "#!/bin/bash\n")
     touch(err, f"/bin/bash: {other}/scripts/run-refresh.sh: Operation not permitted\n")
-    check(doctor.schedule_step(logs, root) is not None, "lines about a script that is still on disk: red row")
+    check(doctor.schedule_step(logs, root) is None, "lines about ANOTHER install's script (even one on disk): no row")
 
     spaced = tmp / "Application Support" / "OpenLoops"   # the new default has a space in it
     touch(spaced / "state" / "logs" / "launchd.err.log", f"/bin/bash: {spaced}/scripts/run-refresh.sh: Operation not permitted\n")
@@ -96,11 +112,17 @@ try:
     for kind, m in doctor.SCHEDULE_MSG.items():
         for part in ("title", "fix"):
             text = m[part]
+            if not text:
+                continue
             low = text.lower()
             check(not any(w in low for w in ("launchd", "tcc", "rc=", "exit code", "bash", "/", ".log", "plist")),
                   f"{kind}.{part}: no jargon, no paths")
             check(text.count(". ") == 0 and text.endswith("."), f"{kind}.{part}: one sentence")
     check("privacy settings" in doctor.SCHEDULE_MSG["blocked"]["title"], "blocked: says who stopped it (your Mac's privacy settings)")
+    check(all("page is open" not in m["title"] for m in doctor.SCHEDULE_MSG.values()),
+          "no claim that an open page refreshes by itself (it does not)")
+    check(all(m["fix"].count(",") == 0 and m["fix"].count(";") == 0 for m in doctor.SCHEDULE_MSG.values()),
+          "each fix is one action, not a chain")
 
     say("3. doctor.main() adds the row on a Mac only, and all_ok ignores it")
     touch(err, blocked)
@@ -163,6 +185,12 @@ try:
     tail = d.get("launchd_err_log", "")
     check("Operation not permitted" in tail and tail.endswith("Operation not permitted\n"), "the latest line is in the diag")
     check(len(tail) == 2000, f"only the tail is sent (2000 chars of {alog.stat().st_size})")
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/schedule/status", timeout=5) as r:
+        st = json.loads(r.read())
+    if sys.platform == "darwin":
+        check(st["step"] and st["step"]["kind"] == "blocked", "/api/schedule/status: the same red row, no CLI needed")
+    else:
+        check(st["step"] is None, f"/api/schedule/status on {sys.platform}: nothing (Mac-only check)")
 finally:
     if srv and srv.poll() is None:
         srv.kill()
@@ -175,4 +203,7 @@ check('id="sched_warn"' in html and "function paintSchedule(" in html and "paint
       "index.html: #sched_warn box, painted from tick()")
 body = html.split("function paintSchedule(", 1)[1].split("\n\n", 1)[0]
 check("style.display='block'" in body, "... shown with display:block ('' would fall back to the stylesheet's display:none)")
+check("setInterval(checkSchedule" in html and "/api/schedule/status" in html, "... re-checked every minute once set up")
+check("paintConnect=function(){paintConnectBase()" in html and "s.link" in body, "... the checklist row gets the download button too")
+check("st==='ready'&&!schedBad())toast(" in html, "... no 'refreshes itself every morning' toast while the row is red")
 say("PASS - the morning refresh failure is detected, worded plainly, and in /api/diag")
