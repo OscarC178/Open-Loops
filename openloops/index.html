@@ -645,15 +645,20 @@ function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!
  return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
 const CMD_OPEN={};   // which rows have "Show the exact command" open: the rows are repainted on every tick
 const PARTY=step=>({login:(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),slack:'Slack',slack_install:'Slack',gmail:'Google',miro:'Miro'})[step]||agentLabel();   // who the sign-in is with
+const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
+// what a busy row says while its step runs (a = the AI an install is for)
+const connectWaitSaid=(step,a)=>step==='install'?installing(a):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.';
 async function connectStep(step){
  const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
- const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
- CONN[step]={busy:true,msg:inst?installing(row.agent):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.',
-  ...(inst?{agent:row.agent,command:row.command}:{})};repaint();
+ CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
  try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});clog('setup: '+step+(r.started?' started':' already running'));if(!r.started&&r.said){CONN[step].msg=r.said;repaint()}}
  catch(e){const changed=inst&&e.status===409;   // the app says which: the AI changed in Settings, or Open Loops was updated
   CONN[step]={msg:changed?((e.body&&e.body.said)||msg('app_updated'))
    :inst?msg('install_start',{ai:aiName(row.agent)}):msg('connect_start_failed')};repaint();if(changed)doctor(true);return}
+ return connectWatch(step,row)}
+// Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
+// row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload.
+async function connectWatch(step,row){const inst=step==='install';
  const t0=Date.now();
  while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
@@ -672,6 +677,19 @@ async function connectStep(step){
   if(s.rc===0&&!inst&&DOC&&DOC.steps&&DOC.steps.some(x=>!x.ok&&x.connect===step)){CONN[step]={msg:msg('connect_no_change',{party:PARTY(step)})};repaint()}   // finished fine, row still red: say so
   return}
  CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(CONN[step].agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
+
+// #27: the page reloaded (or the app came back after the "not running" banner) while a step was still running: ask the
+// app about each step and pick up any still running, as if its button had just been pressed here. One GET per step:
+// app.py has no "all steps" call, and six answers from this computer cost nothing. -> false if the app did not answer.
+const CONNECT_ALL=['install','login','slack_install','slack','gmail','miro'];   // app.py agent.CONNECT_STEPS + INSTALL_STEP
+async function connectReattach(){for(const step of CONNECT_ALL){if(CONN[step]&&CONN[step].busy)continue;   // this page is watching it already
+  let s;try{s=await api('/api/connect/'+step)}catch(e){return false}
+  if(!s.running||(CONN[step]&&CONN[step].busy))continue;   // finished (or never ran): the row stays as the check paints it
+  const inst=step==='install';clog('setup: '+step+' still running, picked up again');
+  CONN[step]={busy:true,msg:connectWaitSaid(step,s.agent),url:s.url||'',...(inst?{agent:s.agent,command:s.command}:{})};repaint();
+  if(ALLOW_ROW[step]&&!ALLOW)allowOpen(step);   // the pop-up with the fallback link, as the press opens it
+  connectWatch(step,inst?{agent:s.agent}:{}).catch(e=>clog('setup: '+step+': '+e))}
+ return true}
 
 // The Mac's weekday morning refresh did not start (doctor.py "schedule" row, #24). The checklist is only up while setting
 // up, so once set up the same row shows here, above everything: what happened, what to do, and the download page.
@@ -1121,7 +1139,7 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
   if(aiSwitching&&r.agent===aiSwitching&&C&&C.agent===aiSwitching)aiSwitching='';   // the new AI's own answer is in: however the change went, the gate lets go
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
-let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set();
+let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set(),reattached=false;   // reattached: connectReattach() has run (#27)
 const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job>:<seq>"): never handled twice at once
 // A job's end is noticed by its "seq" (app.py _ended: one number per job end, always going up), never by seeing it
 // running and then not (#49): a job that fails within a second is over before the next poll, and was never seen
@@ -1164,7 +1182,7 @@ async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inL
    finally{keys.forEach(x=>CLAIMED.delete(x))}}
   const st=stage();
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
-  await tick();banner('');offline=false;
+  await tick();banner('');if(offline||!reattached){reattached=true;connectReattach().then(ok=>{if(!ok)reattached=false},()=>{reattached=false})}offline=false;   // #27
  }catch(e){offline=true;appDown(e)}   // not answering: no fast polls until it does (below)
  inLoop=false;if(stopped)return;if(pendingLoop){pendingLoop=false;return loop()}   // asked for during this pass: once more, now
  const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two

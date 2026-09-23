@@ -27,7 +27,8 @@ So a pass means the served page, the app and the jobs agree, not that a copy of 
      Install Claude as the one button; from a doctor payload with mixed states each card shows Not started / In
      progress / Done / Needs you; choosing an AI POSTs it to /api/config and re-checks; Connect opens the pop-up, which
      shows the sign-in link and closes itself on the poll after the row turns green; the first-scan box is the last
-     step and nothing starts by itself; once set up, ⚙ Settings → Set-up brings the view back.
+     step and nothing starts by itself; once set up, ⚙ Settings → Set-up brings the view back. After a reload (#27) a
+     sign-in the app is still running gets its spinner, link and pop-up back; a finished one leaves the row as it is.
 Node is required in CI (as test_messages.py); locally without node parts 1-3, 7 and the page half of 5 are skipped.
 """
 import json, os, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
@@ -138,6 +139,7 @@ def page_js(port, session, scenario, tmp):
         "function renderLists(){}function paintVoice(){}function banner(){}function appDown(e){CON.push('appDown '+e)}",
         "function paintSchedule(){}function schedBad(){return false}function paintConnect(){}function paintDaylog(){}function paintRm(){}function paintSetup(){}",
         "async function loadDaylog(){}async function loadRm(){}function agentUI(){}const PAGE='t';let stopped=false;",
+        "async function connectReattach(){return true}",   # the Setup-buttons section is not cut in here (#27 is tested in 7k)
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
@@ -944,6 +946,46 @@ if NODE:
               f"a poll asked before the start that carries the previous run's end (seq 11 > 10, ended before) does not release it; chooseAI() refuses ({out['prev']})")
         check(out["ended"]["running"] is False and out["ended"]["pending"] is False and (out["ended"]["seq"] or 0) >= 1,
               f"once an answer shows the job ended after the start, it is no longer running ({out['ended']})")
+    finally:
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7k. #27: the page reloads while a sign-in is waiting in the browser. The app started it for an earlier load of the
+    # page (a POST this page never made); the new page's first poll asks the app, finds it running and shows the spinner,
+    # the fallback link and the Allow pop-up again; a step that has finished leaves its row as the check paints it.
+    # After the offline banner clears it asks again, without watching the same run twice. Then Allow finishes it.
+    tmp = setup_install("openloops-setup-reattach-")
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ await boot();await tick();
+ await realFetch(BASE+'/api/connect/slack',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // pressed on the page before the reload
+ for(let i=0;i<150;i++){const s=await (await realFetch(BASE+'/api/connect/slack')).json();if(s.url)break;await sleep(100)}
+ FAKE['/api/connect/gmail']=[{},{running:false,rc:1,url:'',step:'gmail',last:'Login cancelled'}];   // ran and finished before the reload
+ out.before={slack:CONN.slack||null,open:$('#allow_dlg').open};
+ const real=connectReattach;let n=0;connectReattach=()=>{n++;return real()};
+ await loop();await until(()=>CONN.slack&&CONN.slack.busy,10000);   // the page load's first pass
+ out.after={n,busy:CONN.slack.busy,url:CONN.slack.url,msg:CONN.slack.msg,gmail:CONN.gmail===undefined,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,
+  link:$('#allow_link').innerHTML,rows:$('#su_src_rows').innerHTML,state:$('#su_src_state').textContent};
+ await loop();out.n2=n;offline=true;await loop();await sleep(300);out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
+ fs.writeFileSync(BIN+'/allow','');await until(()=>!$('#allow_dlg').open,30000);
+ out.done={busy:!!(CONN.slack&&CONN.slack.busy),ok:DOC.steps.find(x=>x.id==='slack').ok,toasts:TOASTS.slice(),rows:$('#su_src_rows').innerHTML};""", tmp)
+        check(out["before"] == {"slack": None, "open": False}, "a fresh page knows nothing of the sign-in the app is running")
+        a = out["after"]
+        check(a["n"] == 1 and a["busy"] is True and a["url"] == "https://example.invalid/authorize?state=abc"
+              and a["msg"] == "Waiting for you in the browser: click Allow there.",
+              f"its first poll asks the app, which says Slack's sign-in is still running: the row is busy again, with the run's link ({a})")
+        check('<span class="spin"></span>Waiting for you in the browser' in a["rows"] and "Open the sign-in page" in a["rows"]
+              and "connectStep('slack')" not in a["rows"] and a["state"] == "In progress",
+              "...the Slack row shows the spinner and the fallback link instead of its button; the card says in progress")
+        check(a["open"] and a["step"] == "slack" and "example.invalid/authorize" in a["link"],
+              "...and the Allow pop-up is back, with the sign-in link in case no tab opened")
+        check(a["gmail"], "a step that finished before the reload leaves its row as the check paints it (no spinner, no old message)")
+        check(out["n2"] == 1 and out["n3"] == 2 and out["picked"] == 1,
+              f"later polls do not ask again; once the offline banner clears they do, without watching the same run twice ({out['n2']}, {out['n3']}, {out['picked']})")
+        d = out["done"]
+        check(d["busy"] is False and d["ok"] is True and "Slack connected." in d["toasts"] and "spin" not in d["rows"],
+              f"clicking Allow finishes it as if pressed on this page: the row turns green and the pop-up closes ({d['toasts']})")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
