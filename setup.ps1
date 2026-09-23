@@ -13,7 +13,8 @@
   the scheduled task alone (there is one per user); -Port saves the port in that copy's config.json.
 
   What it does (all on this computer, nothing sent anywhere):
-    1. Installs Python and Claude Code if they're missing (using Windows' own installer, winget).
+    1. Installs Python if it's missing (using Windows' own installer, winget). It never installs an AI CLI
+       (Claude, Codex, Grok): the app's checklist offers Install <AI> for the AI the person picks (#16, #39).
     2. Copies Open Loops to your user folder (%LOCALAPPDATA%\OpenLoops, or -Dest).
     3. Puts an "Open Loops" icon on your Desktop and in the Start menu.
     4. Sets it to refresh every weekday morning (default 09:15).
@@ -54,22 +55,18 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 }
 Ok ("Python " + ((python --version) -replace "Python ",""))
 
-# ---------- 2. Claude Code ----------
-Say "Checking Claude..."
-if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
-    Say "Installing Claude Code (this can take a minute)..."
-    try {
-        Invoke-RestMethod https://claude.ai/install.ps1 | Invoke-Expression
-    } catch {
-        winget install --id Anthropic.ClaudeCode -e --accept-source-agreements --accept-package-agreements --silent | Out-Null
+# ---------- 2. AI ----------
+# Nothing is installed here, and nothing here can fail the install: the app's first screen offers
+# Install <AI> for whichever AI the person chooses (Claude, Codex or Grok). This only says so when none is
+# found, looking on PATH and in the folders the vendors' installers use (agent.install_dirs).
+$aiFound = [bool](Get-Command claude, codex, grok -ErrorAction SilentlyContinue)
+foreach ($d in @((Join-Path $HOME ".local\bin"), (Join-Path $HOME ".grok\bin"),
+                 (Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"))) {
+    foreach ($c in @("claude.exe", "codex.exe", "grok.exe")) {
+        if (Test-Path -LiteralPath (Join-Path $d $c)) { $aiFound = $true }
     }
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
-if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
-    Write-Host "  Couldn't install Claude automatically. Please install it from https://claude.ai/code and run this again." -ForegroundColor Yellow
-    exit 1
-}
-Ok "Claude is installed"
+if (-not $aiFound) { Say "No AI is installed yet. Open Loops will offer to install one on its first screen." }
 
 # ---------- 3. Copy files ----------
 $Src  = $PSScriptRoot

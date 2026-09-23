@@ -2,7 +2,8 @@
 ;
 ; A small setup.exe that does NOT contain the app. When run it downloads the repo from GitHub,
 ; unpacks it into the per-user Programs folder (%LOCALAPPDATA%\Programs\Open Loops), and runs the
-; repo's own setup.ps1, which installs Python / Claude Code if missing, writes config.json, puts an
+; repo's own setup.ps1, which installs Python if missing (never an AI CLI: the app's checklist has an Install
+; button for that), writes config.json, puts an
 ; "Open Loops" icon on the Desktop and in the Start menu, and registers the weekday refresh.
 ; The app writes its own state next to itself, so it is installed per user, never under the
 ; machine-wide C:\Program Files (which needs admin rights to write to).
@@ -59,9 +60,9 @@ ShowLanguageDialog=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
-WelcomeLabel2=This will download the latest Open Loops from GitHub and set it up on your computer.%n%nIt installs two helpers if they are missing (Python and Claude Code), puts an Open Loops icon on your Desktop and in the Start menu, and sets a weekday morning refresh.%n%nEverything runs on this computer. Nothing is sent anywhere.
+WelcomeLabel2=This will download the latest Open Loops from GitHub and set it up on your computer.%n%nIt installs Python if it is missing, puts an Open Loops icon on your Desktop and in the Start menu, and sets a weekday morning refresh.%n%nEverything runs on this computer. Nothing is sent anywhere.
 ReadyLabel1=Setup is now ready to download and install [name] on your computer.
-FinishedLabel=Setup has finished installing [name] on your computer. Open it from the Desktop icon each morning; the first time, it walks you through connecting Slack and email.
+FinishedLabel=Setup has finished installing [name] on your computer. Open it from the Desktop icon each morning; the first time, it walks you through installing the AI and connecting Slack and email.
 FinishedLabelNoIcons=Setup has finished installing [name] on your computer. Open it from the Desktop icon each morning.
 
 [Run]
@@ -256,7 +257,7 @@ begin
   if not WizardSilent then
     Params := Params + ' || (echo. & echo   Setup could not finish. Read the message above, then press any key to close this window. & pause >nul & exit /b 1)';
   Log('Running setup.ps1: ' + Params);
-  WizardForm.PreparingLabel.Caption := 'Installing Open Loops. This can take a few minutes if Python or Claude Code need installing - watch the blue window.';
+  WizardForm.PreparingLabel.Caption := 'Installing Open Loops. This can take a few minutes if Python needs installing - watch the blue window.';
   if not Exec(ExpandConstant('{cmd}'), '/c "' + Params + '"', Src, SW_SHOW, ewWaitUntilTerminated, RC) then begin
     Result := 'Could not start the Open Loops setup script.';
     exit;
