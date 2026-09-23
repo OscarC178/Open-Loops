@@ -402,6 +402,72 @@ def _codex_base_toml(src):
     return "\n".join(lines) + "\n"
 
 
+CODEX_RUN_STALE_S = 3600        # a run folder with no owner on record is left alone this long (#42), then removed
+_CODEX_RUN_MAX_S = 24 * 3600    # ...and one whose owner still seems alive (or a reused pid) this long at most
+_CODEX_PID = "openloops.pid"    # in each run folder: the process that made it, i.e. the job it belongs to
+
+
+def _pid_alive(pid):
+    """Whether a process with this id exists. Windows: asks without touching it (os.kill there would end it)."""
+    if pid <= 0:
+        return False
+    if WIN:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return k.GetLastError() == 5  # access denied: it is there, it just is not ours
+        try:
+            code = ctypes.c_ulong()
+            return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def codex_sweep(now=None):
+    """Remove run folders (state/codex-home/<account>/run-*) that a run stopped part-way left behind: a job killed by
+    Quit or a test skips its own clean-up, and the folder keeps its link to the user's auth.json (#42). A folder goes
+    when the job that made it has ended (its openloops.pid names no live process), or when it names none and is more
+    than CODEX_RUN_STALE_S old; a live job's folder is kept up to _CODEX_RUN_MAX_S. Runs at app start and before
+    every Codex run; says on stderr how many it removed. -> that number. Links are removed, never followed."""
+    import time
+    now = time.time() if now is None else now
+    try:
+        runs = [r for a in _CODEX_JOBS.iterdir() if a.is_dir() and not a.is_symlink()
+                for r in a.glob("run-*") if r.is_dir() and not r.is_symlink()]
+    except OSError:
+        return 0
+    gone = 0
+    for r in runs:
+        try:
+            age = now - r.stat().st_mtime
+        except OSError:
+            continue
+        try:
+            pid = int((r / _CODEX_PID).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid is None and age < CODEX_RUN_STALE_S:
+            continue  # being set up right now, or from before pid files: wait for the hour
+        if pid is not None and _pid_alive(pid) and age < _CODEX_RUN_MAX_S:
+            continue  # its job is still running
+        shutil.rmtree(r, ignore_errors=True)
+        gone += not r.exists()
+    if gone:
+        print(f"Open Loops: removed {gone} leftover Codex run folder{'s' if gone != 1 else ''} "
+              "(from runs that were stopped part-way).", file=sys.stderr, flush=True)
+    return gone
+
+
 def codex_job_env():
     """A home for one headless Codex run -> (env, run home, account home). Raises CodexNotReady rather than ever
     running in the user's own home.
@@ -420,10 +486,15 @@ def codex_job_env():
     if auth["mode"] != "chatgpt" or not auth["account"]:
         raise CodexNotReady("signin")  # API-key sign-in: no connectors (doctor.py says so on its row)
     acct = codex_home(auth["account"])
+    try:
+        codex_sweep()  # folders left by earlier runs that were killed part-way (#42)
+    except Exception:
+        pass  # never a reason not to run
     run = acct / ("run-" + uuid.uuid4().hex[:12])
     try:
         (acct / "cache").mkdir(parents=True, exist_ok=True)
         (run / "work").mkdir(parents=True)  # the run's working folder (-C): empty, so nothing to read
+        (run / _CODEX_PID).write_text(str(os.getpid()), encoding="utf-8")  # whose run this is, for codex_sweep
         for name_ in ("auth.json", ".credentials.json"):
             if (src / name_).exists():
                 _link(src / name_, run / name_)
