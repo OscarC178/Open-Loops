@@ -487,7 +487,7 @@ else:
 window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=true;clearTimeout(loopT);banner('');
  C={agent:'claude'};S={setup_done:true};$('#steps').innerHTML='';   // after setup: no intro, no bar, the rows start high up
  DOC={all_ok:false,steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:false,title:'Signed in to Claude',fix:MSG.signin_needed.what+' '+MSG.signin_needed.fix,connect:'login'},
-  {id:'slack',ok:false,optional:true,title:'Slack connected (optional)',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected (optional)',fix:'Sign in to Claude first (the row above).'},
+  {id:'slack',ok:false,optional:true,title:'Slack connected',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected',fix:'Sign in to Claude first (the row above).'},
   {id:'channel',ok:false,title:'At least one source connected (Slack or Gmail)',fix:'Sign in to Claude first (the row above).'},{id:'self',ok:false,optional:true,title:'Knows who you are on Slack',fix:'Sign in to Claude first (the row above).'}]};
  // the set-up page as #28 builds it: its cards (checkRow rows) and, opened, "Every check" holding the whole checklist
  document.querySelectorAll('#page_home>div').forEach(e=>{if(e.id!=='setup'&&e.id!=='steps')e.style.display='none'});
