@@ -73,15 +73,19 @@ PLIST
 
 # Stay in the foreground so the Dock icon is this app, not a Terminal window.
 # PATH matches Open Loops.command — Finder-launched apps get a thin PATH.
+# The install path goes into the launcher shell-quoted (printf %q): a folder name with $, ` or quotes in it
+# must stay a literal path, not be run as shell when the app is opened.
+Q_APP=$(printf '%q' "$APP_DIR/openloops/app.py")
+Q_DIR=$(printf '%q' "$APP_DIR")
 cat > "$MACOS/openloops" <<LAUNCH
 #!/bin/bash
 export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
-APP="$APP_DIR/openloops/app.py"
+APP=$Q_APP
 if [ ! -f "\$APP" ]; then
     osascript -e 'display alert "Open Loops" message "Open Loops is not installed yet. Double-click Open Loops.command in the folder you downloaded, once."' >/dev/null 2>&1 || true
     exit 1
 fi
-cd "$APP_DIR"
+cd $Q_DIR
 # Don't exec: replacing the process with python3 makes the Dock show Python's icon.
 python3 -m openloops.app
 LAUNCH

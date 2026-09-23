@@ -45,31 +45,20 @@ MIN=$((10#${AT##*:}))
 
 mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/state/logs"
 
-cat > "$PLIST" <<PLIST_EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>$LABEL</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>$ROOT/scripts/run-refresh.sh</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <array>
-        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>$HOUR</integer><key>Minute</key><integer>$MIN</integer></dict>
-        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>$HOUR</integer><key>Minute</key><integer>$MIN</integer></dict>
-        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>$HOUR</integer><key>Minute</key><integer>$MIN</integer></dict>
-        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>$HOUR</integer><key>Minute</key><integer>$MIN</integer></dict>
-        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>$HOUR</integer><key>Minute</key><integer>$MIN</integer></dict>
-    </array>
-    <key>StandardOutPath</key><string>$ROOT/state/logs/launchd.out.log</string>
-    <key>StandardErrorPath</key><string>$ROOT/state/logs/launchd.err.log</string>
-    <key>RunAtLoad</key><false/>
-</dict>
-</plist>
-PLIST_EOF
+# plistlib, not a text template: it escapes the paths, so a folder named "A & B" still makes a valid plist
+python3 - "$PLIST" "$LABEL" "$ROOT" "$HOUR" "$MIN" <<'PY_EOF'
+import plistlib, sys
+plist, label, root, hour, minute = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+with open(plist, "wb") as f:
+    plistlib.dump({
+        "Label": label,
+        "ProgramArguments": ["/bin/bash", f"{root}/scripts/run-refresh.sh"],
+        "StartCalendarInterval": [{"Weekday": d, "Hour": hour, "Minute": minute} for d in range(1, 6)],
+        "StandardOutPath": f"{root}/state/logs/launchd.out.log",
+        "StandardErrorPath": f"{root}/state/logs/launchd.err.log",
+        "RunAtLoad": False,
+    }, f)
+PY_EOF
 
 launchctl bootout "$UID_GUI/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$UID_GUI" "$PLIST"
