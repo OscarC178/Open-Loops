@@ -165,11 +165,18 @@ if a[:1] == ["exec"]:
         elif flag("rogue"):
             ev(type="item.completed", item={"type": "command_execution", "command": "cat ~/.ssh/id_rsa", "status": "completed"})
             text = "OK"
+        elif flag("forbid1") and not flag("forbid1.done"):  # attempt 1: an unlisted read, and Slack never reached
+            open(os.path.join(here, "forbid1.done"), "w").close()
+            call("gmail.read_email")
+            text = "OK"
         else:  # a working run calls the tools its preamble lists (flags: "blind" calls none, "half" skips Gmail's)
             for t in re.findall(r"^- ((?:gmail|slack)\.\w+)", data, re.M):
                 if enabled(t) and not flag("blind") and not (flag("half") and t.startswith("gmail.")):
                     call(t)
-            text = "OK"
+            text = "SENT: thread 1" if flag("marker") else "OK"
+            if "<<<OPENLOOPS>>>" in data:  # refresh.py's contract; claims Gmail was searched, whatever it was given
+                text = ('<<<OPENLOOPS>>>{"new_loops": [], "updates": [], "gmail_available": true, '
+                        '"slack_available": true}<<<END>>>')
     ev(type="item.completed", item={"type": "agent_message", "text": text})
     ev(type="turn.completed", usage={"input_tokens": 27000, "cached_input_tokens": 13000, "output_tokens": 50})
     open(out, "w", encoding="utf-8").write(text)
@@ -203,7 +210,7 @@ env.update(PATH=str(fbin) + os.pathsep + os.environ.get("PATH", ""), HOME=str(ho
 
 # The in-install checks: one script, run with the temp install as its root and the fake home as HOME.
 HARNESS = r'''
-import io, contextlib, json, os, shutil, sys, time
+import io, contextlib, json, os, shutil, subprocess, sys, time
 from pathlib import Path
 sys.path.insert(0, os.getcwd())
 from openloops import agent, doctor
@@ -431,6 +438,63 @@ p = agent.run("hello", ["gmail.search_threads"], timeout=3)
 flag("nofetch", False); flag("slow", False)
 check(p.refused == "timeout" and time.time() - t < 20 and not runs_left(),
       "a slow warm-up stops within the caller's time budget and says it timed out")
+auth("chatgpt")
+
+# review 3: retry safety
+flag("forbid1")
+n = len(execs())
+p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+flag("forbid1", False); flag("forbid1.done", False)
+check(p.returncode == 3 and p.refused == "unlisted" and "codex_apps/gmail.read_email" in p.tools_used and len(execs()) == n + 1,
+      "a forbidden call in attempt 1 fails the run (rc 3), stays in tools_used, and is not retried away")
+flag("blind"); flag("marker")
+n = len(execs())
+p = agent.run("Chase.", ["gmail.search_threads", "gmail.get_thread", "gmail.create_draft"])
+check(p.returncode == 3 and len(execs()) == n + 1, "a job that can write is never retried")
+n = len(execs())
+p = agent.run("Read.", ["gmail.search_threads", "slack.read_channel"])
+flag("blind", False); flag("marker", False)
+check(p.returncode == 3 and len(execs()) == n + 1, "no retry after a SENT/DRAFT_CREATED marker, even for a read-only job")
+flag("e401")
+n = len(execs())
+p = agent.run("Read.", ["gmail.search_threads"])
+flag("e401", False)
+check(p.returncode != 0 and len(execs()) == n + 1 and "401" in p.stderr, "a 401 in attempt 1 stops: no retry")
+
+# review 3: stale snapshots refuse
+for label, when in (("more than a day old", time.time() - 25 * 3600), ("dated in the future", time.time() + 3600)):
+    auth("chatgpt", account="acct-T" + label[:4])
+    write_cache(JOBS / agent.codex_auth()["account"], ["gmail.get_profile", "gmail.search_emails"], mtime=when)
+    flag("nofetch")
+    n = len(execs())
+    p = agent.run("Read.", ["gmail.search_threads"])
+    flag("nofetch", False)
+    new = execs()[n:]
+    check(p.refused == "stale" and "more than a day old" in p.stdout and len(new) == 1 and "Reply with exactly: OK" in new[0]["stdin_head"],
+          f"a list {label} that a warm-up did not refresh: not run ('stale')")
+
+# review 3: a source not connected in ChatGPT is dropped, and its cursor holds
+auth("chatgpt", account="acct-R")
+write_cache(JOBS / agent.codex_auth()["account"], ["slack.slack_read_channel", "slack.slack_read_thread",
+                                                    "slack.slack_search_public_and_private", "slack.slack_search_users"])
+cj = json.loads((ROOT / "config.json").read_text())
+(ROOT / "config.json").write_text(json.dumps(dict(cj, slack_self_id="U0TESTSELF1")))
+old = "2026-09-01T09:00+01:00"
+(ROOT / "state.json").write_text(json.dumps({"cursor": old, "slack_cursor": old, "loops": []}))
+n = len(execs())
+r = subprocess.run([sys.executable, "-m", "openloops.refresh"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+st = json.loads((ROOT / "state.json").read_text())
+last = execs()[-1]
+check(r.returncode == 0 and len(execs()) == n + 1, f"a refresh on an account with Slack but no Gmail runs ({r.stdout[-300:]}{r.stderr[-300:]})")
+check(last["stdin_head"].count("Gmail is not connected in this ChatGPT account; skip email.") == 1
+      and "gmail." not in last["stdin_head"].split("[End of the Open Loops note")[0] and "[apps.connector_g]" not in last["config"],
+      "...with Gmail's tools dropped and the job told to skip email")
+check(st["gmail_cursor"] == old and st["slack_cursor"] != old and st["gmail_available"] is False,
+      "...and the Gmail cursor does not move, though the model claimed gmail_available true; Slack's does")
+write_cache(JOBS / agent.codex_auth()["account"], ["google_drive.search"])
+p = agent.run("Read.", ["gmail.search_threads", "slack.read_channel"])
+check(p.refused == "nosources" and "Neither Gmail nor Slack" in p.stdout, "neither source connected: not run, says so")
+(ROOT / "config.json").write_text(json.dumps(cj))
 auth("chatgpt")
 
 # (D) the checklist
