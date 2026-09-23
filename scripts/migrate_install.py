@@ -1,6 +1,6 @@
 """Bring the list and settings of an older Mac install (in ~/Documents) into the new one (#24). Copy only.
 
-    python3 scripts/migrate_install.py --old ~/Documents/OpenLoops --dest ~/Library/Application\\ Support/OpenLoops [--no-task]
+    python3 scripts/migrate_install.py --old ~/Documents/OpenLoops --dest ~/Library/Application\\ Support/OpenLoops [--no-task] [--isolated]
 
 Why: macOS will not let the launchd weekday refresh read ~/Documents, so the install now lives elsewhere.
 Called by install.sh before it copies the program files. It NEVER moves, renames, deletes or writes anything
@@ -21,7 +21,9 @@ under the old folder, and never suggests deleting it: the old copy stays exactly
        register the job for the new place) the old job is put back afterwards, and it says so.
      - a server on 8765-8784 whose /api/diag root is the old folder is asked to quit only if it also says
        "app": "openloops"; an older version without that field stops the copy (quit it first), and so does a
-       port that does not answer clearly.
+       port that does not answer clearly. With --isolated (install.sh --isolated, #36) no port is probed at all:
+       nothing is sent to an Open Loops that may be running, and the lsof check below alone decides (a server
+       running from the old folder has its working folder there, so it still stops the copy).
      - lsof must show no process with any file (or its working folder) inside the old folder; missing or
        failing lsof stops it.
   4. Copy only the named personal files and folders. Each file goes to "<name>.part" (shutil.copy2), is compared
@@ -344,6 +346,7 @@ def main():
     ap.add_argument("--old", required=True)
     ap.add_argument("--dest", required=True)
     ap.add_argument("--no-task", action="store_true", help="install.sh will not register the job: put the old one back")
+    ap.add_argument("--isolated", action="store_true", help="a test copy (#36): probe no port, lsof alone decides")
     a = ap.parse_args()
     old, dest = Path(a.old), Path(a.dest)
     if not (old / "openloops" / "app.py").is_file():
@@ -362,7 +365,10 @@ def main():
     say("Copying your list and settings from the old Open Loops in Documents ...")
     os.chdir(Path.home())   # this script's own working folder must not count as a user of the old one
     unload_job(old)
-    stop_servers(old)
+    if a.isolated:
+        log("--isolated: no port probed")
+    else:
+        stop_servers(old)
     pids = users_of(old)
     if pids:
         log(f"still in use by process {', '.join(map(str, pids[:20]))}")   # the numbers are for the log, not the screen (#25)

@@ -22,6 +22,12 @@
 #   --no-task     do not register the weekday refresh (there is one launchd job per Mac; this keeps yours)
 #   --port N      the port this copy answers on, saved in its config.json (default 8765)
 #   --no-launch   do not start it at the end
+#   --isolated    a test copy that stays away from your own files and starts no scan by itself (#36): implies
+#                 --no-app and --no-task, and writes "isolated": true (and "test_copy": true) into its config.json.
+#                 It reads no to-do file, its page waits for Start the first scan every time it is opened, and the
+#                 old-install port probe is skipped. Once that button is pressed it still uses the AI you are signed
+#                 in to, so your real accounts (read-only: a scan sends and drafts nothing).
+#                 OPENLOOPS_ISOLATED=1 in the environment does the same for any copy at run time.
 set -e
 
 AT="09:15"
@@ -31,6 +37,7 @@ PORT=""
 NO_APP=0
 NO_TASK=0
 NO_LAUNCH=0
+ISOLATED=0
 AT_SET=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -41,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --no-app) NO_APP=1; shift ;;
         --no-task) NO_TASK=1; shift ;;
         --no-launch) NO_LAUNCH=1; shift ;;
+        --isolated) ISOLATED=1; NO_APP=1; NO_TASK=1; shift ;;   # a test copy touches no app icon and no weekday job
         *) shift ;;
     esac
 done
@@ -105,6 +113,7 @@ OLD="$HOME/Documents/OpenLoops"   # where installs before #24 went
 # recorded as "test_copy": true in its config.json, so the app never tells it to fix the other copy's morning refresh.
 TEST_COPY=0
 if [ "$DEST" != "$DEFAULT_DEST" ] && [ "$NO_APP" -eq 1 ] && [ "$NO_TASK" -eq 1 ]; then TEST_COPY=1; fi
+if [ "$ISOLATED" -eq 1 ]; then TEST_COPY=1; fi   # --isolated is a test copy wherever it is
 
 # ---------- 3a. Bring over an older ~/Documents install's list and settings (copy only) ----------
 # Only for the default place: a --dest test install never reads the copy you use. scripts/migrate_install.py
@@ -113,6 +122,7 @@ if [ "$DEST" != "$DEFAULT_DEST" ] && [ "$NO_APP" -eq 1 ] && [ "$NO_TASK" -eq 1 ]
 if [ "$DEST" = "$DEFAULT_DEST" ] && [ -f "$OLD/openloops/app.py" ]; then
     MIGRATE_FLAGS=()
     [ "$NO_TASK" -eq 1 ] && MIGRATE_FLAGS+=(--no-task)   # no new job will be registered: put the old one back
+    [ "$ISOLATED" -eq 1 ] && MIGRATE_FLAGS+=(--isolated)   # send nothing to the ports an Open Loops may answer on
     python3 "$SRC/scripts/migrate_install.py" --old "$OLD" --dest "$DEST" "${MIGRATE_FLAGS[@]}"
 fi
 
@@ -137,7 +147,21 @@ mkdir -p "$DEST/state/logs"
 # fresh state + config unless the person already has them
 STATE_FILE="$DEST/state.json"
 if [ ! -f "$STATE_FILE" ]; then
-    CURSOR=$(python3 -c "from datetime import datetime, timedelta; print((datetime.now().astimezone()-timedelta(days=7)).isoformat(timespec='minutes'))")
+    # The first scan reads as far back as Settings > History says (history_days, as app.py's fresh_state does), which
+    # is what the page tells the person before it starts (#38): from the config.json already here, else the template.
+    CURSOR=$(python3 - "$DEST/config.json" "$SRC/config.template.json" <<'PYEOF'
+import json, sys
+from datetime import datetime, timedelta
+days = 30
+for f in sys.argv[1:]:
+    try:
+        days = min(int(json.load(open(f, encoding="utf-8-sig")).get("history_days") or 30), 365)
+        break
+    except (OSError, ValueError, TypeError, AttributeError):
+        continue
+print((datetime.now().astimezone() - timedelta(days=days)).isoformat(timespec="minutes"))
+PYEOF
+)
     cat > "$STATE_FILE" <<EOF
 {
   "cursor": "$CURSOR",
@@ -151,9 +175,9 @@ if [ ! -f "$CFG_FILE" ]; then
     while [ -z "$NAME" ]; do
         read -r -p "  Your first name (used so messages sound like you): " NAME
     done
-    python3 - "$SRC/config.template.json" "$CFG_FILE" "$NAME" "$AT" "$PORT" "$TEST_COPY" <<'PYEOF'
+    python3 - "$SRC/config.template.json" "$CFG_FILE" "$NAME" "$AT" "$PORT" "$TEST_COPY" "$ISOLATED" <<'PYEOF'
 import json, sys
-tpl_path, cfg_path, name, at, port, test_copy = sys.argv[1:7]
+tpl_path, cfg_path, name, at, port, test_copy, isolated = sys.argv[1:8]
 cfg = json.load(open(tpl_path, encoding="utf-8-sig"))
 cfg["owner_name"] = name
 cfg["refresh_time"] = at
@@ -161,15 +185,17 @@ if port:
     cfg["port"] = int(port)  # app.py: --port beats OPENLOOPS_PORT beats this beats 8765
 if test_copy == "1":
     cfg["test_copy"] = True  # doctor.is_test_copy
+if isolated == "1":
+    cfg["isolated"] = True   # store.isolated: no to-do file, no scan by itself (#36)
 json.dump(cfg, open(cfg_path, "w", encoding="utf-8"), indent=2)
 PYEOF
 else
     # Updating (or just moved): the person's own refresh time wins unless --at was given, as in setup.ps1 -
     # otherwise re-registering the job below would quietly put it back to 09:15. An explicit --at or --port is
     # saved; everything else in config.json stays as it is.
-    AT=$(python3 - "$CFG_FILE" "$AT" "$AT_SET" "$PORT" "$TEST_COPY" <<'PYEOF'
+    AT=$(python3 - "$CFG_FILE" "$AT" "$AT_SET" "$PORT" "$TEST_COPY" "$ISOLATED" <<'PYEOF'
 import json, re, sys
-cfg_path, at, at_set, port, test_copy = sys.argv[1:6]
+cfg_path, at, at_set, port, test_copy, isolated = sys.argv[1:7]
 try:
     cfg = json.load(open(cfg_path, encoding="utf-8-sig"))
 except (OSError, ValueError):  # unreadable config.json: leave it alone, the app will say so
@@ -178,11 +204,16 @@ except (OSError, ValueError):  # unreadable config.json: leave it alone, the app
 saved = str(cfg.get("refresh_time") or "")
 if at_set == "0" and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", saved):
     at = saved  # a hand-edited bad value falls back to the default rather than breaking the job
-changed = at_set == "1" or bool(port) or (test_copy == "1") != (cfg.get("test_copy") is True)
+changed = (at_set == "1" or bool(port) or (test_copy == "1") != (cfg.get("test_copy") is True)
+           or (isolated == "1") != (cfg.get("isolated") is True))
 if test_copy == "1":
     cfg["test_copy"] = True   # doctor.is_test_copy; this run says what the copy is
 else:
     cfg.pop("test_copy", None)
+if isolated == "1":
+    cfg["isolated"] = True    # store.isolated; likewise, a run without --isolated takes the mark off
+else:
+    cfg.pop("isolated", None)
 if at_set == "1":
     cfg["refresh_time"] = at
 if port:
@@ -194,6 +225,9 @@ PYEOF
 )
 fi
 ok "Files in place"
+if [ "$ISOLATED" -eq 1 ]; then
+    ok "Isolated test copy: it reads no to-do file and starts no scan until you press Start the first scan"
+fi
 
 # ---------- 4. App with logo (Dock + Desktop) ----------
 # Real .app so it can sit in the Dock. The zip's Open Loops.command is only first-run install.

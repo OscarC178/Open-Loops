@@ -11,6 +11,11 @@
       powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoops-test -NoApp -NoTask -Port 8790 -Name Test
   -Dest (or $env:OPENLOOPS_DEST) installs elsewhere; -NoApp skips the Desktop / Start-menu icons; -NoTask leaves
   the scheduled task alone (there is one per user); -Port saves the port in that copy's config.json.
+  -Isolated (#36) makes it a test copy that stays away from your own files and starts no scan by itself: it implies
+  -NoApp and -NoTask and writes "isolated": true (and "test_copy": true) into its config.json. It reads no to-do file
+  and its page waits for Start the first scan every time it is opened; once pressed, it still uses the AI you are
+  signed in to, so your real accounts (read-only: a scan sends and drafts nothing). $env:OPENLOOPS_ISOLATED = "1"
+  does the same for any copy at run time.
 
   What it does (all on this computer, nothing sent anywhere):
     1. Installs Python if it's missing (using Windows' own installer, winget). It never installs an AI CLI
@@ -22,7 +27,7 @@
 #>
 [CmdletBinding()]
 param([string]$At = "09:15", [string]$Name = "", [string]$Dest = "", [switch]$NoLaunch,
-      [switch]$NoApp, [switch]$NoTask, [int]$Port = 0)
+      [switch]$NoApp, [switch]$NoTask, [int]$Port = 0, [switch]$Isolated)
 
 $ErrorActionPreference = "Stop"
 function Say($t) { Write-Host ""; Write-Host "  $t" -ForegroundColor Cyan }
@@ -45,6 +50,9 @@ if ($Port -and ($Port -lt 1024 -or $Port -gt 65535)) {
     Write-Host "  -Port must be a number from 1024 to 65535, for example 8790." -ForegroundColor Yellow
     exit 1
 }
+
+# -Isolated: a test copy touches no icon and no scheduled task (#36)
+if ($Isolated) { $NoApp = [switch]$true; $NoTask = [switch]$true }
 
 # ---------- 1. Python ----------
 Say "Checking Python..."
@@ -79,7 +87,7 @@ if (-not $Dest) { $Dest = $DefaultDest }
 $Dest = [IO.Path]::GetFullPath($Dest)
 # A test copy (-Dest with -NoApp and -NoTask, INSTALL.md "Testing a fresh install") is recorded as "test_copy": true
 # in its config.json, so the app never tells it to fix the other copy's morning refresh (doctor.is_test_copy).
-$TestCopy = ($Dest -ne $DefaultDest) -and $NoApp -and $NoTask
+$TestCopy = (($Dest -ne $DefaultDest) -and $NoApp -and $NoTask) -or $Isolated   # -Isolated is a test copy wherever it is
 if ((Resolve-Path $Src).Path -eq $Dest) { Say "Already installed here - updating." }
 Say "Installing Open Loops to $Dest ..."
 New-Item -ItemType Directory -Force $Dest | Out-Null
@@ -97,7 +105,17 @@ New-Item -ItemType Directory -Force (Join-Path $Dest "state\logs") | Out-Null
 # fresh state + config unless the person already has them
 $StateFile = Join-Path $Dest "state.json"
 if (-not (Test-Path $StateFile)) {
-    $cursor = (Get-Date).AddDays(-7).ToString("yyyy-MM-ddTHH:mm:sszzz")
+    # The first scan reads as far back as Settings > History says (history_days, as app.py's fresh_state does), which
+    # is what the page tells the person before it starts (#38): from the config.json already here, else the template.
+    $days = 30
+    foreach ($f in @((Join-Path $Dest "config.json"), (Join-Path $Src "config.template.json"))) {
+        try {
+            $hd = (Get-Content $f -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json).history_days
+            if ($hd) { $days = [Math]::Min([int]$hd, 365) }
+            break
+        } catch { continue }
+    }
+    $cursor = (Get-Date).AddDays(-$days).ToString("yyyy-MM-ddTHH:mm:sszzz")
     @{ cursor = $cursor; last_refresh = $null; loops = @() } | ConvertTo-Json | ForEach-Object { [IO.File]::WriteAllText($StateFile, $_, (New-Object Text.UTF8Encoding $false)) }  # no BOM - Python json refuses it
 }
 $CfgFile = Join-Path $Dest "config.json"
@@ -115,6 +133,11 @@ if (Test-Path $CfgFile) {
         else { $cfg.PSObject.Properties.Remove('test_copy') }
         $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
     }
+    if ([bool]$Isolated -ne ($cfg.isolated -eq $true)) {   # likewise: a run without -Isolated takes the mark off
+        if ($Isolated) { $cfg | Add-Member -NotePropertyName isolated -NotePropertyValue $true -Force }
+        else { $cfg.PSObject.Properties.Remove('isolated') }
+        $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
+    }
     if ($PSBoundParameters.ContainsKey('At')) {
         $cfg.refresh_time = $At   # keep config.json and the scheduled task in step (as Settings does)
         $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
@@ -129,9 +152,11 @@ if (-not (Test-Path $CfgFile)) {
     $tpl.refresh_time = $At
     if ($Port) { $tpl | Add-Member -NotePropertyName port -NotePropertyValue $Port -Force }   # app.py: --port, OPENLOOPS_PORT, then this
     if ($TestCopy) { $tpl | Add-Member -NotePropertyName test_copy -NotePropertyValue $true -Force }   # doctor.is_test_copy
+    if ($Isolated) { $tpl | Add-Member -NotePropertyName isolated -NotePropertyValue $true -Force }   # store.isolated (#36)
     $tpl | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
 }
 Ok "Files in place"
+if ($Isolated) { Ok "Isolated test copy: it reads no to-do file and starts no scan until you press Start the first scan" }
 
 # ---------- 4. Desktop + Start menu icons ----------
 $pyw  = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
