@@ -232,6 +232,7 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
    most, each with a sample line and a guessed *senior / peer / junior / external* to correct with radio buttons.
    Saving writes `config.people`, then runs *Learn my tone* (`voice.py`) and the first scan automatically. With Gmail
    not connected, the first scan is the Slack-only pass (**Update Slack**), and setup finishes when it has run.
+   Setup stays finished (`setup_done` in state.json): connecting Gmail later only offers **Run a full scan**.
 4. Everything else (name, refresh time, domains, sending, timer) is in ⚙ Settings — no file editing needed.
 
 Manual equivalents, for support: `python -m openloops.doctor`, `python -m openloops.people`, `python -m openloops.voice`, `python -m openloops.refresh`,

@@ -191,8 +191,10 @@ if NODE:
  await tick();out.scan=snap();out.scanTitle=$('#auto_title').innerHTML;out.scanSub=$('#auto_sub').textContent;
  out.refreshJob=await waitJob('refresh');await loadState();await tick();out.end=snap();out.meta=$('#meta').textContent;
  out.state={loops:S.loops.map(l=>l.id),last_refresh:S.last_refresh,last_slack_refresh:S.last_slack_refresh};
- const d=DOC;DOC=JSON.parse(JSON.stringify(d));DOC.steps.find(x=>x.id==='gmail').ok=true;
- out.withGmail={stage:stage(),slackOnly:slackOnlyScan(),sources:scanSources()};DOC=d;""", tmp)
+ await until(()=>S.setup_done,5000);await loadState();out.persisted=S.setup_done;
+ const d=DOC;DOC=JSON.parse(JSON.stringify(d));DOC.steps.find(x=>x.id==='gmail').ok=true;await tick();
+ out.withGmail={stage:stage(),lists:$('#lists').style.display,later:$('#gmail_later').style.display,sources:scanSources()};
+ S.setup_done=false;out.fresh={stage:stage(),slackOnly:slackOnlyScan()};S.setup_done=true;DOC=d;""", tmp)
         check(out["all_ok"] and "slack:true" in out["doc"] and "gmail:false" in out["doc"] and "self:true" in out["doc"],
               f"checklist green with Slack only, Gmail not connected, Slack id found ({out['doc']})")
         b = out["before"]
@@ -219,8 +221,11 @@ if NODE:
               and out["state"]["last_slack_refresh"] and not out["state"]["last_refresh"],
               f"setup finished: the lists appear with the Slack loop, no full refresh needed ({e}, {out['state']})")
         check(out["meta"].startswith("slack ") and "never" not in out["meta"], f"the header says when Slack was read, not 'never' ({out['meta']!r})")
-        check(out["withGmail"] == {"stage": "scan", "slackOnly": False, "sources": "Slack and Gmail"},
-              "with Gmail connected the first scan is the full refresh, and a Slack pass alone does not finish setup")
+        check(out["persisted"] is True, "reaching ready saves setup_done in state.json")
+        check(out["withGmail"] == {"stage": "ready", "lists": "", "later": "", "sources": "Slack and Gmail"},
+              f"Gmail connected later: setup stays done, the lists stay, and a full scan is offered ({out['withGmail']})")
+        check(out["fresh"] == {"stage": "scan", "slackOnly": False},
+              "before setup is done, with both connected, the first scan is the full refresh and a Slack pass alone is not enough")
     finally:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)

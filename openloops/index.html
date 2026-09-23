@@ -138,6 +138,9 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <!-- stage: voice / scan (automatic) -->
  <div id="st_auto" class="box" style="display:none"><h3 id="auto_title"></h3><div class="sub" id="auto_sub"></div><div style="margin-top:10px"><button id="auto_retry" onclick="retryStage()" style="display:none">Try again</button></div></div>
 
+ <!-- Gmail connected after a Slack-only setup: offered, never forced; setup stays done (#38 review) -->
+ <div id="gmail_later" class="box" style="display:none"><span class="sub">Gmail is connected now. Run a full scan?</span> <button class="primary" id="gmail_later_btn" onclick="refresh()">Run a full scan</button></div>
+
  <div id="lists" style="display:none">
   <!-- Pinned: the boards and docs you open every day, yours rather than a loop's. Miro boards can open in a view-only embed here. -->
   <div id="pins_wrap" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 4px">
@@ -470,7 +473,14 @@ function stage(){if(!DOC)return 'checking';if(DOC.error)return 'checkfail';if(!D
 // Which sources the checklist has ticked. The first scan is done once a full refresh ran (last_refresh), or, on an
 // install without Gmail, once the Slack-only pass ran (last_slack_refresh): that pass is then the first scan (#38).
 const srcOk=id=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id===id&&x.ok));
-const scanned=()=>!!(S&&(S.last_refresh||(S.last_slack_refresh&&!srcOk('gmail'))));
+// Once setup has finished (setup_done, saved the first time the page reaches "ready"), it stays finished: Gmail
+// connected later is offered a full scan (#gmail_later), it does not reopen setup (#38 review).
+const scanned=()=>!!(S&&(S.setup_done||S.last_refresh||(S.last_slack_refresh&&!srcOk('gmail'))));
+let setupSaving=false;
+function keepSetupDone(st){if(st!=='ready'||!S||S.setup_done||setupSaving)return;setupSaving=true;
+ api('/api/setup-done',{}).then(()=>{S.setup_done=true;clog('setup done: saved')},()=>{}).finally(()=>{setupSaving=false})}
+function paintGmailLater(st){const show=st==='ready'&&!!S&&!!S.setup_done&&!S.last_refresh&&srcOk('gmail');
+ $('#gmail_later').style.display=show?'':'none';$('#gmail_later_btn').disabled=running('refresh')}
 const slackOnlyScan=()=>slackOk()&&!srcOk('gmail');
 const scanSources=()=>srcOk('slack')&&srcOk('gmail')?'Slack and Gmail':srcOk('slack')?'Slack':srcOk('gmail')?'Gmail':'Slack and Gmail';
 const histDays=()=>Math.min(+(C&&C.history_days)||30,365);   // app.py history_days(): how far back the first scan reads
@@ -503,7 +513,7 @@ async function tick(){
  else if(waitsForGo(st))paintStart();   // nothing starts until Start the first scan is pressed
  else if(st==='people'){$('#st_people').style.display='';await stagePeople()}
  else if(st==='voice'||st==='scan'){$('#st_auto').style.display='';await stageAuto(st)}
- renderLists();paintVoice();paintButtons(st);paintSchedule(st)}
+ keepSetupDone(st);paintGmailLater(st);renderLists();paintVoice();paintButtons(st);paintSchedule(st)}
 
 function paintConnect(){$('#st_connect').style.display='';
  const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do

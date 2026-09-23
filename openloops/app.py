@@ -766,6 +766,12 @@ class H(BaseHTTPRequestHandler):
             if r.returncode == 0 and update_json(CONFIG, lambda c: c.update(refresh_time=t)) is False:
                 return self._json({"ok": False, "error": "config.json could not be read, so the new time was not saved there"}, 500)
             return self._json({"ok": r.returncode == 0, "out": (r.stdout + r.stderr)[-500:]})
+        if self.path == "/api/setup-done":  # the page reached "ready" (#38 review): setup stays done, whatever is connected later
+            s = load()
+            if not s.get("setup_done"):
+                s["setup_done"] = True
+                save(s)
+            return self._json({"ok": True})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":
