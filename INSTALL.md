@@ -23,6 +23,9 @@ slack@claude-plugins-official`, `claude mcp login <server>`), your browser opens
 *Allow*; the row ticks a few seconds later. The checklist reads its ticks from `claude auth status` and
 `claude mcp list`, not from a trial prompt. What each command printed is in `state/connect-<step>.log`. If a button
 doesn't do it, *Open Claude (advanced)* opens a terminal running `claude`, where `/mcp` lists every connection.
+Reloading the page while a sign-in waits for *Allow* loses nothing: the row's spinner, the sign-in link and the
+pop-up come back. If a later Claude Code renames a server, jobs use it under the name `claude mcp list` prints; a
+name Open Loops can't use (one with shell characters) shows as a red row saying so, never as a tick.
 Open Loops stores no tokens for this: the sign-ins stay wherever the Claude CLI keeps them.
 A second Claude account needs its own Claude settings folder; for a second Slack workspace or Gmail inbox, see [More than one account](#8-more-than-one-account-work--personal).
 
