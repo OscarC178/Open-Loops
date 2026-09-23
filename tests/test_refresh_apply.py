@@ -86,6 +86,12 @@ ids = [l["id"] for l in s["loops"]]
 check("cy-quote" in ids and "bo-brief" in ids, "full run admits both channels")
 check(s["cursor"] == s["slack_cursor"] == s["last_refresh"] == "2026-09-15T15:00+01:00", "full run advances both cursors and last_refresh")
 check(s["gmail_available"] is True, "full run records gmail_available")
+s = base()
+refresh.apply(s, out, slack_only=False, now="2026-09-15T15:00+01:00", slack_on=False)
+check(s["cursor"] == "2026-09-15T15:00+01:00" and s["slack_cursor"] == "2026-09-10T12:00+01:00", "full run with Slack off advances only the Gmail cursor")
+s = base(); del s["slack_cursor"]
+refresh.apply(s, out, slack_only=False, now="2026-09-15T15:00+01:00", slack_on=False)
+check(s["slack_cursor"] == "2026-09-01T09:00+01:00", "...and with no Slack cursor yet, pins it at the old shared cursor")
 
 # --- Slack inbound: asks OF the owner from DMs and @-mentions, one loop per ask (conversation + ask ts)
 JO_DM, NOW = "D0JODM0001", "2026-09-15T17:00+01:00"

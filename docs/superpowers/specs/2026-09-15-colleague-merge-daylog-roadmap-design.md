@@ -60,7 +60,7 @@ openloops/
 - Prompt gains a `links` array per new loop and per update: any document URL the thread mentions
   (Drive, Docs, Miro, Notion, Figma). Merged into the loop's `links` list, de-duplicated by URL.
 - Write via `update_state`: slack-only sets `slack_cursor`, `last_slack_refresh`; full sets
-  `cursor`, `slack_cursor`, `last_refresh`, `gmail_available`.
+  `cursor`, `slack_cursor` (only when Slack is on), `last_refresh`, `gmail_available`.
 - `apply(s, out, slack_only, now)` is a pure function so the merge is unit-testable.
 
 ### daylog.py

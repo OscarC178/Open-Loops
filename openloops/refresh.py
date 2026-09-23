@@ -205,8 +205,9 @@ def merge_links(loop, links):
         seen.add(url)
 
 
-def apply(s, out, slack_only, now):
-    """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated)."""
+def apply(s, out, slack_only, now, slack_on=True):
+    """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated).
+    slack_on: whether this run searched Slack at all (a full run with Slack off did not)."""
     by_id = {l["id"]: l for l in s["loops"]}
     # Slack asks of the owner still open once this run's updates land (an ask closed now no longer counts):
     # the same ask (conversation + ask ts) seen again under a new id is not added twice. And a reply this
@@ -261,8 +262,10 @@ def apply(s, out, slack_only, now):
         s["slack_cursor"] = now
         s["last_slack_refresh"] = now
     else:
+        # Slack's cursor moves only when Slack was searched; with Slack off it stays where Slack coverage
+        # stopped (first time: the old shared cursor), so turning Slack on later catches up from there
+        s["slack_cursor"] = now if slack_on else (s.get("slack_cursor") or s.get("cursor"))
         s["cursor"] = now
-        s["slack_cursor"] = now
         s["last_refresh"] = now
         s["gmail_available"] = bool(out.get("gmail_available"))
     return n_new, n_upd
@@ -290,7 +293,7 @@ def main():
     now = datetime.now().astimezone().isoformat(timespec="minutes")
     counts = {}
     # re-read state.json at write time: the page may have added notes or snoozes meanwhile
-    s = update_state(lambda fresh: counts.update(zip(("new", "upd"), apply(fresh, out, SLACK_ONLY, now))))
+    s = update_state(lambda fresh: counts.update(zip(("new", "upd"), apply(fresh, out, SLACK_ONLY, now, slack_on))))
     gm = "" if SLACK_ONLY else f", gmail={'yes' if s.get('gmail_available') else 'NO'}"
     print(f"done: {counts['new']} new, {counts['upd']} updated{gm}")
 
