@@ -93,7 +93,10 @@ fresh settings folder of its own under `state/codex-home/<account>/` (one per Ch
 share anything): a link to your `~/.codex/auth.json` and a generated `config.toml`, so your own Codex plugins, skills,
 memories and AGENTS.md are not loaded (measured on 2026-09-23: about 190k input tokens under a full `~/.codex`, 13k to
 40k here). The first run for an account is a short warm-up with every connector off, so Codex can load its list of
-ChatGPT connector tools.
+ChatGPT connector tools. A run's folder is removed when it ends; one left by a run that was killed part-way is removed
+by the next Codex run (before and after it) or app start, once the job that made it has ended, or after an hour if it
+names no job. A folder whose job is still running is never removed, however old; on Windows, a job whose state can't
+be read counts as running.
 
 **Only the tools a job lists are switched on; anything else is switched off from the list Codex last fetched, and a
 tool added by OpenAI since then is refused after the call.** Each run's `config.toml` switches every ChatGPT connector off
@@ -116,9 +119,17 @@ slow) stops the job with that reason, within the job's own time limit.
 that ChatGPT account), a job runs without them and is told "Gmail is not connected in this ChatGPT account; skip email";
 the same for Slack. A refresh then keeps that source's cursor (`gmail_cursor` / `slack_cursor` in `state.json`) where it
 was, so nothing is skipped once it is connected. With neither connected, the job does not run and says so.
-Now and then a Codex session starts without one connector's tools (seen in real runs). A run that called no tool of a
-connector its job lists fails and saves nothing ("Codex couldn't reach its Gmail or Slack tools this time"), so a
-refresh never moves past mail or messages it did not read. It is retried once first, but only when the job can only
+Now and then a Codex session starts without one connector's tools (seen in real runs). `codex exec --json` does not
+report which tools a session got, so each run is asked to end its reply with a `TOOLS_SEEN:` line naming the listed
+tools it found; Open Loops removes that line before the job reads the reply. **The line is the model's own report, not
+something Codex checks.** "Codex couldn't reach its Gmail or Slack tools this time" appears only when a run called no
+tool of a connector its job lists **and** its reply does not end with a `TOOLS_SEEN:` line naming one of them (a missing,
+quoted, repeated or mid-reply line counts as none): the run then fails and saves nothing. A run whose line names the
+tools but that called none of them (nothing to search, nothing it was allowed to do) is a normal result, and a refresh
+applies it: each source's cursor moves when the reply says that source was searched (`gmail_available` /
+`slack_available` true, or left out) and holds when it says false. So if a session really lacked a connector's tools
+and the model still claimed them, an empty refresh counts as normal and can move the Gmail or Slack cursor past
+messages it never read; those messages are then not searched again. The refusal is retried once first, but only when the job can only
 read (refresh, people, tone, day log, the checklist), and never after the first attempt called anything but a read tool,
 reported a draft or send, or failed on sign-in, allowance or time. Anything the first attempt called still counts: a
 tool off the list in attempt 1 fails the run even if attempt 2 was clean. Two things

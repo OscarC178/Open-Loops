@@ -339,6 +339,12 @@ def codex_probe(sig, want_miro, recheck=False, now=None):
     else:  # the same order as agent.codex_failure: a failed run beats whatever text came back
         why = agent.codex_failure(p.returncode, getattr(p, "errors", []), getattr(p, "codex_stderr", "")) or (
             "failed" if all(got[x] is None for x in srcs if x in ("gmail", "slack") and x not in (getattr(p, "dropped", []) or [])) else "")
+        # #44: a run whose model saw a source's tools and called none is no longer refused by agent.py. For the probe
+        # that is still no answer about that source (its line alone is not believed): "couldn't ask", not "not connected".
+        called = {u.split("/", 1)[-1] for u in getattr(p, "tools_used", []) or []}
+        if not why and any(x in PROBE_PROOF and x not in (getattr(p, "dropped", []) or []) and not called.intersection(PROBE_PROOF[x])
+                           for x in srcs):
+            why = "failed"
     if why:
         got.update(gmail=None, slack=None, miro=None, slack_id="")
     else:

@@ -188,6 +188,70 @@ CODEX_READ_TOOLS = {"gmail.get_profile", "gmail.search_emails", "gmail.search_em
 _CODEX_WROTE_RE = re.compile(r"^(?:DRAFT_CREATED|SENT):", re.M)  # a chase's own success markers
 _CODEX_SKIP = {"gmail": "Gmail is not connected in this ChatGPT account; skip email.",
                "slack": "Slack is not connected in this ChatGPT account; skip Slack."}
+# #44: a run that called none of a connector's tools is refused only when the session did not have them (the start-up
+# race, #42), not when the model had them and chose not to call (nothing to search, or nothing it was allowed to do).
+# `codex exec --json` does not say which tools a session got (0.156.1: its items are messages, tool calls, commands,
+# file changes and web searches; tool search is not among them), so the run is asked to end with one machine line
+# naming the listed tools it could see. The line is removed before the job reads the reply.
+# Measured on the first real run: the connector tools are deferred, so a model with no reason to search never saw
+# them and said "none"; hence the search it is asked for below, which is Codex's own tool search, not a tool call.
+CODEX_SEEN_ASK = ("When you have finished, end your reply with one more line: TOOLS_SEEN: followed by the exact names, "
+                  "comma-separated, of the tools listed above that are available to you in this session, whether or "
+                  "not you called them, or TOOLS_SEEN: none if none of them is. If you have not searched for them yet, "
+                  "search for each by name first (finding a tool is not calling it), so the line says what this "
+                  "session really has. Add the line after everything the instructions ask for, even if they say to "
+                  "reply with nothing else: Open Loops removes it before reading your reply.\n")
+_CODEX_SEEN_LINE = re.compile(r"[*_`]*TOOLS_SEEN[*_`]*[ \t]*:(.*)", re.I)  # the whole last line, no quote or bullet
+
+
+_FENCE_OPEN = re.compile(r"(`{3,}|~{3,})")          # CommonMark: a fence opens with 3+ backticks or 3+ tildes
+
+
+def codex_tools_seen(text):
+    """A run's final message -> (the message without its TOOLS_SEEN line, the names on it as a set, or None when there
+    is no usable line). Usable means strict (review of #45): outside code fences there is exactly one footer-shaped line
+    (TOOLS_SEEN: at the start of the line, not quoted ("> ...") or a list item), and it is the last non-empty line.
+    Fences follow CommonMark: one opens with 3+ backticks or 3+ tildes and closes only with a line of the same character,
+    at least as many, and nothing else; lines inside, and after an unclosed opening, are never footers. Prose that merely
+    mentions TOOLS_SEEN does not count. Anything else counts as no line (the refusal path) and the text is returned
+    untouched. "none" (or nothing) after the colon is an empty set: the run saw none."""
+    text = text or ""
+    lines = text.splitlines()
+    fence, footers = None, []  # fence: (character, count) of the open fence, or None
+    for i, ln in enumerate(lines):
+        st = ln.strip()
+        if fence is None:
+            m = _FENCE_OPEN.match(st)
+            if m:
+                fence = (m.group(1)[0], len(m.group(1)))
+            elif _CODEX_SEEN_LINE.fullmatch(st):
+                footers.append(i)
+        elif re.fullmatch(re.escape(fence[0]) + "{%d,}" % fence[1], st):
+            fence = None  # a closing fence: same character, at least as many, nothing else
+    last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
+    if len(footers) != 1 or footers[0] != last:
+        return text, None
+    raw = _CODEX_SEEN_LINE.fullmatch(lines[last].strip()).group(1).strip().strip("`*_ ")
+    seen = set() if raw.lower() in ("", "none", "none.") else {t.strip("`*_.;") for t in re.split(r"[,\s]+", raw) if t.strip("`*_.;")}
+    return "\n".join(lines[:last]).rstrip(), seen
+
+
+def codex_seen_services(seen, allowed):
+    """The connectors ("gmail", "slack") at least one of whose allowed tools the run says it saw. Only exact aliases of
+    the job's own allowed tools count, built from that list: "gmail.search_emails", its name inside the session
+    "mcp__codex_apps__gmail_search_emails", and the bare "search_emails" only when the job lists tools of one connector
+    alone (with two, a bare name could be either). Anything else ("other.search_emails", "..._outlook_search_emails") is
+    ignored, i.e. not evidence that the session had the tool."""
+    dotted = [q for q in allowed if "." in q]
+    one_connector = len({q.split(".", 1)[0] for q in dotted}) == 1
+    alias = {}
+    for q in dotted:
+        svc, short = q.split(".", 1)
+        alias[q.lower()] = svc
+        alias["mcp__codex_apps__" + q.replace(".", "_").lower()] = svc
+        if one_connector:
+            alias[short.lower()] = svc
+    return {alias[t.lower()] for t in seen or () if t.lower() in alias}
 
 
 _LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota", re.I)
@@ -362,6 +426,89 @@ def _codex_base_toml(src):
     return "\n".join(lines) + "\n"
 
 
+CODEX_RUN_STALE_S = 3600        # a run folder with no owner on record is left alone this long (#42), then removed
+_CODEX_PID = "openloops.pid"    # in each run folder: the process that made it, i.e. the job it belongs to
+
+
+def _pid_alive(pid):
+    """Whether a process with this id exists. Conservative: anything unclear counts as alive, since a live job's folder
+    must never be removed. Windows: asks without touching it (os.kill there would end it)."""
+    if pid <= 0:
+        return False
+    if WIN:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.OpenProcess.argtypes, k.OpenProcess.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE
+            k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            k.GetExitCodeProcess.restype = wintypes.BOOL
+            k.CloseHandle.argtypes, k.CloseHandle.restype = [wintypes.HANDLE], wintypes.BOOL
+            h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process; else (denied...) alive
+            try:
+                code = wintypes.DWORD()
+                if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return True  # the query failed: count it as alive
+                return code.value == 259  # STILL_ACTIVE
+            finally:
+                k.CloseHandle(h)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def codex_sweep(now=None):
+    """Remove run folders (state/codex-home/<account>/run-*) that a run stopped part-way left behind: a job killed by
+    Quit or a test skips its own clean-up, and the folder keeps its link to the user's auth.json (#42). A folder goes
+    when the job that made it has ended (its openloops.pid names no live process), or when it names none and is more
+    than CODEX_RUN_STALE_S old. A folder whose job is alive is never removed, however old. Runs at app start and before
+    and after every Codex run; says on stderr how many it removed. -> that number. Links are removed, never followed.
+    Boundary: nothing is swept when state/codex-home is a link, an account folder that is a link is skipped, and every
+    folder removed must resolve to a place inside state/codex-home."""
+    import time
+    now = time.time() if now is None else now
+    if _CODEX_JOBS.is_symlink():
+        return 0
+    base = os.path.realpath(_CODEX_JOBS) + os.sep
+    try:
+        runs = [r for a in _CODEX_JOBS.iterdir() if a.is_dir() and not a.is_symlink()
+                for r in a.glob("run-*") if r.is_dir() and not r.is_symlink()]
+    except OSError:
+        return 0
+    gone = 0
+    for r in runs:
+        if not os.path.realpath(r).startswith(base) or r.parent.is_symlink():
+            continue  # not where it should be (the tree changed under us): leave it
+        try:
+            age = now - r.stat().st_mtime
+        except OSError:
+            continue
+        try:
+            pid = int((r / _CODEX_PID).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid is None and age < CODEX_RUN_STALE_S:
+            continue  # being set up right now, or from before pid files: wait for the hour
+        if pid is not None and _pid_alive(pid):
+            continue  # its job is still running
+        shutil.rmtree(r, ignore_errors=True)
+        gone += not r.exists()
+    if gone:
+        print(f"Open Loops: removed {gone} leftover Codex run folder{'s' if gone != 1 else ''} "
+              "(from runs that were stopped part-way).", file=sys.stderr, flush=True)
+    return gone
+
+
 def codex_job_env():
     """A home for one headless Codex run -> (env, run home, account home). Raises CodexNotReady rather than ever
     running in the user's own home.
@@ -380,10 +527,15 @@ def codex_job_env():
     if auth["mode"] != "chatgpt" or not auth["account"]:
         raise CodexNotReady("signin")  # API-key sign-in: no connectors (doctor.py says so on its row)
     acct = codex_home(auth["account"])
+    try:
+        codex_sweep()  # folders left by earlier runs that were killed part-way (#42)
+    except Exception:
+        pass  # never a reason not to run
     run = acct / ("run-" + uuid.uuid4().hex[:12])
     try:
         (acct / "cache").mkdir(parents=True, exist_ok=True)
         (run / "work").mkdir(parents=True)  # the run's working folder (-C): empty, so nothing to read
+        (run / _CODEX_PID).write_text(str(os.getpid()), encoding="utf-8")  # whose run this is, for codex_sweep
         for name_ in ("auth.json", ".credentials.json"):
             if (src / name_).exists():
                 _link(src / name_, run / name_)
@@ -441,14 +593,19 @@ def codex_preamble(tools):
             lines.append(f"- {q}" + (f" ({'; '.join(notes)})" if notes else ""))
     lines = list(dict.fromkeys(lines))
     head = ("[Open Loops: an unattended run. Nobody is watching, so nobody can answer a question or approve anything.]\n")
+    # Measured (#44, Codex 0.156.1): inside the session a connector tool is named mcp__codex_apps__gmail_search_emails,
+    # and a model searching for "gmail.search_emails" as written missed it in about half the runs.
+    eg = next((q for t in tools for q in _qualify([t]) if "." in q), "")
+    named = (f" In this session each is named mcp__codex_apps__ followed by the name above with its dot as an underscore "
+             f"(e.g. mcp__codex_apps__{eg.replace('.', '_')}).") if eg else ""
     if lines:
         # Wording matters (measured): "do not use any other tool" also kept the model from Codex's own tool search,
         # which is how app tools are found, so it then saw none. Finding tools is allowed; calling others is not.
         head += ("The only tools you may call are:\n" + "\n".join(lines) +
-                 "\nThey may not be loaded at the start: search for them by name first. Do not call any other app or "
+                 "\nThey may not be loaded at the start: search for them by name first." + named + " Do not call any other app or "
                  "connector tool, do not run shell commands, do not read or write files, do not search the web, do not "
                  "install anything. If a tool you need is missing or fails, carry on without it and say so where the "
-                 "instructions ask.\n")
+                 "instructions ask.\n" + CODEX_SEEN_ASK)
     else:
         head += ("Use no tools at all: no apps, no connectors, no shell commands, no files, no web. "
                  "Answer from the text below only.\n")
@@ -511,7 +668,7 @@ def codex_timeout():
 def _refused(args, why, detail=""):
     said = CODEX_REFUSE[why].format(store=codex_keyring_store(), limit="the time allowed")
     p = subprocess.CompletedProcess(args, 3, stdout=said + "\n", stderr=f"codex: not run ({why}){': ' + detail if detail else ''}\n")
-    p.refused, p.tools_used, p.tools_ok, p.errors, p.codex_stderr, p.dropped = why, [], [], [], "", []
+    p.refused, p.tools_used, p.tools_ok, p.errors, p.codex_stderr, p.dropped, p.tools_seen = why, [], [], [], "", [], None
     return p
 
 
@@ -544,6 +701,10 @@ def _codex_done(home):
         _codex_keep_cache(run, acct)
     finally:
         shutil.rmtree(run, ignore_errors=True)
+        try:
+            codex_sweep()  # and whatever an earlier killed run left behind (#42)
+        except Exception:
+            pass
 
 
 def _codex_warmup(budget):
@@ -617,11 +778,11 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
     timeout = timeout if timeout is not None else codex_timeout()
     deadline = time.time() + timeout if timeout else None
     left = lambda: None if deadline is None else max(1, deadline - time.time())
-    blind_note, used_all, ok_all, errs_all, err_all = "", [], [], [], ""
+    blind_note, used_all, ok_all, errs_all, err_all, seen, chose = "", [], [], [], "", None, []
     read_only_job = {q for q in _qualify(tools) if "." in q} <= CODEX_READ_TOOLS
     try:
         for tries in (1, 2):
-            missed = []
+            missed, chose = [], []
             rc, ev, err, final, args, allowed, dropped = _codex_once(prompt, tools, left, effort_)
             # Everything every attempt did is kept: a forbidden call in the first attempt still fails the run.
             used_all += ev["used"]
@@ -633,16 +794,21 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
             # Measured on real runs: a session now and then starts without one connector's tools (in one of three
             # probes Gmail's were simply not there, with Slack's present). A refresh would then report "no Gmail"
             # and move its cursor past mail it never read. So a run that called no tool of a connector its job lists
+            # AND did not see that connector's tools (its TOOLS_SEEN line leaves them out, or there is no such line)
             # fails and saves nothing - retried once first, but only for a job that can only read, and never after
-            # the first attempt called anything that is not a read or reported a draft or a send.
+            # the first attempt called anything that is not a read or reported a draft or a send. A run that saw
+            # the tools and chose not to call them is a normal result (#44).
             services = {q.split(".", 1)[0] for q in allowed}
             reached = {u.split("/", 1)[1].split(".", 1)[0] for u in ev["used"] if u.startswith("codex_apps/")}
-            missed = sorted(services - reached)
+            seen = codex_tools_seen(final or ev["msg"])[1]
+            idle = services - reached
+            missed = sorted(idle - codex_seen_services(seen, allowed))
+            chose = sorted(idle - set(missed))
             if not missed:
                 break
             wrote = [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in CODEX_READ_TOOLS]
             wrote += [u for u in ev["used"] if u in ("command_execution", "file_change", "web_search")]
-            marked = _CODEX_WROTE_RE.search(final or ev["msg"] or "")
+            marked = _CODEX_WROTE_RE.search(codex_tools_seen(final or ev["msg"] or "")[0] or "")
             wrote += [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in allowed]
             blind_note = (f"; no {', '.join(missed)} tool was called in attempt {tries} (it said: "
                           + " ".join((final or ev["msg"]).split())[:200] + ")")
@@ -660,10 +826,13 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
     extra = [u for u in ev["used"] if u.split("/", 1)[-1] not in allowed | _CODEX_SAFE_BUILTINS
              and u.split("/", 1)[0] not in servers]
     note = "codex: tools used: " + (", ".join(ev["used"]) or "none") + blind_note
+    note += "; tools seen: " + (", ".join(sorted(seen)) or "none" if seen is not None else "not said")
+    if chose and not missed:
+        note += "; " + ", ".join(chose) + " tools were there but not called"
     if ev["usage"]:
         u = ev["usage"]
         note += f"; tokens in {u.get('input_tokens', '?')} (cached {u.get('cached_input_tokens', '?')}), out {u.get('output_tokens', '?')}"
-    stdout = final or ev["msg"]
+    stdout = codex_tools_seen(final or ev["msg"])[0]  # the job never sees the TOOLS_SEEN line
     # A run Codex reports as failed (a timeout, a spent allowance, a 401, any other error) is a failed run even if it
     # exited 0 and left a result behind: its text never reaches the job, so nothing half-done is applied.
     failed = codex_failure(rc, ev["errors"], err)
@@ -683,6 +852,7 @@ def codex_run(prompt, tools, timeout=None, effort_=None):
     done = subprocess.CompletedProcess(args, rc, stdout=stdout, stderr=out_err)
     done.refused = "unlisted" if extra else failed or ("notools" if blind else "")
     done.tools_used, done.tools_ok, done.errors, done.codex_stderr = used_all, ok_all, errs_all, err
+    done.tools_seen = sorted(seen) if seen is not None else None
     done.dropped = dropped  # sources skipped because they are not connected in this ChatGPT account
     return done
 

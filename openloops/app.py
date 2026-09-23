@@ -850,6 +850,11 @@ if __name__ == "__main__":
     add_install_dirs()  # a CLI installed after this terminal (or Finder session) started is still found
     srv = Server(("127.0.0.1", PORT), H)
     print("Open Loops ->", url)
+    try:  # Codex run folders a killed job left behind, with their link to the user's sign-in (#42)
+        from .agent import codex_sweep
+        codex_sweep()
+    except Exception:
+        pass
     if PORT != PREFERRED:
         print(f"(port {PREFERRED} was taken by another program; use --port or OPENLOOPS_PORT to choose)")
     if "--no-browser" not in sys.argv:

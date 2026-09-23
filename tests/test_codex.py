@@ -49,6 +49,37 @@ check("- gmail.search_emails (the instructions below may call it search_threads)
       and "reply_message_id" in pre and "- slack.slack_read_channel\n" in pre and "do not run shell commands" in pre,
       "the preamble lists only the job's tools, by connector name, with the short name the prompts use")
 check("Use no tools at all" in agent.codex_preamble([]), "a job with no tools is told to use none")
+check("TOOLS_SEEN:" in pre and "TOOLS_SEEN" not in agent.codex_preamble([]), "a job with tools is asked for a TOOLS_SEEN line")
+for said, want_text, want_seen in (
+        ("OK\nTOOLS_SEEN: gmail.search_emails, slack.slack_read_channel", "OK", {"gmail.search_emails", "slack.slack_read_channel"}),
+        ("OK\n**TOOLS_SEEN:** none\n", "OK", set()),
+        ("OK\n`TOOLS_SEEN: search_emails`", "OK", {"search_emails"}),
+        ("OK", "OK", None),
+        ("Quoted email:\n> TOOLS_SEEN: gmail.search_emails\nThe end.", "Quoted email:\n> TOOLS_SEEN: gmail.search_emails\nThe end.", None),
+        ("OK\n> TOOLS_SEEN: gmail.search_emails", "OK\n> TOOLS_SEEN: gmail.search_emails", None),
+        ("TOOLS_SEEN: gmail.search_emails\nOK", "TOOLS_SEEN: gmail.search_emails\nOK", None),
+        ("OK\nTOOLS_SEEN: none\nTOOLS_SEEN: gmail.search_emails", "OK\nTOOLS_SEEN: none\nTOOLS_SEEN: gmail.search_emails", None),
+        ("```\nOK\nTOOLS_SEEN: gmail.search_emails", "```\nOK\nTOOLS_SEEN: gmail.search_emails", None),
+        ("```\nx\n```\nOK\nTOOLS_SEEN: gmail.search_emails", "```\nx\n```\nOK", {"gmail.search_emails"}),
+        ("````text\n```\nTOOLS_SEEN: gmail.search_emails", "````text\n```\nTOOLS_SEEN: gmail.search_emails", None),
+        ("```text\n```not-a-close\nTOOLS_SEEN: gmail.search_emails", "```text\n```not-a-close\nTOOLS_SEEN: gmail.search_emails", None),
+        ("~~~text\nTOOLS_SEEN: gmail.search_emails", "~~~text\nTOOLS_SEEN: gmail.search_emails", None),
+        ("~~~~\nx\n~~~\n```\nOK\nTOOLS_SEEN: gmail.search_emails", "~~~~\nx\n~~~\n```\nOK\nTOOLS_SEEN: gmail.search_emails", None),
+        ("~~~\nx\n~~~~  \nOK\nTOOLS_SEEN: gmail.search_emails", "~~~\nx\n~~~~  \nOK", {"gmail.search_emails"}),
+        ("I will explain TOOLS_SEEN below.\nTOOLS_SEEN: gmail.search_emails", "I will explain TOOLS_SEEN below.", {"gmail.search_emails"})):
+    got = agent.codex_tools_seen(said)
+    check(got == (want_text, want_seen), f"only one final, unquoted TOOLS_SEEN line is read and removed: {said!r} -> {got!r}")
+allowed = {"gmail.search_emails", "slack.slack_read_channel"}
+check(agent.codex_seen_services({"mcp__codex_apps__gmail_search_emails"}, allowed) == {"gmail"}
+      and agent.codex_seen_services({"slack.slack_read_channel", "gmail.create_draft"}, allowed) == {"slack"}
+      and agent.codex_seen_services(set(), allowed) == set(),
+      "a seen tool counts for its connector by its exact name or its in-session name, and only if the job allows it")
+check(agent.codex_seen_services({"other.search_emails", "mcp__codex_apps__outlook_search_emails", "x_search_emails",
+                                 "mcp__codex_apps__gmail__search_emails"}, allowed) == set(),
+      "another connector's tool, or a near-miss spelling, is not evidence")
+check(agent.codex_seen_services({"search_emails"}, allowed) == set()
+      and agent.codex_seen_services({"search_emails"}, {"gmail.search_emails", "gmail.read_email_thread"}) == {"gmail"},
+      "a bare name counts only when the job lists one connector's tools")
 check(agent.login_cmd("login") == [[agent.cli(), "login"]] and agent.login_cmd("gmail") is None, "Sign in runs codex login")
 check(agent.connect_steps() == ("login", "gmail", "slack") and agent.connect_url("gmail") == "https://chatgpt.com/apps"
       and agent.connect_url("login") is None, "Gmail / Slack buttons open ChatGPT's apps page; no Miro or plugin step")
@@ -72,6 +103,11 @@ FAKE = r'''#!PYTHON
 # It honours the run's allow-list the way the real CLI was measured to (apps._default off, an app on, a tool off),
 # fetches its connector list into CODEX_HOME/cache during a run when none is there (as the real one does), and can be
 # told by flag files to misbehave: call a send tool anyway, echo the question, report a 401, run out of allowance.
+# Four things are set separately. What the session exposes: the listed tools the allow-list enables, less "blind" (none)
+# or "half" (no Gmail). What the model calls: every exposed tool, or none with "shy". What its TOOLS_SEEN line claims
+# (only when the preamble asks for one): the exposed tools; with "liar" every listed tool, exposed or not; "nofooter"
+# leaves it out, "quoted" writes it as "> TOOLS_SEEN: ...", "midfooter" puts it before the last line. What a refresh
+# reply says about availability: the file "avail" holds true (default), false or missing.
 import json, os, re, sys, time
 a = sys.argv[1:]
 here = os.path.dirname(os.path.abspath(__file__))
@@ -145,6 +181,9 @@ if a[:1] == ["exec"]:
         ev(type="error", message="unexpected status 401 Unauthorized: token expired")
         text = "GMAIL: CONNECTED\nSLACK: CONNECTED\nSLACK_ID: U0TESTSELF1"
         open(out, "w").write(text); sys.exit(1)
+    listed = re.findall(r"^- ((?:gmail|slack)\.\w+)", data, re.M)
+    exposed = [] if flag("blind") else [t for t in listed if enabled(t) and not (flag("half") and t.startswith("gmail."))]
+    claimed = listed if flag("liar") else exposed
     if "GMAIL: CONNECTED or NOT-CONNECTED" in data:
         if flag("echo"):
             text = "GMAIL: CONNECTED or NOT-CONNECTED\nSLACK: CONNECTED or NOT-CONNECTED\nSLACK_ID: NONE"
@@ -173,14 +212,18 @@ if a[:1] == ["exec"]:
             open(os.path.join(here, "forbid1.done"), "w").close()
             call("gmail.read_email")
             text = "OK"
-        else:  # a working run calls the tools its preamble lists (flags: "blind" calls none, "half" skips Gmail's)
-            for t in re.findall(r"^- ((?:gmail|slack)\.\w+)", data, re.M):
-                if enabled(t) and not flag("blind") and not (flag("half") and t.startswith("gmail.")):
+        else:  # a working run calls the tools its session exposes, unless "shy"
+            for t in exposed:
+                if not flag("shy"):
                     call(t)
             text = "SENT: thread 1" if flag("marker") else "OK"
             if "<<<OPENLOOPS>>>" in data:  # refresh.py's contract; claims Gmail was searched, whatever it was given
-                text = ('<<<OPENLOOPS>>>{"new_loops": [], "updates": [], "gmail_available": true, '
-                        '"slack_available": true}<<<END>>>')
+                av = open(os.path.join(here, "avail")).read().strip() if flag("avail") else "true"
+                flags_ = "" if av == "missing" else ', "gmail_available": %s, "slack_available": %s' % (av, av)
+                text = '<<<OPENLOOPS>>>{"new_loops": [], "updates": []%s}<<<END>>>' % flags_
+    if "TOOLS_SEEN" in data and not flag("nofooter"):
+        line = ("> " if flag("quoted") else "") + "TOOLS_SEEN: " + (", ".join(claimed) or "none")
+        text = (text + "\n" + line) if not flag("midfooter") else (line + "\n" + text)
     ev(type="item.completed", item={"type": "agent_message", "text": text})
     ev(type="turn.completed", usage={"input_tokens": 27000, "cached_input_tokens": 13000, "output_tokens": 50})
     open(out, "w", encoding="utf-8").write(text)
@@ -308,6 +351,99 @@ flag("half", False)
 check(p.returncode == 0, "...while a Slack-only job that reached Slack is fine")
 p = agent.run("hello", [])
 check(p.returncode == 0 and p.stdout == "OK", f"a job with no tools: stdout is the final message from -o (got {p.returncode}, {p.stdout!r})")
+
+# #44: the model had the tools and chose not to call them -> a normal result; the session lacked them -> refused
+flag("shy")
+n = len(execs())
+p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+check(p.returncode == 0 and not p.refused and p.stdout == "OK" and len(execs()) == n + 1
+      and "gmail, slack tools were there but not called" in p.stderr,
+      f"tools seen, none called: rc 0, the reply (without TOOLS_SEEN) is the result, no retry (got {p.returncode}, {p.stdout!r})")
+n = len(execs())
+p = agent.run("Draft a chase.", ["gmail.search_threads", "gmail.create_draft"])
+check(p.returncode == 0 and len(execs()) == n + 1, "...a job that can write too")
+flag("nofooter")
+n = len(execs())
+p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+flag("nofooter", False); flag("shy", False)
+check(p.returncode == 3 and p.refused == "notools" and len(execs()) == n + 2 and "tools seen: not said" in p.stderr,
+      "no call and no TOOLS_SEEN line: treated as the start-up race (retried once, then refused)")
+flag("nofooter")
+p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+flag("nofooter", False)
+check(p.returncode == 0 and p.stdout == "OK", "no TOOLS_SEEN line but the tools were called: fine")
+flag("blind")
+n = len(execs())
+p = agent.run("Draft a chase.", ["gmail.search_threads", "gmail.create_draft"])
+flag("blind", False)
+check(p.returncode == 3 and p.refused == "notools" and len(execs()) == n + 1,
+      "the session lacked the tools on a job that can write: refused at once, no retry")
+for fl, what in (("quoted", "a quoted footer (> TOOLS_SEEN: ...)"), ("midfooter", "a footer that is not the last line")):
+    flag("shy"); flag(fl)
+    n = len(execs())
+    p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+    flag("shy", False); flag(fl, False)
+    check(p.returncode == 3 and p.refused == "notools" and len(execs()) == n + 2 and "tools seen: not said" in p.stderr,
+          f"{what} with no call is no footer: retried, then refused")
+# KNOWN RISK, asserted so it stays visible (INSTALL.md says so): the footer is the model's word. A session that lacked
+# the tools, a model that called nothing and a footer claiming them all is taken as a normal result.
+flag("blind"); flag("liar")
+n = len(execs())
+p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
+flag("blind", False); flag("liar", False)
+check(p.returncode == 0 and not p.refused and len(execs()) == n + 1 and p.tools_used == [],
+      "a dishonest footer (claims tools the session lacked, no calls) passes as a normal result: the documented risk")
+
+# #42: run folders left by killed runs are swept; a fresh one and a live job's are kept
+import contextlib, io
+dead = subprocess.Popen([sys.executable, "-c", "pass"]); dead.wait()
+def leftover(name, pid=None, hours=0):
+    r = acct_home / name
+    (r / "work").mkdir(parents=True)
+    (r / "auth.json").symlink_to(AUTH)
+    if pid is not None:
+        (r / "openloops.pid").write_text(str(pid))
+    t_ = time.time() - hours * 3600
+    os.utime(r, (t_, t_))
+    return r
+old_ = leftover("run-oldnopid", hours=2)
+fresh_ = leftover("run-freshnopid")
+dead_ = leftover("run-deadpid", pid=dead.pid)
+live_ = leftover("run-liveold", pid=os.getpid(), hours=2)
+ancient_ = leftover("run-livepast24h", pid=os.getpid(), hours=25)
+buf = io.StringIO()
+with contextlib.redirect_stderr(buf):
+    p = agent.run("hello", [])
+check(p.returncode == 0 and not old_.exists() and not dead_.exists() and AUTH.is_file(),
+      "a run removes leftover run folders: no owner and over an hour old, or owner gone (links not followed)")
+check(fresh_.exists() and live_.exists() and ancient_.exists(),
+      "...and keeps one being set up (under an hour, no owner yet) and a live job's, even one over a day old")
+check("removed 2 leftover Codex run folders" in buf.getvalue(), f"...and says so in one line (got {buf.getvalue()!r})")
+check(agent.codex_sweep() == 0, "a second sweep finds nothing more")
+dead2 = leftover("run-deadpid2", pid=dead.pid)
+real_sweep = agent.codex_sweep
+swept = []
+agent.codex_sweep = lambda *a_, **k_: swept.append(1) or real_sweep(*a_, **k_)
+with contextlib.redirect_stderr(io.StringIO()):
+    agent.run("hello", [])
+agent.codex_sweep = real_sweep
+check(len(swept) == 2 and not dead2.exists(), "the sweep runs before and after each run")
+# the boundary: never through a link
+outside = Path(os.environ["HOME"]) / "outside"
+(outside / "run-old").mkdir(parents=True)
+os.utime(outside / "run-old", (time.time() - 7200,) * 2)
+(JOBS / "acct-link").symlink_to(outside)
+check(agent.codex_sweep() == 0 and (outside / "run-old").exists(), "an account folder that is a link is not swept")
+(JOBS / "acct-link").unlink()
+stale3 = leftover("run-oldnopid3", hours=2)
+JOBS.rename(JOBS.with_name("codex-home-real"))
+JOBS.symlink_to(JOBS.with_name("codex-home-real"))
+check(agent.codex_sweep() == 0 and stale3.exists(), "nothing is swept when state/codex-home itself is a link")
+JOBS.unlink()
+JOBS.with_name("codex-home-real").rename(JOBS)
+shutil.rmtree(stale3)
+shutil.rmtree(fresh_); shutil.rmtree(live_); shutil.rmtree(ancient_); shutil.rmtree(outside)
+
 
 # (A) a tool off the job's list fails the job: nothing to apply
 flag("rogue_send")
@@ -455,11 +591,12 @@ check(p.refused == "timeout" and time.time() - t < 20 and not runs_left(),
 auth("chatgpt")
 
 # review 3: retry safety
-flag("forbid1")
+flag("forbid1"); flag("nofooter")  # no footer, so Slack counts as missed and the retry-safety guard is what stops it
 n = len(execs())
 p = agent.run("Refresh.", ["gmail.search_threads", "slack.read_channel"])
-flag("forbid1", False); flag("forbid1.done", False)
-check(p.returncode == 3 and p.refused == "unlisted" and "codex_apps/gmail.read_email" in p.tools_used and len(execs()) == n + 1,
+flag("forbid1", False); flag("forbid1.done", False); flag("nofooter", False)
+check(p.returncode == 3 and p.refused == "unlisted" and "codex_apps/gmail.read_email" in p.tools_used and len(execs()) == n + 1
+      and "no slack tool was called in attempt 1" in p.stderr,
       "a forbidden call in attempt 1 fails the run (rc 3), stays in tools_used, and is not retried away")
 flag("blind"); flag("marker")
 n = len(execs())
@@ -513,6 +650,30 @@ check(st["gmail_cursor"] == old and st["slack_cursor"] != old and st["gmail_avai
 write_cache(JOBS / agent.codex_auth()["account"], ["google_drive.search"])
 p = agent.run("Read.", ["gmail.search_threads", "slack.read_channel"])
 check(p.refused == "nosources" and "Neither Gmail nor Slack" in p.stdout, "neither source connected: not run, says so")
+(ROOT / "config.json").write_text(json.dumps(cj))
+auth("chatgpt")
+
+# #44 end to end: a refresh whose model had both tools and called neither is applied as is; its cursors follow the
+# availability flags in its reply (true or missing: moved; false: held)
+auth("chatgpt", account="acct-Q")
+write_cache(JOBS / agent.codex_auth()["account"], ["gmail.search_emails", "gmail.read_email_thread", "slack.slack_read_channel",
+                                                    "slack.slack_read_thread", "slack.slack_search_public_and_private", "slack.slack_search_users"])
+cj = json.loads((ROOT / "config.json").read_text())
+(ROOT / "config.json").write_text(json.dumps(dict(cj, slack_self_id="U0TESTSELF1")))
+old = "2026-09-01T09:00+01:00"
+for av, moves in (("true", True), ("false", False), ("missing", True)):
+    (ROOT / "state.json").write_text(json.dumps({"cursor": old, "slack_cursor": old, "gmail_cursor": old, "loops": []}))
+    (BIN / "avail").write_text(av)
+    flag("shy")
+    n = len(execs())
+    r = subprocess.run([sys.executable, "-m", "openloops.refresh"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    flag("shy", False); flag("avail", False)
+    st = json.loads((ROOT / "state.json").read_text())
+    check(r.returncode == 0 and len(execs()) == n + 1 and "gmail.search_emails" in execs()[-1]["stdin_head"]
+          and "slack.slack_search_public_and_private" in execs()[-1]["stdin_head"],
+          f"tools seen, none called, availability {av}: the refresh runs once and is applied ({r.stderr[-200:]})")
+    check(st["cursor"] != old and (st["gmail_cursor"] != old) == moves and (st["slack_cursor"] != old) == moves,
+          f"...and the Gmail and Slack cursors {'move' if moves else 'hold'} (availability {av})")
 (ROOT / "config.json").write_text(json.dumps(cj))
 auth("chatgpt")
 
