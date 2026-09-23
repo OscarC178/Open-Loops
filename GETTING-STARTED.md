@@ -39,7 +39,10 @@ A button didn't work? **Open Claude (advanced)** opens a black window: type `/mc
 
 Your AI subscription is ChatGPT, not Claude? Choose **Codex (ChatGPT)** in ⚙ Settings → Preferences → *Your AI*. The checklist then asks you to sign in to ChatGPT, and **Connect Gmail** / **Connect Slack** open your ChatGPT account's apps page: connect there, come back and press **Check again**. Codex use counts against your ChatGPT plan's Codex allowance. Details: [INSTALL.md → Codex (ChatGPT)](INSTALL.md#codex-chatgpt).
 
-When the required rows are ticked the checklist disappears and your list starts building (first fill takes about 2 minutes).
+When the required rows are ticked the checklist disappears and Open Loops says what its first scan will read
+(for example "Looking back 30 days across Slack and Gmail. The first pass can take ten minutes."). Press **Start the
+first scan** when you have the time; nothing reads your messages before that. It then asks who's who, learns your
+tone and builds your list. Slack alone (no Gmail) is fine: the first scan is then the quick Slack pass.
 
 ## 3. Every day
 
