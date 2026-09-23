@@ -327,6 +327,16 @@ if sys.platform != "win32":
         j = run_people("print('OPENLOOPS_FAILURE: job_signed_out')\nprint('Not logged in to the expenses portal, can you help?')\n")
         check(j["rc"] == 1 and j.get("failure") == "job_failed",
               "the AI's answer printing 'OPENLOOPS_FAILURE: job_signed_out' / 'Not logged in…' cannot forge a sign-out")
+        # #46: Claude runs with --output-format json. A sign-out it reports on stdout, as an is_error result, is read
+        # from that flag; a normal answer (is_error false) that quotes "Not logged in" is not a sign-out.
+        j = run_people("import json\nprint(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': True, "
+                       "'result': 'Not logged in \\u00b7 Please run /login'}))\nraise SystemExit(1)\n")
+        check(j["rc"] == 1 and j.get("failure") == "job_signed_out",
+              f"people.py, claude signed out (JSON is_error result on stdout, empty stderr): signed out ({j.get('failure')})")
+        j = run_people("import json\nprint(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, "
+                       "'result': 'Not logged in to the expenses portal, can you help?'}))\n")
+        check(j["rc"] == 1 and j.get("failure") == "job_failed",
+              "a JSON answer (is_error false) that says 'Not logged in…' is not a sign-out")
         jd = e2e / "state" / "jobs"
         jd.mkdir(parents=True, exist_ok=True)
         other = jd / "people.ffffffffffffffffffffffffffffffff.failure.json"
