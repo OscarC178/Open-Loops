@@ -277,10 +277,16 @@ try:
     os.symlink("/etc/hosts", old / "private" / "hosts-link")
     os.symlink("/etc", old / ".grok" / "etc-link")
     os.symlink(old / "config.json", old / "voice-link.json")   # not a named file: never looked at
+    # the links a Grok job keeps in state/grok-home (agent.grok_job_env): named, with the easy fix, not "copy by hand" (#55)
+    (old / "state" / "grok-home").mkdir(parents=True, exist_ok=True)
+    for f in ("auth.json", "trusted_folders.toml", "trusted_folders.toml.lock"):
+        os.symlink(home / ".grok" / f, old / "state" / "grok-home" / f)
     new = home / "Library" / "Application Support" / "OpenLoops"
     r = install(home, "--no-app", "--no-launch", "--no-task")
     check(r.returncode == 0 and "Left out 2 shortcut(s)" in r.stdout and "private/hosts-link" in r.stdout
-          and ".grok/etc-link" in r.stdout, "both links reported")
+          and ".grok/etc-link" in r.stdout and "grok-home" not in r.stdout, "both links reported")
+    check("Left out 3 link(s) to your Grok sign-in (auth.json, trusted_folders.toml, trusted_folders.toml.lock)" in r.stdout
+          and "signing in again inside the app" in r.stdout, "the grok-home links named, with the easy fix")
     check(not os.path.lexists(new / "private" / "hosts-link") and not os.path.lexists(new / ".grok" / "etc-link")
           and not (new / ".grok" / "etc-link" / "hosts").exists(), "neither copied nor followed")
     check((new / "private" / "notes.md").read_text() == "mine\n", "the real files next to them were copied")

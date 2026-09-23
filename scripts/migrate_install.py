@@ -43,6 +43,7 @@ PORTS = range(8765, 8785)   # app.py's pick_port() range: an old copy may be on 
 LABEL = "com.openloops.refresh"
 FILES = ["config.json", "voice.json", "people_suggested.json", "google_oauth_client.json"]   # state.json last
 DIRS = ["state", ".grok", "profiles", "private"]
+GROK_HOME = os.path.join("state", "grok-home")   # links to ~/.grok/auth.json, trusted_folders.toml(.lock)
 SENTINEL = ".migrated-from"   # in DEST: the resolved old folder, written only once everything is copied and checked
 LOG = Path.home() / "Library" / "Logs" / "OpenLoops" / "install.log"   # tracebacks go here, never on screen
 PAUSED = []   # the plist whose job unload_job() paused: put back as it was if we stop (the old copy stays in use)
@@ -410,8 +411,16 @@ def main():
     copied = copy_personal(old, dest, todo)
     say("Your list and settings were copied to the new Open Loops. The old copy in Documents is untouched; "
         "Open Loops no longer uses it.")
-    if skipped:
-        say(f"Left out {len(skipped)} shortcut(s) that point somewhere else: {', '.join(skipped[:5])}. "
+    # The links Grok jobs keep in state/grok-home (agent.grok_job_env) point at ~/.grok's sign-in files. "Copy what
+    # they point to by hand" means nothing to a first-time user (#55): say which files they are and the easy fix.
+    grok = [x for x in skipped if x.startswith(GROK_HOME + os.sep)]
+    others = [x for x in skipped if x not in grok]
+    if grok:
+        say(f"Left out {len(grok)} link(s) to your Grok sign-in ({', '.join(os.path.basename(g) for g in grok)}). "
+            "They hold the Grok sign-in, not your list, so nothing of yours is lost: if Grok asks you to sign in, "
+            "signing in again inside the app is the easy fix.")
+    if others:
+        say(f"Left out {len(others)} shortcut(s) that point somewhere else: {', '.join(others[:5])}. "
             "Copy what they point to by hand if you need it.")
     if a.no_task and PAUSED:
         if resume():
