@@ -13,14 +13,15 @@ under the old folder, and never suggests deleting it: the old copy stays exactly
      nothing is copied and it says so.
   2. Nothing it writes may lead back into the old folder: DEST inside (or equal to) the old folder, a symbolic
      link or a hard-linked file anywhere on a path it is about to write, or a path resolving outside DEST all
-     stop it, as does a symlinked log file. The log is opened with O_NOFOLLOW.
+     stop it. The install log is checked before anything else (no link anywhere up to $HOME, no hard link, not
+     inside the old folder); until then messages are kept in memory, and it is opened with O_NOFOLLOW.
   3. The old copy must be idle first, or the copy could catch a half-written file:
      - the weekday job, if its plist (read with plistlib) runs the old folder's script, is paused; "Could not
        find service" means not loaded, any other launchctl failure stops it. With --no-task (install.sh will not
        register the job for the new place) the old job is put back afterwards, and it says so.
-     - a server on 8765-8784 whose /api/diag root is the old folder is asked to quit if it says "app": "openloops",
-       or - older versions without that field - if the process listening on the port is working inside the old
-       folder (lsof). A root it cannot confirm, or a port that does not answer clearly, stops it.
+     - a server on 8765-8784 whose /api/diag root is the old folder is asked to quit only if it also says
+       "app": "openloops"; an older version without that field stops the copy (quit it first), and so does a
+       port that does not answer clearly.
      - lsof must show no process with any file (or its working folder) inside the old folder; missing or
        failing lsof stops it.
   4. Copy only the named personal files and folders. Each file goes to "<name>.part" (shutil.copy2), is compared
@@ -54,24 +55,59 @@ def say(msg):
     print(f"  {msg}", flush=True)
 
 
+LOG_OK = False   # set by check_log(); until then nothing is written to LOG
+LOG_BUFFER = []  # messages from before the log was checked: written once it is, or shown on stderr if it never is
+
+
 def log(text):
-    """Append to LOG without ever following a link (checked in check_log() too; O_NOFOLLOW where the OS has it)."""
+    """Append to LOG - only once check_log() has passed, and never through a link (O_NOFOLLOW where the OS has it)."""
+    entry = f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} migrate_install\n{text}\n"
+    if not LOG_OK:
+        LOG_BUFFER.append(entry)
+        return
     try:
-        LOG.parent.mkdir(parents=True, exist_ok=True)
-        if os.path.islink(LOG.parent):
-            return
         fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} migrate_install\n{text}\n")
+            f.write(entry)
     except OSError:
         pass
 
 
-def check_log():
-    for p in (LOG.parent, LOG):
+def ancestors(path, stop_at):
+    """path, then each folder above it, up to (not including) stop_at - or up to the root if stop_at is not above it."""
+    out, p = [], Path(path)
+    while True:
+        out.append(p)
+        if p.parent == p or p.parent == stop_at:
+            return out
+        p = p.parent
+
+
+def check_log(old):
+    """Before anything else: the log must not be able to write into the old folder (or anywhere unexpected).
+    LOG and every folder above it up to $HOME: no symbolic links. LOG itself, if there: a regular file with one
+    link. Neither LOG nor its folder may resolve into the old folder."""
+    global LOG_OK
+    unsafe = Stop("Open Loops found a shortcut where its install log should be, so it stopped to be safe.",
+                  f"Remove {LOG.parent}, then run the installer again.")
+    home = Path.home()
+    for p in ancestors(LOG, home):
         if os.path.islink(p):
-            raise Stop("Open Loops found a shortcut where its install log should be, so it stopped to be safe.",
-                       f"Remove {p}, then run the installer again.")
+            raise unsafe
+    if os.path.lexists(LOG):
+        st = os.lstat(LOG)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+            raise unsafe
+    if inside(LOG, old) or inside(LOG.parent, old):
+        raise unsafe
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    for p in ancestors(LOG.parent, home):   # again: a folder just created must not have been swapped for a link
+        if os.path.islink(p):
+            raise unsafe
+    LOG_OK = True
+    for entry in LOG_BUFFER:
+        log(entry.split("\n", 1)[1].rstrip("\n"))
+    LOG_BUFFER.clear()
 
 
 def inside(path, folder):
@@ -143,32 +179,17 @@ def diag(port):
     return "answer", answer if isinstance(answer, dict) else {}
 
 
-def listener_inside(port, old):
-    """Older versions' /api/diag has no "app" field: is the process listening on the port working in the old folder?"""
-    try:
-        r = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"], capture_output=True, text=True, timeout=30)
-        pids = [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("p")]
-        if not pids:
-            return False
-        for pid in pids:
-            c = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=30)
-            if not any(ln.startswith("n") and inside(ln[1:], old) for ln in c.stdout.splitlines()):
-                return False
-        return True
-    except Exception as e:
-        log(f"listener {port}: {e!r}")
-        return False
-
-
 def old_server(answer, old, port):
-    """True = an old-copy server to stop; False = not the old copy; None = its root is the old folder but it
-    cannot be confirmed to be Open Loops (so nothing is sent, and the copy stops)."""
+    """True = the old copy's server (says "app": "openloops" and its root is the old folder): ask it to quit.
+    False = not the old copy. An older version of Open Loops (no "app" field) with the old root stops the copy:
+    nothing is sent to a server that cannot say what it is."""
     root = answer.get("root")
     if not isinstance(root, str) or os.path.realpath(root) != os.path.realpath(old):
         return False
-    if answer.get("app") == "openloops" or listener_inside(port, old):
+    if answer.get("app") == "openloops":
         return True
-    return None
+    raise Stop(f"An older copy of Open Loops is still running on port {port}.",
+               "Quit it (close its tab and wait a few seconds), then run the installer again.")
 
 
 def stop_servers(old):
@@ -179,12 +200,8 @@ def stop_servers(old):
         kind, answer = diag(p)
         if kind == "unknown":
             raise cant
-        if kind == "answer":
-            which = old_server(answer, old, p)
-            if which is None:
-                raise cant
-            if which:
-                running.append(p)
+        if kind == "answer" and old_server(answer, old, p):
+            running.append(p)
     for p in running:
         subprocess.run(["curl", "-s", "--max-time", "5", "-X", "POST", "-H", "Content-Type: application/json",
                         "-d", "{}", f"http://127.0.0.1:{p}/api/quit"], capture_output=True, timeout=15)
@@ -194,7 +211,7 @@ def stop_servers(old):
         still = []
         for p in running:
             kind, answer = diag(p)
-            if kind == "unknown" or (kind == "answer" and old_server(answer, old, p) is not False):
+            if kind == "unknown" or (kind == "answer" and old_server(answer, old, p)):
                 still.append(p)
         running = still
     if running:
@@ -260,8 +277,8 @@ def check_dest(old, dest, rels):
     if inside(dest, old) or inside(old, dest):
         raise alias
     real_dest = os.path.realpath(dest)
-    # DEST and every folder above it that we might create must not be links
-    for p in [dest] + list(dest.parents)[:2]:
+    # DEST and every folder above it, up to $HOME, must not be links
+    for p in ancestors(dest, Path.home()):
         if os.path.islink(p):
             raise alias
     for rel in rels + [SENTINEL]:
@@ -331,10 +348,10 @@ def main():
     old, dest = Path(a.old), Path(a.dest)
     if not (old / "openloops" / "app.py").is_file():
         return 0
+    check_log(old)   # first: nothing may be logged (or done) before the log is known to be safe
     if not os.path.islink(dest) and done_before(old, dest):
         say("Your list is already in the new Open Loops, so nothing was copied again. The old copy in Documents is untouched.")
         return 0
-    check_log()
     todo, skipped = plan(old)
     check_dest(old, dest, todo)
     if (dest / "state.json").exists() and not same(old / "state.json", dest / "state.json"):
@@ -372,12 +389,16 @@ if __name__ == "__main__":
         sys.exit(main())
     except Stop as e:
         resume()
+        if not LOG_OK and LOG_BUFFER:   # the log could not be used: the details go to the screen instead
+            print("".join(LOG_BUFFER), file=sys.stderr, end="")
         print(f"  {e.what}", file=sys.stderr)
         print(f"  {e.todo}", file=sys.stderr)
         sys.exit(1)
     except Exception:
         resume()
         log(traceback.format_exc())
+        if not LOG_OK:
+            print("".join(LOG_BUFFER), file=sys.stderr, end="")
         print("  Open Loops couldn't copy your list and settings from the old copy.", file=sys.stderr)
         print(f"  Run the installer again; if it happens again, send {LOG} to whoever set Open Loops up.", file=sys.stderr)
         sys.exit(1)
