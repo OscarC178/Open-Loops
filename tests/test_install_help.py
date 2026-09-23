@@ -100,11 +100,12 @@ try:
         return subprocess.run(["/bin/bash", str(REPO / "install.sh"), *args], cwd=cwd, env=env, capture_output=True,
                               text=True, timeout=60, stdin=subprocess.DEVNULL)
 
-    before_home, before_cwd = tree(home), tree(cwd)
+    # the whole temp folder: HOME, where it is run, and any --dest given as an absolute path in it ("a b" below)
+    before = tree(tmp)
 
     def untouched(what):
-        check(tree(home) == before_home and tree(cwd) == before_cwd and not calls.exists(),
-              f"{what}: nothing written under HOME or where it was run, no stub called"
+        check(tree(tmp) == before and not calls.exists(),
+              f"{what}: nothing written anywhere in the temp folder (HOME, where it was run, --dest), no stub called"
               + ("" if not calls.exists() else f" (called: {calls.read_text().strip()!r})"))
 
     say("1. --help and -h")
