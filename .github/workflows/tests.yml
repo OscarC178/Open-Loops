@@ -10,6 +10,11 @@ on:
   push:
     branches: [develop]
 
+# A newer push to the same PR or branch cancels the run still going for the older one (macOS minutes are scarce).
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
