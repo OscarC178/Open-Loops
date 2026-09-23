@@ -267,24 +267,22 @@ def run_connect(step):
 
 
 def _install_one(step, argv, log, deadline):
-    """Run one command of an install -> exit code, its output appended to the log as it comes. No terminal: stdin is
-    empty, so an installer that stops to ask a question reads end-of-input and fails at once instead of waiting for an
-    answer nobody can type, and in a session of its own it has no terminal to open either. Stopped at the deadline,
-    and says so in the log."""
-    if WIN:  # for now Windows keeps the sign-ins' console window (its output stays there)
-        return _connect_one(step, argv, log, deadline)
+    """Run one command of an install -> (exit code, stopped at the deadline?), its output appended to the log as it comes (Windows too: no console
+    window, so the page and Console see what went wrong). No terminal: stdin is empty, so an installer that stops to ask
+    a question reads end-of-input and fails at once instead of waiting for an answer nobody can type, and in a session
+    of its own it has no terminal to open either. Stopped at the deadline, and the log says why."""
     with open(log, "a", encoding="utf-8") as f:
-        f.write("$ " + shlex.join(argv) + "\n")
+        f.write("$ " + (subprocess.list2cmdline(argv) if WIN else shlex.join(argv)) + "\n")
         f.flush()
-        p = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT,
-                             start_new_session=True)
+        how = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if WIN else {"start_new_session": True}
+        p = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, **how)
         connect_procs[step] = p
         try:
-            return p.wait(max(1, deadline - time.time()))
+            return p.wait(max(1, deadline - time.time())), False
         except subprocess.TimeoutExpired:
             kill_tree(p)
             f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S // 60} minutes\n")
-            return -1
+            return -1, True
         finally:
             connect_procs.pop(step, None)
 
@@ -321,9 +319,9 @@ def run_install(body):
                     break
                 if kind == "check":  # the installer exited 0: now its folder goes on PATH, and the CLI must answer
                     add_install_dirs()
-                rc = _install_one(step, argv, log, deadline)
+                rc, late = _install_one(step, argv, log, deadline)
                 if rc != 0:
-                    why = "timeout" if time.time() >= deadline else kind
+                    why = "timeout" if late else kind
                     break
         except Exception as e:  # bash or PowerShell missing, say: in the log and as "start", rather than hang as "running"
             rc, why = -1, why or ("check" if kind == "check" else "start")  # no CLI to run after the install: "check"
