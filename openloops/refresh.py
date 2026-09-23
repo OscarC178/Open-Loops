@@ -238,9 +238,10 @@ def build_prompt(s, slack_only, slack_on):
                       "Slack: read the DM/channel with the id in `thread`; Gmail: search the subject in `thread`"),
         today=datetime.now().strftime("%Y-%m-%d %H:%M"),
         loops=json.dumps([{k: l[k] for k in ("id", "owner", "ask", "channel", "thread", "asked_at", "status", "closed_at", "inbound", "priority", "priority_by", "theme") if k in l} for l in open_loops], indent=1, ensure_ascii=False),
-        # headline cursor: the older of the two in a full run, or email asks made since the last
-        # slack-only pass would look "too old" to the model
-        since=slack_since if slack_only else s["cursor"],
+        # headline cursor: the OLDEST cut-off among the sources this run searches, so it never contradicts their own
+        # after: dates (a Gmail cursor held back while Gmail was not connected is older than the shared one)
+        since=slack_since if slack_only else min([s.get("gmail_cursor") or s["cursor"]] + ([slack_since] if slack_on else []),
+                                                 key=lambda c: datetime.fromisoformat(c)),
         exclude_people=", ".join(CFG.get("exclude_people", [])) or "none",
         exclude_topics="; ".join(CFG.get("exclude_topics", [])) or "none",
     )

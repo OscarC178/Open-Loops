@@ -45,6 +45,17 @@ def inbound_of(prompt):
     return prompt.split("1b. ASKS OF", 1)[1].split("\n2. REPLIES", 1)[0]
 
 
+# --- the headline "since" is the oldest cut-off among the searched sources, never newer than a per-source after: date
+held = dict(state, cursor="2026-09-12T09:00+01:00", gmail_cursor="2026-08-20T09:00+01:00")  # Gmail held back (e.g. Codex had no Gmail)
+p, _ = refresh.build_prompt(held, slack_only=False, slack_on=True)
+check("since 2026-08-20T09:00+01:00:" in p and '"in:sent after:2026/08/19"' in p,
+      "a held gmail_cursor is the headline date, and Gmail's own after: date is unchanged (cursor - 1 day)")
+p, _ = refresh.build_prompt(dict(state, cursor="2026-09-12T09:00+01:00"), slack_only=False, slack_on=True)
+check("since 2026-09-10T12:00+01:00:" in p, "with Slack further back than Gmail, the headline is Slack's cursor")
+p, _ = refresh.build_prompt(dict(state, cursor="2026-09-12T09:00+01:00"), slack_only=False, slack_on=False)
+check("since 2026-09-12T09:00+01:00:" in p, "with Slack off, Slack's cursor does not pull the headline back")
+
+
 # --- full run, Slack on: Gmail inbox + Slack DMs/mentions, one shared needs_me/inbound sentence
 p, n = refresh.build_prompt(state, slack_only=False, slack_on=True)
 ib = inbound_of(p)
