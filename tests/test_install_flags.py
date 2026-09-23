@@ -64,7 +64,9 @@ script(fakebin / "claude", "#!/bin/bash\nexit 0\n")
 script(fakebin / "launchctl", f"""#!/bin/bash
 echo "$*" >> "{launchctl_log}"
 case "$1" in
-    print) exit ${{LAUNCHCTL_PRINT_RC:-0}} ;;
+    print) rc=${{LAUNCHCTL_PRINT_RC:-0}}
+           [ "$rc" = 113 ] && echo 'Could not find service "com.openloops.refresh" in domain for user gui: 501' >&2
+           exit $rc ;;
     bootout) exit ${{LAUNCHCTL_BOOTOUT_RC:-0}} ;;
 esac
 """)
@@ -234,8 +236,10 @@ try:
     check(snapshot(new) == before, f"all {len(PERSONAL)} personal files byte-equal in the new place")
     check(tree(old) == old_tree, "the old folder is byte-for-byte as it was (nothing moved, renamed or deleted)")
     check(COPIED in r.stdout and "delete" not in r.stdout.lower(), "the #25 sentence, and no deletion advice")
-    check(not new.with_name("OpenLoops.migrating").exists() and not (new / "state" / "migrated-from.txt").exists(),
-          "no staging folder, no marker file")
+    check(not new.with_name("OpenLoops.migrating").exists() and not list(new.rglob("*.part")),
+          "no staging folder, no .part file left behind")
+    check((new / ".migrated-from").read_text().strip() == os.path.realpath(old),
+          "the .migrated-from sentinel names the resolved old folder (written last)")
     calls = [c.split()[0] for c in launchctl_log.read_text().splitlines()]
     check(calls[:2] == ["print", "bootout"] and calls[-1] == "bootstrap",
           "the old job (found by parsing its plist) was unloaded before copying, then registered for the new place")
@@ -280,6 +284,9 @@ try:
           "exit 1, one plain sentence of what happened and one of what to do, no traceback")
     check(not (new / "state.json").exists() and not (new / "config.json").exists() and tree(old) == old_tree,
           "nothing copied, the old folder untouched")
+    r = install(home, "--no-app", "--no-launch", "--no-task", extra_env={"LAUNCHCTL_PRINT_RC": "5"})
+    check(r.returncode == 1 and "couldn't check the old copy's morning refresh" in r.stderr
+          and not (new / "state.json").exists(), "launchctl print failing for another reason: refused, nothing copied")
     r = install(home, "--no-app", "--no-launch", "--no-task", extra_env={"LAUNCHCTL_PRINT_RC": "113"})
     check(r.returncode == 0 and (new / "state.json").exists(), "a job that is not loaded needs no unloading: copied")
 
@@ -308,17 +315,52 @@ try:
           and calls[-1].endswith(str(plist)), "paused, then lsof failed: the old job's own plist bootstrapped again")
     check("while copying" in r.stdout and "set up again" not in r.stdout, "... and no promise that it is set up again")
 
-    say("4f. only a server that says it is Open Loops AND runs the old folder is asked to quit")
+    say("4f. servers: quit only the old copy's; one it cannot confirm stops the copy")
     home = tmp / "home4"
     old = old_install(home, "Busy")
-    servers.write_text(f"8765 openloops /somewhere/else/OpenLoops\n8767 openloops {old}\n8768 noapp {old}\n")
+    servers.write_text(f"8765 openloops /somewhere/else/OpenLoops\n8767 openloops {old}\n8768 noapp /another/OpenLoops\n")
     curl_log.unlink(missing_ok=True)
     r = install(home, "--no-app", "--no-launch", "--no-task")
     log = curl_log.read_text()
     check(r.returncode == 0 and COPIED in r.stdout, "copied once the old server had quit")
     check("8767/api/quit" in log and "8765/api/quit" not in log and "8768/api/quit" not in log,
-          "quit sent to 8767 only: not another copy (8765), not a server without the Open Loops identity (8768)")
+          "quit sent to 8767 only: not another copy (8765), not an older server running elsewhere (8768)")
     check(all(f"127.0.0.1:{p}/api/diag" in log for p in (8765, 8770, 8784)), "the whole 8765-8784 range was checked")
+
+    home = tmp / "home4c"
+    old = old_install(home, "Legacy")
+    servers.write_text(f"8769 noapp {old}\n")   # an older version (no "app" field) claiming the old root, nothing really listening
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and "couldn't confirm that the old copy has stopped" in r.stderr and "8769/api/quit" not in curl_log.read_text(),
+          "an older server claiming the old root that cannot be confirmed: nothing sent, refused")
+    check(not (home / "Library" / "Application Support" / "OpenLoops" / "state.json").exists(), "... nothing copied")
+
+    with socket.socket() as sk:
+        legacy_free = sk.connect_ex(("127.0.0.1", 8783)) != 0
+    if legacy_free:   # an older version really listening, working in the old folder: confirmed by its process
+        home = tmp / "home4d"
+        old = old_install(home, "Legacy2")
+        listener = subprocess.Popen([sys.executable, "-m", "http.server", "8783", "--bind", "127.0.0.1"], cwd=old,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(50):
+                with socket.socket() as sk:
+                    if sk.connect_ex(("127.0.0.1", 8783)) == 0:
+                        break
+                time.sleep(0.1)
+            servers.write_text(f"8783 noapp {old}\n")
+            curl_log.unlink(missing_ok=True)
+            r = install(home, "--no-app", "--no-launch", "--no-task")
+        finally:
+            listener.kill()
+            listener.wait()
+        check("8783/api/quit" in curl_log.read_text(),
+              "an older server without the identity, confirmed by its process working in the old folder: asked to quit")
+        check(r.returncode == 1 and "still working in the old Open Loops folder" in r.stderr,
+              "... and while its process is still in the old folder, the copy stops rather than going ahead")
+    else:
+        say("skip  port 8783 busy: the listener check for older servers was not exercised")
+
     home = tmp / "home4b"
     old = old_install(home, "Slow")
     servers.write_text("8770 timeout -\n")
@@ -326,6 +368,120 @@ try:
     check(r.returncode == 1 and "couldn't confirm that the old copy has stopped" in r.stderr, "a port that times out: refused")
     check(not (home / "Library" / "Application Support" / "OpenLoops" / "state.json").exists(), "... nothing copied")
     servers.write_text("")
+
+    say("4h. --no-task: the paused old job is put back afterwards, and it says so")
+    home = tmp / "home-notask"
+    old = old_install(home, "NoTask")
+    plist = job_for(home, old)
+    launchctl_log.unlink(missing_ok=True)
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    calls = launchctl_log.read_text().splitlines()
+    check(r.returncode == 0 and [c.split()[0] for c in calls] == ["print", "bootout", "bootstrap"]
+          and calls[-1].endswith(str(plist)) and "put back as it was" in r.stdout,
+          "paused for the copy, then its own plist bootstrapped again; nothing registered for the new place")
+
+    say("4i. the new place must not lead back into the old one")
+    MIG = REPO / "scripts" / "migrate_install.py"
+
+    def migrate(home, old, dest, *extra):
+        env = dict(os.environ, HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}")
+        return subprocess.run([sys.executable, str(MIG), "--old", str(old), "--dest", str(dest), *extra],
+                              env=env, capture_output=True, text=True, timeout=180)
+
+    ALIAS = "points back into the old one"
+    home = tmp / "home-alias1"
+    old = old_install(home, "Alias")
+    old_tree = tree(old)
+    new = home / "Library" / "Application Support" / "OpenLoops"
+    new.mkdir(parents=True)
+    os.symlink(old / "voice.json", new / "config.json")   # copying config would overwrite the OLD voice.json
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and ALIAS in r.stderr and "Traceback" not in r.stderr, "a symlinked file in the new place: refused")
+    check(tree(old) == old_tree, "... and the old folder is byte-identical afterwards")
+
+    home = tmp / "home-alias2"
+    old = old_install(home, "Alias2")
+    old_tree = tree(old)
+    new = home / "Library" / "Application Support" / "OpenLoops"
+    new.mkdir(parents=True)
+    os.link(old / "voice.json", new / "voice.json")        # a hard link: same file, different name
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and ALIAS in r.stderr and tree(old) == old_tree, "a hard-linked file in the new place: refused, old untouched")
+
+    home = tmp / "home-alias3"
+    old = old_install(home, "Alias3")
+    old_tree = tree(old)
+    new = home / "Library" / "Application Support" / "OpenLoops"
+    new.mkdir(parents=True)
+    os.symlink(old / "private", new / "private")           # a symlinked folder on the way to a file
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and ALIAS in r.stderr and tree(old) == old_tree, "a symlinked folder in the new place: refused, old untouched")
+
+    home = tmp / "home-alias4"
+    old = old_install(home, "Alias4")
+    old_tree = tree(old)
+    new = home / "Library" / "Application Support" / "OpenLoops"
+    new.parent.mkdir(parents=True)
+    os.symlink(old, new)                                   # the whole new place is the old folder
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and ALIAS in r.stderr and tree(old) == old_tree, "the new place itself a link to the old folder: refused, old untouched")
+
+    home = tmp / "home-alias5"
+    old = old_install(home, "Alias5")
+    old_tree = tree(old)
+    r = migrate(home, old, old / "nested")
+    check(r.returncode == 1 and ALIAS in r.stderr and tree(old) == old_tree, "a new place inside the old folder: refused, old untouched")
+
+    home = tmp / "home-alias6"
+    old = old_install(home, "Alias6")
+    (home / "Library" / "Logs").mkdir(parents=True)
+    os.symlink(old, home / "Library" / "Logs" / "OpenLoops")   # the log would be written into the old folder
+    old_tree = tree(old)
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and "where its install log should be" in r.stderr and tree(old) == old_tree,
+          "a symlinked log folder: refused, old untouched")
+
+    say("4j. an interrupted copy is finished by the next run; the sentinel makes later runs a no-op")
+    home = tmp / "home-resume2"
+    old = old_install(home, "Interrupted")
+    before = snapshot(old)
+    new = home / "Library" / "Application Support" / "OpenLoops"
+    (new / "state").mkdir(parents=True)
+    (new / "config.json").write_bytes((old / "config.json").read_bytes())       # copied before the interruption
+    (new / "voice.json").write_text('{"half', encoding="utf-8")                  # cut off mid-copy
+    (new / "state.json.part").write_text('{"cursor": "20', encoding="utf-8")     # state.json was being written
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 0 and COPIED in r.stdout, "rerun after the interruption: finishes")
+    check(snapshot(new) == before and not list(new.rglob("*.part")) and (new / ".migrated-from").exists(),
+          "every personal file byte-equal, the leftover .part gone, the sentinel written")
+    (old / "voice.json").write_text('{"changed": "later"}', encoding="utf-8")
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 0 and "nothing was copied again" in r.stdout and snapshot(new) == before,
+          "with the sentinel naming this old folder: a no-op, even though the old copy changed")
+
+    home = tmp / "home-ownlist"
+    old = old_install(home, "Own")
+    new = home / "Library" / "Application Support" / "OpenLoops"
+    new.mkdir(parents=True)
+    (new / "state.json").write_text('{"loops": [{"id": "made-here"}]}', encoding="utf-8")
+    r = install(home, "--no-app", "--no-launch", "--no-task", "--name", "Own")   # its own settings are asked for as usual
+    check(r.returncode == 0 and "already has a list of its own" in r.stdout
+          and "made-here" in (new / "state.json").read_text(), "a new place with its own, different list: never overwritten")
+
+    say("4k. a folder in the old copy that cannot be read: stopped in plain words")
+    home = tmp / "home-walk"
+    old = old_install(home, "Locked")
+    locked = old / "private" / "locked"
+    locked.mkdir()
+    (locked / "x.txt").write_text("x")
+    locked.chmod(0)
+    try:
+        r = install(home, "--no-app", "--no-launch", "--no-task")
+    finally:
+        locked.chmod(0o755)
+    check(r.returncode == 1 and "couldn't read part of the old copy's folder" in r.stderr and "Traceback" not in r.stderr,
+          "an unreadable folder: refused (os.walk onerror), no traceback on screen")
+    check(not (home / "Library" / "Application Support" / "OpenLoops" / ".migrated-from").exists(), "... not marked as done")
 
     say("4g. something still working inside the old folder: refused, copied once it stops")
     home = tmp / "home7"

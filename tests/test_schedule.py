@@ -226,6 +226,7 @@ check('id="sched_warn"' in html and "function paintSchedule(" in html and "paint
 body = html.split("function paintSchedule(", 1)[1].split("\n\n", 1)[0]
 check("style.display='block'" in body, "... shown with display:block ('' would fall back to the stylesheet's display:none)")
 check("setInterval(checkSchedule" in html and "/api/schedule/status" in html, "... re-checked every minute once set up")
+check("if(seq!==schedSeq)return;SCHED=" in html, "... and an older, slower poll cannot overwrite a newer answer")
 check("paintConnect=function(){paintConnectBase()" in html and "s.link" in body, "... the checklist row gets the download button too")
 check("st==='ready'&&!schedBad())toast(" in html, "... no 'refreshes itself every morning' toast while the row is red")
 say("PASS - the morning refresh failure is detected, worded plainly, and in /api/diag")
