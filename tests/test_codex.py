@@ -408,12 +408,21 @@ ancient_ = leftover("run-livepast24h", pid=os.getpid(), hours=25)
 buf = io.StringIO()
 with contextlib.redirect_stderr(buf):
     p = agent.run("hello", [])
-check(p.returncode == 0 and not old_.exists() and not dead_.exists() and not ancient_.exists() and AUTH.is_file(),
-      "a run first removes leftover run folders: no owner and over an hour old, owner gone, or over a day old (links not followed)")
-check(fresh_.exists() and live_.exists(), "...and keeps one being set up (under an hour, no owner yet) and a live job's")
-check("removed 3 leftover Codex run folders" in buf.getvalue(), f"...and says so in one line (got {buf.getvalue()!r})")
+check(p.returncode == 0 and not old_.exists() and not dead_.exists() and AUTH.is_file(),
+      "a run removes leftover run folders: no owner and over an hour old, or owner gone (links not followed)")
+check(fresh_.exists() and live_.exists() and ancient_.exists(),
+      "...and keeps one being set up (under an hour, no owner yet) and a live job's, even one over a day old")
+check("removed 2 leftover Codex run folders" in buf.getvalue(), f"...and says so in one line (got {buf.getvalue()!r})")
 check(agent.codex_sweep() == 0, "a second sweep finds nothing more")
-shutil.rmtree(fresh_); shutil.rmtree(live_)
+dead2 = leftover("run-deadpid2", pid=dead.pid)
+real_sweep = agent.codex_sweep
+swept = []
+agent.codex_sweep = lambda *a_, **k_: swept.append(1) or real_sweep(*a_, **k_)
+with contextlib.redirect_stderr(io.StringIO()):
+    agent.run("hello", [])
+agent.codex_sweep = real_sweep
+check(len(swept) == 2 and not dead2.exists(), "the sweep runs before and after each run")
+shutil.rmtree(fresh_); shutil.rmtree(live_); shutil.rmtree(ancient_)
 
 
 # (A) a tool off the job's list fails the job: nothing to apply

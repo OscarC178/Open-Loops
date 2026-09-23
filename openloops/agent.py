@@ -414,25 +414,35 @@ def _codex_base_toml(src):
 
 
 CODEX_RUN_STALE_S = 3600        # a run folder with no owner on record is left alone this long (#42), then removed
-_CODEX_RUN_MAX_S = 24 * 3600    # ...and one whose owner still seems alive (or a reused pid) this long at most
 _CODEX_PID = "openloops.pid"    # in each run folder: the process that made it, i.e. the job it belongs to
 
 
 def _pid_alive(pid):
-    """Whether a process with this id exists. Windows: asks without touching it (os.kill there would end it)."""
+    """Whether a process with this id exists. Conservative: anything unclear counts as alive, since a live job's folder
+    must never be removed. Windows: asks without touching it (os.kill there would end it)."""
     if pid <= 0:
         return False
     if WIN:
-        import ctypes
-        k = ctypes.windll.kernel32
-        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not h:
-            return k.GetLastError() == 5  # access denied: it is there, it just is not ours
         try:
-            code = ctypes.c_ulong()
-            return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
-        finally:
-            k.CloseHandle(h)
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.OpenProcess.argtypes, k.OpenProcess.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE
+            k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            k.GetExitCodeProcess.restype = wintypes.BOOL
+            k.CloseHandle.argtypes, k.CloseHandle.restype = [wintypes.HANDLE], wintypes.BOOL
+            h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process; else (denied...) alive
+            try:
+                code = wintypes.DWORD()
+                if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return True  # the query failed: count it as alive
+                return code.value == 259  # STILL_ACTIVE
+            finally:
+                k.CloseHandle(h)
+        except Exception:
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -448,8 +458,8 @@ def codex_sweep(now=None):
     """Remove run folders (state/codex-home/<account>/run-*) that a run stopped part-way left behind: a job killed by
     Quit or a test skips its own clean-up, and the folder keeps its link to the user's auth.json (#42). A folder goes
     when the job that made it has ended (its openloops.pid names no live process), or when it names none and is more
-    than CODEX_RUN_STALE_S old; a live job's folder is kept up to _CODEX_RUN_MAX_S. Runs at app start and before
-    every Codex run; says on stderr how many it removed. -> that number. Links are removed, never followed."""
+    than CODEX_RUN_STALE_S old. A folder whose job is alive is never removed, however old. Runs at app start and before
+    and after every Codex run; says on stderr how many it removed. -> that number. Links are removed, never followed."""
     import time
     now = time.time() if now is None else now
     try:
@@ -469,7 +479,7 @@ def codex_sweep(now=None):
             pid = None
         if pid is None and age < CODEX_RUN_STALE_S:
             continue  # being set up right now, or from before pid files: wait for the hour
-        if pid is not None and _pid_alive(pid) and age < _CODEX_RUN_MAX_S:
+        if pid is not None and _pid_alive(pid):
             continue  # its job is still running
         shutil.rmtree(r, ignore_errors=True)
         gone += not r.exists()
@@ -671,6 +681,10 @@ def _codex_done(home):
         _codex_keep_cache(run, acct)
     finally:
         shutil.rmtree(run, ignore_errors=True)
+        try:
+            codex_sweep()  # and whatever an earlier killed run left behind (#42)
+        except Exception:
+            pass
 
 
 def _codex_warmup(budget):
