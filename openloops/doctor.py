@@ -60,13 +60,32 @@ def route(svc, servers):
     return found[0] if found else ("", "", "")
 
 
+def install_row(label, have):
+    """The "<AI> is installed" row. When the CLI is missing it carries the Install button (connect "install", run by
+    app.py from agent.install_cmd) and the exact command, which the page shows before anything is pressed. If the
+    installer itself cannot run here, it says so and offers no button."""
+    r = {"id": "claude", "ok": have, "title": f"{label} is installed", "fix": ""}
+    if have:
+        return r
+    ic = agent.install_cmd()
+    missing = [t for t in (ic or {}).get("needs", []) if not agent.prereq().get(t)]
+    if not ic:
+        r["fix"] = f"{label} isn't installed on this computer. Ask IT to install it, then press Check again."
+    elif missing:
+        r["fix"] = (f"{label} isn't installed, and this computer lacks a tool its installer needs ({', '.join(missing)}). "
+                    f"Ask IT to install {label}, then press Check again.")
+    else:
+        r.update(fix=f"{label} isn't installed on this computer yet. Press Install {label}: it downloads {label} from "
+                     f"{ic['vendor']} and takes a minute or two.", connect="install", command=ic["command"])
+    return r
+
+
 def claude_steps(steps):
     """Installed / signed in / Slack / Gmail / Miro, read straight from the Claude Code CLI (`claude auth status`,
     `claude mcp list`) - no model call. Each red row names in "connect" the setup step the page's button starts
-    (agent.login_cmd); rows without one need something no button can do."""
+    (agent.install_cmd / agent.login_cmd); rows without one need something no button can do."""
     have = shutil.which("claude") is not None
-    steps.append({"id": "claude", "ok": have, "title": "Claude is installed",
-                  "fix": "Run the installer again, or ask IT to install Claude Code." if not have else ""})
+    steps.append(install_row("Claude", have))
 
     logged, email = False, ""
     if have:
@@ -133,8 +152,7 @@ def grok_steps(steps):
     """Installed / signed in / Slack / Gmail via the Grok CLI, its Slack plugin, and gmail_auth.py."""
     cli = agent.cli()
     have = bool(shutil.which("grok")) or Path(cli).exists()
-    steps.append({"id": "claude", "ok": have, "title": "Grok is installed",
-                  "fix": "Install the Grok CLI (grok.com/cli), then press 'Check again'." if not have else ""})
+    steps.append(install_row("Grok", have))
 
     logged, email = False, ""
     auth = Path.home() / ".grok" / "auth.json"
