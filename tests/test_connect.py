@@ -62,6 +62,13 @@ check(doctor.route("miro", {"miro": "connected"}) == ("server", "connected", "mi
 check(doctor.route("slack", {"plugin:slack-v2:slack": "auth"}) == ("plugin", "auth", "plugin:slack-v2:slack"), "a renamed plugin still reads as the plugin route, name kept")
 check(doctor.route("slack", {"my-slack": "connected"}) == ("", "", ""), "an unknown server named like slack is not guessed at")
 check(doctor.route("gmail", {}) == ("", "", ""), "no server -> no route")
+# #27: an unusable name (shell characters) never hides a usable route, connected or not
+check(doctor.route("slack", {"plugin:slack:x & bad": "connected", "claude.ai Slack": "connected"}) == ("connector", "connected", "claude.ai Slack"),
+      "an unusable plugin name and a usable connector, both connected: the connector is chosen")
+check(doctor.route("slack", {"plugin:slack:x & bad": "connected", "claude.ai Slack": "auth"}) == ("connector", "auth", "claude.ai Slack"),
+      "...and one that only needs signing in still beats the unusable name (its Connect button can fix it)")
+check(doctor.route("slack", {"plugin:slack:x & bad": "connected"}) == ("plugin", "connected", "plugin:slack:x & bad"),
+      "...an unusable name is chosen only when nothing usable is set up (the doctor then reports it unsupported)")
 
 # ---------------------------------------------------------------- doctor rows when the listing fails
 _real = (doctor.run, doctor.shutil.which)
@@ -237,8 +244,17 @@ check(agent.login_cmd("slack")[0][3] == "plugin:slack-next:slack" and agent.logi
       "...and sign in to them by the same names")
 check(agent.usable_name("plugin:slack:slack") and agent.usable_name("claude.ai Gmail") and not agent.usable_name("")
       and not agent.usable_name("a;b") and not agent.usable_name("x" * 101), "usable_name: plain names only, 1-100 characters")
+doctor.shutil.which = lambda _: "/usr/local/bin/claude"
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version" else (0, '{"loggedIn": true}') if args[1] == "auth"
+                                       else (0, "plugin:slack:x & bad: https://mcp.slack.com/mcp (HTTP) - ✔ Connected\n"
+                                                "claude.ai Slack: https://mcp.slack.com - ✔ Connected\n"))
+steps = []
+_, slack_ok, _, s_src, _, _, names = doctor.claude_steps(steps)
+doctor.run, doctor.shutil.which = _real
+check(slack_ok and s_src == "connector" and names.get("slack") == "claude.ai Slack" and steps[2]["ok"],
+      f"the doctor, both listed: Slack ticked via the usable connector, not reported unsupported (got {s_src}, {names})")
 for k in ("slack_source", "miro_source", "claude_servers"):
-    cfg.pop(k)
+    cfg.pop(k, None)
 agent.WIN = True
 check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail"]], "Windows: no --no-browser (the CLI opens the browser)")
 agent.WIN = sys.platform == "win32"

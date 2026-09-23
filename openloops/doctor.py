@@ -53,14 +53,16 @@ def route(svc, servers):
     """Which way Claude reaches one service -> (source, state, name): source is a key of agent.CLAUDE_SERVERS[svc]
     ("plugin", "connector", "server"), state as parse_mcp_list, name the server exactly as listed (what
     `claude mcp login` needs, even if a later Claude Code renames it). ("", "", "") when no such server is set up.
-    A connected route beats one that needs signing in; otherwise the plugin wins, as the jobs expect."""
+    A name Open Loops can use (agent.usable_name) beats one it cannot, whatever its state (#27: an unusable plugin name
+    must not hide a working connector); then a connected route beats one that needs signing in; otherwise the plugin
+    wins, as the jobs expect. So an unusable name is only chosen, and reported unsupported, when no usable one is set up."""
     names = agent.CLAUDE_SERVERS[svc]
     found = []
     for name, state in servers.items():
         src = agent._route_of(name, svc)  # exact name, or for a server renamed by a later Claude Code its shape
         if src in names:
             found.append((src, state, name))
-    found.sort(key=lambda f: (f[1] != "connected", list(names).index(f[0])))
+    found.sort(key=lambda f: (not agent.usable_name(f[2]), f[1] != "connected", list(names).index(f[0])))
     return found[0] if found else ("", "", "")
 
 
