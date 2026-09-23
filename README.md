@@ -92,7 +92,7 @@ sound like you rather than like a reminder bot. Every action gives instant feedb
    (Windows) or *right-click → Open* / *Privacy & Security → Open Anyway* (Mac).
    No installer? Download the zip of this repo instead and double-click `Open Loops.cmd` (Windows) or
    `Open Loops.command` (Mac).
-2. Tick the checklist: press **Install Claude** if you don't have it yet (or pick Grok in Settings first),
+2. Tick the checklist: press **Install Claude** if you don't have it yet (for Grok: choose it in Settings, press Save settings, return to Home, then press Install Grok),
    sign in, connect Slack and/or Gmail (one is enough). Miro is optional and only
    needed for the Roadmap section.
 3. Open **Open Loops** from the Desktop each morning (Mac: orange-loop app — drag it to the Dock).

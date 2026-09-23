@@ -28,7 +28,7 @@ Each row that isn't ticked has a button: press it, your browser opens a sign-in 
 
 | Tick | What to do |
 |---|---|
-| **Claude is installed** | If Claude isn't on your computer yet, press **Install Claude**. The commands it runs are shown underneath first; it takes a minute or two. (Using Grok instead? Choose it in ⚙ Settings → Preferences → *Your AI* first; the button then says **Install Grok**.) |
+| **Claude is installed** | If Claude isn't on your computer yet, press **Install Claude**. The commands it runs are shown underneath first; it takes a minute or two. (Using Grok instead? Open ⚙ Settings → Preferences → *Your AI*, choose Grok, press **Save settings**, return to **Home**, then press **Install Grok**.) |
 | **Signed in to Claude** | Press **Sign in**. Your browser opens the Claude sign-in page: sign in with your **work Google account**. |
 | **Slack connected** *(optional)* | Press **Install Slack plugin** if the row shows it (about half a minute), then **Connect Slack** → click **Allow** in the browser. |
 | **Gmail connected** *(optional)* | Press **Connect Gmail** → **Allow**. No button? Add Gmail at claude.ai → Settings → Connectors first, then press **Check again**. |

@@ -98,8 +98,9 @@ below, so the two routes end up identical.
   and runs `install.sh`. It is not signed with a Developer ID, so macOS 14 and earlier need *right-click → Open*, and
   macOS 15+ needs *System Settings → Privacy & Security → Open Anyway* once.
 
-Neither installs an AI. When the app first opens, choose the AI in ⚙ Settings → Preferences → *Your AI* if it is
-not Claude, then press **Install Claude** (or **Install Grok**) on the checklist's first row.
+Neither installs an AI. When the app first opens, press **Install Claude** on the checklist's first row. For Grok:
+open ⚙ Settings → Preferences → *Your AI*, choose Grok, press **Save settings**, return to **Home**, then press
+**Install Grok**.
 
 Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see `packaging/README.md`).
 
@@ -129,7 +130,7 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
    Neither script installs an AI (Claude, Codex or Grok); if none is found they say so in one line and carry on.
    The downloaded folder can be deleted afterwards either way.
 2. On first open the app shows the **connection checklist** (`doctor.py`, re-checked every minute) until the AI is
-   installed and signed in and Slack + Gmail are connected. With no AI on the computer the first row is
+   installed and signed in and at least one of Slack or Gmail is connected. With no AI on the computer the first row is
    **Install Claude** (or the AI chosen in ⚙ Settings), with the commands it will run shown underneath. The Slack
    user id is detected automatically.
 3. When green it shows **Who's who?** (`people.py`): the 12–15 people the user messages most, each with a sample
