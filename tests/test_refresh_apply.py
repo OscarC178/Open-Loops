@@ -296,6 +296,29 @@ s, ids, _ = run([inb("jo-open", "Jo", "send the numbers", f"DM Jo {JO_DM}", stat
                 [inb("jo-b", "Jo", "send the numbers", f"DM Jo {JO_DM}", asked_at="2026-09-15T09:30", link="https://x.slack.com/archives/D0JODM0001/p1789400000000100")])
 check("jo-b" in ids, "one side has a permalink, the other none: not proof either way, a new loop")
 
+# --- round 5: no evidence never merges; a reused id never drops a different message; links without query
+s, ids, _ = run([inb("jo-a", "Jo", "send the numbers", f"DM Jo {JO_DM}", status="needs_me", asked_at="2026-09-15T09:00")],
+                [inb("jo-b", "Jo", "send the numbers", f"DM Jo {JO_DM}", asked_at="2026-09-15T11:30")])
+check("jo-b" in ids, "same asker + same words at 09:00 and 11:30, no ts or permalink: two loops")
+s, ids, n = run([inb("jo-numbers", "Jo", "send the numbers", f"DM Jo {JO_DM} 1757800000.000100", status="needs_me")],
+                [inb("jo-numbers", "Jo", "send the numbers", f"DM Jo {JO_DM} 1757900000.000200"),
+                 inb("Jo Numbers", "Jo", "send the Q4 numbers", f"DM Jo {JO_DM} 1757950000.000300")])
+check(ids.count("jo-numbers") == 1 and "jo-numbers-2" in ids and "jo-numbers-3" in ids and n[0] == 2,
+      "two distinct ts whose ids slug to a taken id: both kept as -2 and -3")
+s, ids, _ = run([inb("jo-numbers", "Jo", "send the numbers", f"DM Jo {JO_DM} 1757800000.000100", status="needs_me")],
+                [inb("jo-numbers", "Jo", "numbers please", f"DM Jo {JO_DM} 1757800000.000100")])
+check(ids == [l["id"] for l in base()["loops"]] + ["jo-numbers"], "the same id AND the same message: still one loop")
+BARE = "https://x.slack.com/archives/C0OPSCH001/p1757800000000100"
+s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001", status="needs_me", link=BARE)],
+                [inb("kit-b", "Kit", "review the rota", "#ops C0OPSCH001", link=BARE + "?thread_ts=1757700000.000050&cid=C0OPSCH001")])
+check("kit-b" not in ids, "a bare permalink and its ?thread_ts= variant are the same message")
+s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001", status="needs_me", link=BARE + "/")],
+                [inb("kit-b", "Kit", "review the rota", "#ops C0OPSCH001", link=BARE + "#x")])
+check("kit-b" not in ids, "...and so are a trailing slash and a fragment")
+s, ids, _ = run([inb("kit-a", "Kit", "review the rota", "#ops C0OPSCH001", status="needs_me", link=BARE)],
+                [inb("kit-b", "Kit", "review the rota", "#ops C0OPSCH001", link="https://x.slack.com/archives/C0OPSCH001/p1757800000000999")])
+check("kit-b" in ids, "a different p<ts> is a different message")
+
 # --- closing: a done update stamps closed_at (re-check window + day log); reopening clears it
 s = base()
 s["loops"].append({"id": "old-done", "owner": "Uma", "ask": "x", "channel": "slack", "status": "done", "closed_at": "2026-09-14T09:00"})
