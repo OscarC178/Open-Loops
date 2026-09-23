@@ -224,7 +224,7 @@ URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 # challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
 REDACT_RE = re.compile(r"(https://[^\s?\x1b\x07]+)\?[^\s\x1b\x07]+")
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
-connects = {}  # step -> {"running", "rc", "url", "started"}
+connects = {}  # step -> {"running", "rc", "url", "started", "agent"}
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
 connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
 
@@ -345,7 +345,9 @@ def run_connect(step):
             return False, "Open Loops is closing"
         if (connects.get(step) or {}).get("running"):
             return False, "already running"
-        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
+        # "agent": the AI this run is for (#27), so a page reloaded after the AI was changed does not pick it up as the new one's
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
+                          "agent": agent.name()}
     log = connect_log(step)
 
     def go():

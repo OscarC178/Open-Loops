@@ -984,7 +984,7 @@ if NODE:
  await loop();out.n2=n;offline=true;await loop();await until(()=>n===2,5000);out.second=await sweep;out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
  allowDismiss();out.dismissed={open:$('#allow_dlg').open,busy:CONN.slack.busy,started:CONN.slack.started};out.SS=SS;
  // review of #58: an answer that arrives while the AI is being changed, or after it changed, restores nothing
- const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login'};
+ const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login',agent:'claude'};
  const quiet=()=>({busy:!!(CONN.login&&CONN.login.busy),open:$('#allow_dlg').open});
  HOLD['/api/connect/login']={body:run};let sw=real();await until(()=>HOLD['/api/connect/login'].release,5000);
  aiSwitching='codex';HOLD['/api/connect/login'].release();out.gated={ok:await sw,...quiet()};aiSwitching='';
@@ -993,7 +993,7 @@ if NODE:
  aiSwitching='codex';out.during=await real();aiSwitching='';
  // review of #58: one step's status fails and another never answers; the rest still restore, and the sweep ends in time
  FAIL_GET.add('/api/connect/install');HANG.add('/api/connect/slack_install');REATTACH_MS=1500;
- FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/authorize?state=miro',started:'2026-09-24T10:01:00',step:'miro'}];
+ FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/authorize?state=miro',started:'2026-09-24T10:01:00',step:'miro',agent:'claude'}];
  const t2=Date.now();out.sweep={ok:await real(),ms:Date.now()-t2,miro:!!(CONN.miro&&CONN.miro.busy),url:CONN.miro&&CONN.miro.url};REATTACH_MS=15000;""", tmp)
         check(out["before"] == {"slack": None, "open": False}, "a fresh page knows nothing of the sign-in the app is running")
         a = out["after"]
@@ -1031,6 +1031,30 @@ if NODE:
               "clicking Allow finishes it as if pressed on this page: the row turns green")
     finally:
         quit_app(port, srv)   # a failure part-way can leave the fake sign-in waiting: the app's own quit stops it
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7l. #27 review: a Claude sign-in still running when the AI is changed to Codex. Once Codex's check is in, a sweep
+    # (a reload, the offline banner clearing) must not show that run as Codex's: no busy row, no pop-up. Back on Claude
+    # it is Claude's again.
+    tmp = setup_install("openloops-setup-reattach-ai-")
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ await boot();await tick();
+ await realFetch(BASE+'/api/connect/slack',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // pressed for Claude before the reload
+ let st={};for(let i=0;i<150&&!st.url;i++){st=await (await realFetch(BASE+'/api/connect/slack')).json();if(!st.url)await sleep(100)}
+ if(!st.url)throw new Error('the fake sign-in never printed its link');out.status={agent:st.agent,running:st.running};
+ await chooseAI('codex');out.switched={agent:C.agent,doc:DOC.agent,pend:aiPending()};
+ out.sweep=await connectReattach();out.codex={busy:!!(CONN.slack&&CONN.slack.busy),open:$('#allow_dlg').open,said:CON.filter(l=>l.includes('running for Claude')).length};
+ await chooseAI('claude');out.back=await connectReattach();out.claude={busy:!!(CONN.slack&&CONN.slack.busy),open:$('#allow_dlg').open};""", tmp)
+        check(out["status"] == {"agent": "claude", "running": True}, f"the app's status says which AI a running sign-in is for ({out['status']})")
+        check(out["switched"] == {"agent": "codex", "doc": "codex", "pend": False}, "the change to Codex is saved and checked")
+        check(out["sweep"] is True and out["codex"] == {"busy": False, "open": False, "said": 1},
+              f"a sweep after it does not pick up Claude's sign-in as Codex's: no busy row, no pop-up, a Console line ({out['codex']})")
+        check(out["back"] is True and out["claude"] == {"busy": True, "open": True}, "back on Claude, the same run is picked up again")
+    finally:
+        quit_app(port, srv)
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
 

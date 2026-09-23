@@ -697,6 +697,7 @@ async function connectReattach(){if(aiGate())return false;const was=(C&&C.agent)
   if(!s)return false;
   if(aiGate()||((C&&C.agent)||'claude')!==was)return false;   // the AI changed meanwhile: not this AI's run; asked again later
   if(!s.running||(CONN[step]&&CONN[step].busy))return true;   // finished (or never ran): the row stays as the check paints it
+  if(s.agent!==was){clog('setup: '+step+' is running for '+aiName(s.agent)+', not picked up');return true}   // started for another AI: not this one's row
   const inst=step==='install';clog('setup: '+step+' still running, picked up again');
   CONN[step]={busy:true,msg:connectWaitSaid(step,s.agent),url:s.url||'',started:s.started||'',...(inst?{agent:s.agent,command:s.command}:{})};repaint();
   if(ALLOW_ROW[step]&&!ALLOW&&!(s.started&&allowGone()[step]===s.started))allowOpen(step);   // the pop-up with the fallback link, as the press opens it, unless closed for this run
