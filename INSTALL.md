@@ -10,9 +10,9 @@ behalf — chases are created as **drafts** in the original thread and you press
 |---|---|---|
 | Windows 10/11, or macOS | Task Scheduler + Desktop shortcut (Windows) / `launchd` + Desktop launcher (Mac) | — |
 | Python 3.11+ (stdlib only, no pip installs) | runs the page and the scripts | `python --version` (Windows) / `python3 --version` (Mac) |
-| An AI CLI, logged in — Claude Code (default) or Grok | does the reading/classifying via headless runs (`agent.py`) | Nothing to do beforehand: the checklist's **Install** button installs it (the command is shown first), then Claude's **Sign in** button runs `claude auth login`. Check by hand: `claude --version` / `grok --version` |
-| Slack connected in that CLI *(optional)* | reads your DMs/channels, creates Slack drafts | Claude: the checklist's **Install Slack plugin** / **Connect Slack** buttons (fallback: *Open Claude (advanced)* → `/mcp` → *slack* → Authenticate) · Grok: off unless ⚙ Settings → *Use Slack*, then `/mcps`, select *slack*, press `i` |
-| Gmail connected *(optional)* | reads sent mail/threads, creates Gmail drafts | Claude: the checklist's **Connect Gmail** button (Gmail must be added at claude.ai → Settings → Connectors first; fallback: `/mcp` → *claude.ai Gmail* → Authenticate) · Grok: see **Gmail with Grok** below |
+| An AI CLI, logged in — Claude Code (default), Codex or Grok | does the reading/classifying via headless runs (`agent.py`) | Nothing to do beforehand: the checklist's **Install** button installs it (the command is shown first), then the **Sign in** button runs `claude auth login` (Claude) or `codex login` (Codex). Check by hand: `claude --version` / `codex --version` / `grok --version` |
+| Slack connected in that CLI *(optional)* | reads your DMs/channels, creates Slack drafts | Claude: the checklist's **Install Slack plugin** / **Connect Slack** buttons (fallback: *Open Claude (advanced)* → `/mcp` → *slack* → Authenticate) · Codex: connected in your ChatGPT account; the checklist's **Connect Slack** opens chatgpt.com/apps (see **Codex (ChatGPT)** below) · Grok: off unless ⚙ Settings → *Use Slack*, then `/mcps`, select *slack*, press `i` |
+| Gmail connected *(optional)* | reads sent mail/threads, creates Gmail drafts | Claude: the checklist's **Connect Gmail** button (Gmail must be added at claude.ai → Settings → Connectors first; fallback: `/mcp` → *claude.ai Gmail* → Authenticate) · Codex: connected in your ChatGPT account, like Slack · Grok: see **Gmail with Grok** below |
 
 Slack and Gmail are both optional sources — connect **at least one**; the checklist and every job adapt to
 whichever is available (Gmail-only and Slack-only installs both work).
@@ -40,25 +40,66 @@ shows into Terminal (Windows: PowerShell). The installers, and where they are do
 | AI | Mac installer (run with) | Windows installer | Source |
 |---|---|---|---|
 | Claude Code | `https://claude.ai/install.sh` (bash) | `https://claude.ai/install.ps1` | [code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup) (also `brew install --cask claude-code`, `winget install Anthropic.ClaudeCode`) |
-| Codex (once it can be chosen, #12) | `https://chatgpt.com/codex/install.sh` (sh) | `https://chatgpt.com/codex/install.ps1` | [github.com/openai/codex](https://github.com/openai/codex) (also `npm i -g @openai/codex`, `brew install --cask codex`) |
+| Codex | `https://chatgpt.com/codex/install.sh` (sh) | `https://chatgpt.com/codex/install.ps1` | [github.com/openai/codex](https://github.com/openai/codex) (also `npm i -g @openai/codex`, `brew install --cask codex`) |
 | Grok | `https://x.ai/cli/install.sh` (bash) | `https://x.ai/cli/install.ps1` | [docs.x.ai/build/overview](https://docs.x.ai/build/overview) (lands in `~/.grok/bin`) |
 
 **Accounts / permissions this touches**
 - **Slack**: whatever your Slack user can already see. The tool never posts; it only uses `slack_send_message_draft`.
 - **Gmail**: with Claude, the claude.ai Gmail connector (OAuth to your Google account), read-only plus `create_draft`.
   With Grok, the app's own bundled Gmail MCP server (`gmail_mcp.py`) talking to the Gmail REST API with a
-  token minted locally by `gmail_auth.py` (see below).
+  token minted locally by `gmail_auth.py` (see below). With Codex, the Gmail connector of your ChatGPT account.
 - **The AI CLI**: a subscription/API access for the headless runs. Each refresh is one short session.
-- **No other credentials.** With Claude nothing is stored by this tool (the setup buttons only start the Claude CLI's own sign-in; its tokens stay with the CLI); with Grok the Gmail refresh token lives in `state/google_oauth.json` on your machine.
+- **No other credentials.** With Claude nothing is stored by this tool (the setup buttons only start the Claude CLI's own sign-in; its tokens stay with the CLI); with Codex likewise (`state/codex-home/auth.json` is only a link to Codex's own `~/.codex/auth.json`); with Grok the Gmail refresh token lives in `state/google_oauth.json` on your machine.
 
 ### Choosing your AI
 
-`config.json` has `"agent": "claude"` (default) or `"grok"` — change it in ⚙ Settings → Preferences → *Your AI*. `agent.py` maps
+`config.json` has `"agent": "claude"` (default), `"codex"` or `"grok"` — change it in ⚙ Settings → Preferences → *Your AI*. `agent.py` maps
 each job's tool list to the agent's own naming and flags; the prompts are identical. The connection checklist
 (`doctor.py`) checks whichever agent is selected. With Grok, Slack is **opt-in** (`"use_slack"`): off, jobs are
 Gmail-only and the Slack plugin is not started or probed. Vercel is never loaded. Headless Grok jobs pass
 `--effort low` because the CLI defaults to `xhigh`.
 Codex is not supported yet ([#12](https://github.com/OscarC178/Open-Loops/issues/12)); what it and the other two allow for a second account is in [More than one account](#8-more-than-one-account-work--personal).
+
+### Codex (ChatGPT)
+
+For people whose AI subscription is ChatGPT (Plus, Pro, Business, Enterprise). Choose **Codex (ChatGPT)** under
+⚙ Settings → Preferences → *Your AI*. The checklist then shows:
+
+1. **Codex is installed**: **Install Codex** runs OpenAI's installer (table above).
+2. **Signed in to ChatGPT**: **Sign in** runs `codex login`, which opens the ChatGPT sign-in page in your browser. If
+   the browser can't hand the sign-in back (it answers on `localhost:1455`), run `codex login --device-auth` in Terminal
+   instead and press **Check again**. A Codex signed in with an **API key** shows red: OpenAI's connectors need a ChatGPT
+   sign-in ("Some plugins aren't available with API key authentication", [learn.chatgpt.com/docs/plugins](https://learn.chatgpt.com/docs/plugins)).
+3. **Gmail / Slack connected**: these are ChatGPT connectors, set up once in your ChatGPT account, not in Open Loops or
+   the CLI. **Connect Gmail** / **Connect Slack** open [chatgpt.com/apps](https://chatgpt.com/apps); connect there, come
+   back and press **Check again**. The connectors read whichever Google and Slack accounts that ChatGPT account connected,
+   so work and personal mail on one ChatGPT account is not possible; that needs two ChatGPT accounts (or, later,
+   Open Loops profiles, see ROADMAP.md).
+4. **Miro**: ChatGPT has no Miro connector, so the Roadmap card is off with Codex. If you have added a Miro MCP server
+   to Codex yourself (`[mcp_servers.miro]` in `~/.codex/config.toml`, signed in with `codex mcp login miro`), Open
+   Loops passes it through and asks about it. Slack through `mcp.slack.com` is not a route: Slack's MCP server does not
+   support dynamic client registration and does not list Codex as a client ([docs.slack.dev](https://docs.slack.dev/ai/slack-mcp-server/)).
+
+**How a Codex job runs.** One `codex exec` per job: the prompt on stdin, `--sandbox read-only`, `--ephemeral`, the
+shell tool off, `codex_model` / `codex_effort` from `config.json` (template `gpt-5.6-sol` at `low`; `gpt-5.5` leaves
+Codex on 2026-10-14). It runs under a job-local `CODEX_HOME` in `state/codex-home/`: a link to your `~/.codex/auth.json`
+and a generated `config.toml`, so your own Codex plugins, skills, memories and AGENTS.md are not loaded (measured on
+2026-09-23: a run under a full `~/.codex` took about 190k input tokens; the checklist's check in the job home, 27k). `codex exec` has no tool allow-list like Claude's
+`--allowedTools`, so each run's prompt starts with the connector tools that job may use and a ban on everything else,
+and the read-only sandbox keeps files safe. Each job log in `state/logs/` ends with the tools the run actually used and
+its token count, and flags any tool that was not on the job's list. Email chases are Gmail drafts
+(`gmail.create_draft`); with a *Send* box ticked they are sent with `gmail.send_email` as a reply in the thread.
+
+**The checklist asks Codex once.** Whether Gmail and Slack answer can only be found out by asking Codex, which is a run
+against your allowance. The answer is kept in `state/codex-probe.json`: a day while at least one source works,
+15 minutes while none does. **Check again** asks afresh (at most every 30 seconds). The same run reads your Slack
+user id.
+
+**The ChatGPT plan's limits.** Codex on a ChatGPT plan is metered per 5-hour window and per week, shared with
+ChatGPT's other Codex tools ([help.openai.com](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan)).
+Every scan, refresh and chase is one run. If the allowance runs out, Open Loops can't read anything until it comes
+back, and the checklist says so. Keep this in mind before scheduling the daily refresh on a plan you also use heavily
+for coding.
 
 ### Gmail with Grok (one-off, ~5 minutes)
 
@@ -300,7 +341,8 @@ state/logs/       one log per run
 6. **Which model the jobs use.** Every job runs `claude -p` with `--model` and `--effort` from `model` and
    `effort` in `config.json` (template: `sonnet` at `xhigh`; Settings → Preferences → Your AI). Sonnet at xhigh or Opus at medium
    both do the job. Leave either blank and the jobs inherit whatever `claude` defaults to on that computer, which
-   is usually the most expensive model available. Grok ignores both.
+   is usually the most expensive model available. Grok ignores both. Codex has its own pair, `codex_model` and
+   `codex_effort` (template `gpt-5.6-sol` at `low`), so switching AI never hands Codex a Claude model name.
 7. **Jobs never clobber your clicks.** A refresh can run for minutes; anything you add or snooze meanwhile is kept
    because every job re-reads `state.json` just before writing (`store.update_state`).
 8. **Mac: keep Open Loops out of Documents, Desktop and Downloads.** macOS privacy protection stops a background

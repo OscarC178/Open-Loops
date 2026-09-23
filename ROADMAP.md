@@ -22,6 +22,7 @@ Design sketch:
 
 - Per-profile Gmail accounts via multiple `gmail_auth.py` token stores (the store already lives in
   `state/`, so this mostly falls out of profiles).
-- More agents behind `agent.py` (Gemini CLI is the obvious next: same logical-tool mapping pattern).
+- More agents behind `agent.py`. Codex (ChatGPT connectors) landed in #12, with its button-driven setup to finish in
+  #19; Gemini CLI is the obvious next, with the same logical-tool mapping pattern.
 - `reply`/send tool in `gmail_mcp.py` behind the send switches, for full email-send parity with Claude.
 - Windows support for the bundled Gmail MCP server (`python3` vs `python` in `.grok/config.toml`).

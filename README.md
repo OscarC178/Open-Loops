@@ -6,7 +6,7 @@
 
 <p align="center"><a href="https://oscarc178.github.io/Open-Loops/brag.mp4"><img src="docs/brag.jpg" alt="Open Loops home: Needs me, Waiting on them. Click to watch the 39-second tour."></a><br><sub>▶ <a href="https://oscarc178.github.io/Open-Loops/brag.mp4">Watch the 39-second tour</a> (with sound) · <a href="docs/brag.mp4">or open it on GitHub</a></sub></p>
 
-Runs locally. Uses the Claude or Grok subscription you already have. No API key costs.
+Runs locally. Uses the Claude, ChatGPT (through OpenAI's Codex CLI) or Grok subscription you already have. No API key costs.
 
 ## Why you want this
 
@@ -77,7 +77,7 @@ sound like you rather than like a reminder bot. Every action gives instant feedb
   are read only to check for a reply on a loop you already have.
 - **Drafts by default.** It sends only if you tick *Send to internal* / *Send to external*. The send tools
   are handed to the AI run only when those boxes are ticked, so with both off it cannot send.
-- **No API key costs and no new accounts.** It drives the Claude or Grok CLI you are already signed in to.
+- **No API key costs and no new accounts.** It drives the Claude, Codex or Grok CLI you are already signed in to.
   Jobs run on Sonnet by default; the model and effort are a picker in Settings, so a scan never quietly
   burns your best model.
 - **Every run leaves a log** in `state/logs/`, so you can see what it looked at and what it decided.
@@ -97,7 +97,7 @@ sound like you rather than like a reminder bot. Every action gives instant feedb
    needed for the Roadmap section.
 3. Open **Open Loops** from the Desktop each morning (Mac: orange-loop app — drag it to the Dock).
 
-Guides: [GETTING-STARTED.md](GETTING-STARTED.md) · [INSTALL.md](INSTALL.md) (Grok Gmail step is here).
+Guides: [GETTING-STARTED.md](GETTING-STARTED.md) · [INSTALL.md](INSTALL.md) (the Codex (ChatGPT) and Grok Gmail steps are here).
 What is planned next: [ROADMAP.md](ROADMAP.md).
 
 MIT licence. WhatsApp is not possible (no API for personal accounts).

@@ -37,6 +37,8 @@ Each row that isn't ticked has a button: press it, your browser opens a sign-in 
 
 A button didn't work? **Open Claude (advanced)** opens a black window: type `/mcp`, press Enter, pick the connection, choose **Authenticate** and click **Allow**. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.
 
+Your AI subscription is ChatGPT, not Claude? Choose **Codex (ChatGPT)** in ⚙ Settings → Preferences → *Your AI*. The checklist then asks you to sign in to ChatGPT, and **Connect Gmail** / **Connect Slack** open your ChatGPT account's apps page: connect there, come back and press **Check again**. Codex use counts against your ChatGPT plan's Codex allowance. Details: [INSTALL.md → Codex (ChatGPT)](INSTALL.md#codex-chatgpt).
+
 When the required rows are ticked the checklist disappears and your list starts building (first fill takes about 2 minutes).
 
 ## 3. Every day

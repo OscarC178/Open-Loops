@@ -9,7 +9,7 @@ plus one HTML page; `npm` is only a command runner here and installs nothing.
 |---|---|---|
 | Python 3.11+ | runs the app and the tests | `python --version` (Mac: `python3 --version`) |
 | Node 18+ | the `npm run …` wrapper | `node --version` |
-| Claude Code, signed in (or Grok) | the jobs that read Slack / Gmail / Miro | `claude --version` |
+| Claude Code, signed in (or Codex with a ChatGPT sign-in, or Grok) | the jobs that read Slack / Gmail / Miro | `claude --version` |
 | Slack and/or Gmail connected in Claude | anything past the setup screen | the checklist's Connect buttons, or `claude mcp list` |
 
 ## The commands
@@ -74,7 +74,7 @@ you would be reading old code while thinking you were on new.
 |---|---|
 | `openloops/app.py` | the local server and every `/api/*` route |
 | `openloops/index.html` | the whole page: CSS, markup, JS |
-| `openloops/agent.py` | how a job calls Claude / Grok and which MCP tools it may use |
+| `openloops/agent.py` | how a job calls Claude / Grok / Codex and which tools it may use |
 | `openloops/refresh.py`, `chase.py`, `daylog.py`, `roadmap.py`, `people.py`, `voice.py` | the jobs; each runs as `python -m openloops.<name>` |
 | `openloops/store.py` | JSON helpers; `update_state()` so a long job never overwrites clicks made meanwhile |
 | `openloops/doctor.py` | the connection checklist |
