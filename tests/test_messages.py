@@ -407,10 +407,19 @@ check(out["offline"] == {"display": "block", "text": want},
 check(out["error"]["display"] == "block" and out["error"]["text"] == say("server_error") and out["status"] == 500
       and out["body"] == {"error": "boom"}, "app answered with an error: a different sentence, and the error carries status and body")
 check(out["cleared"] == "none", "banner('') hides it again")
+PS = grab("window.addEventListener('pageshow'")
+for ok_, want_ in ((True, "reload"), (False, "loop")):
+    js = ("let did=[];const location={reload:()=>did.push('reload')};const loop=()=>did.push('loop');let stopped=false;const H={};"
+          "const window={addEventListener:(n,f)=>H[n]=f};global.fetch=async()=>" + ("({ok:true})" if ok_ else "{throw new TypeError('x')}") + ";\n"
+          + PS + "\nH.pageshow({persisted:true});H.pageshow({persisted:false});setTimeout(()=>console.log(JSON.stringify(did)),50);")
+    r3 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    check(r3.returncode == 0 and json.loads(r3.stdout) == [want_], f"restored page, app {'up' if ok_ else 'gone'}: {want_} ({r3.stdout.strip()} {r3.stderr.strip()[-150:]})")
 check(out["said400"] == "Open Loops cannot create a file in that folder. Check the folder exists." and out["said409"] == "Open Loops was updated."
       and out["saidOff"] == want, "a failed request shows the app's own sentence (said, else error), or 'not running' when offline")
 check(out["local"] == "pick a date" and out["pinned"] == "already pinned" and out["bare"] == say("server_error"),
       "a check made on the page keeps its own words ('pick a date', 'already pinned'); an unmarked error never shows its raw text")
+check("if(e.persisted&&!stopped)fetch('/',{cache:'no-store'}).then(r=>{if(r.ok)location.reload();else loop()},()=>loop())" in html,
+      "a page restored from the back/forward cache reloads (fresh wording) when the app answers, else shows 'not running'")
 check("throw new Error(" not in html and html.count("throw localErr(") >= 5, "every validation the page does itself is thrown as a local error")
 check("Permission denied" in out["console"] and "-> 400" in out["console"], "...while the status, raw body and detail go to the Console only")
 check("if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true)" in html and "j.failure==='job_signed_out'" not in html,

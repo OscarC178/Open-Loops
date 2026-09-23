@@ -856,7 +856,9 @@ async function loop(){clearTimeout(loopT);try{
  const st=stage();loopT=setTimeout(loop,(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped)loop()});
 window.addEventListener('pagehide',()=>{if(stopped)return;const b=new Blob([JSON.stringify({page:PAGE})],{type:'application/json'});if(!(navigator.sendBeacon&&navigator.sendBeacon('/api/bye',b)))fetch('/api/bye',{method:'POST',body:b,keepalive:true}).catch(()=>{})});
-window.addEventListener('pageshow',e=>{if(e.persisted&&!stopped)loop()});   // back/forward cache restore: say hello again before the grace runs out
+// Back/forward cache restore: reload, so the page's copy of the wording (MSG) and its code are the app's current ones.
+// Only if the app answers: with it gone, a reload would swap the "not running" banner for the browser's own error page.
+window.addEventListener('pageshow',e=>{if(e.persisted&&!stopped)fetch('/',{cache:'no-store'}).then(r=>{if(r.ok)location.reload();else loop()},()=>loop())});   // back/forward cache restore: say hello again before the grace runs out
 async function quitApp(){const b=$('#quitbtn');b.disabled=true;try{const r=await api('/api/quit',{});stopped=true;clearTimeout(loopT);
   const after=r.after_jobs&&r.after_jobs.length?' once the running '+r.after_jobs.join(', ')+' job finishes':'';
   banner('Open Loops is stopping'+after+'. You can close this tab; double-click the Open Loops icon to start it again.')}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
