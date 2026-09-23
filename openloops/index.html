@@ -4,7 +4,7 @@
 :root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f24;--mut:#6b7280;--line:#e5e7eb;--g:#16a34a;--a:#d97706;--r:#dc2626;--b:#2563eb}
 @media(prefers-color-scheme:dark){:root{--bg:#111318;--card:#1a1d24;--ink:#e6e7ea;--mut:#9aa0a8;--line:#2a2f38}}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
-header{display:flex;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
 h1{font-size:18px;margin:0 6px 0 0}header .meta{color:var(--mut);font-size:12px;margin-left:auto}
 .tabs{display:flex;gap:2px}.tabs button{border:none;background:none;padding:6px 12px;border-radius:6px;color:var(--mut)}.tabs button.on{background:var(--bg);color:var(--ink);font-weight:600}
 /* Fitts: every control is at least 36px tall; keyboard users always see where focus is */
@@ -16,8 +16,10 @@ input,select,textarea{min-height:36px}textarea{min-height:0}
 .chip{display:inline-flex;align-items:center;font-size:11px;padding:0 0 0 8px;border-radius:10px;border:1px solid var(--line);color:var(--b);text-decoration:none;margin:3px 4px 0 0;max-width:260px;overflow:hidden;white-space:nowrap;vertical-align:bottom}.chip span{overflow:hidden;text-overflow:ellipsis}
 .chip button{min-height:0;height:22px;width:26px;padding:0;border:0;background:none;color:var(--mut);font-size:14px;line-height:1}.chip button:hover{color:var(--r)}
 /* toasts: every action is acknowledged, undo where it is cheap */
-/* hung just below the sticky header (#50): never over the checklist rows or the save bar at the bottom, never shifting the page */
-#toasts{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px;z-index:30;width:max-content;max-width:min(560px,calc(100vw - 32px))}
+/* a full-width line of the sticky header itself (#50, #52 review): always in view, and it takes its own room, so a
+   toast never lies over a checklist row or the save bar; at most 3 at once (toast()) */
+#toasts{flex-basis:100%;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0}#toasts:empty{display:none}
+#toasts .toast{max-width:min(560px,100%)}
 .toast{background:var(--ink);color:var(--bg);border-radius:8px;padding:10px 14px;font-size:13px;display:flex;gap:12px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .toast.err{background:#7f1d1d;color:#fff}.toast button{min-height:28px;padding:2px 10px;background:transparent;color:inherit;border-color:currentColor;font-size:12px}
 /* one dialog for every "type something" moment: snooze, note, link, closing a vault item */
@@ -463,9 +465,11 @@ async function conCopy(all){let t=CON.join('\n');
 window.addEventListener('error',e=>clog('script error: '+e.message+' ('+(e.filename||'').split('/').pop()+':'+e.lineno+')'));
 window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e.reason.message)||e.reason)));
 // ---------- feedback: a toast for every action (Doherty), with Undo where it is cheap (Postel) ----------
+const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
 function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
- $('#toasts').appendChild(t);setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
+ const box=$('#toasts');while(box.children.length>=TOAST_MAX)box.firstElementChild.remove();
+ box.appendChild(t);setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
 // ---------- one dialog for snooze / note / link / vault close ----------
 let dlgOk=null;
 function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textContent=o.sub||'';$('#dlg_err').textContent='';$('#dlg_ok').textContent=o.ok||'OK';$('#dlg_ok').disabled=false;
@@ -609,7 +613,7 @@ function paintConnect(){$('#st_connect').style.display='';
  const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
  $('#setup_steps').innerHTML=DOC.steps.map(s=>checkRow(s,s.connect===first)).join('')}
 // One checklist row: tick or cross, the title, and while red its sentence and button. The Set-up cards use it too (#28).
-const checkRow=(s,primary)=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
+const checkRow=(s,primary)=>`<div class="row" style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
 
 // ---------- Setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
 // and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.

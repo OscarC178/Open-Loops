@@ -447,11 +447,60 @@ check(html.count("<b>Open Claude (advanced)</b>") == 2 and html.count('<span cla
       "the help paragraph's 'Open <AI>' sentence is hidden whenever that button is (the AI not installed)")
 check("${CON.length} lines" not in html and "${CON.length} line${CON.length===1?'':'s'}" in html, "Console: '1 line', not '1 lines'")
 check(re.search(r'<header>.*<div id="toasts" aria-live="polite"></div></header>', html, re.S)
-      and "#toasts{position:absolute;top:calc(100% + 8px)" in html and "bottom:20px" not in html.split("#toasts{")[1].split("}")[0],
-      "toasts hang just below the sticky header, not over the bottom of the page and its checklist rows")
+      and "#toasts{flex-basis:100%" in html and "position:" not in html.split("#toasts{")[1].split("}")[0]
+      and "while(box.children.length>=TOAST_MAX)box.firstElementChild.remove()" in html and "const TOAST_MAX=3;" in html,
+      "toasts are a full-width line of the sticky header (in the flow, not over the page), at most 3 at once")
 check("<b>${esc(s.title)}</b>" in html, "a checklist row's title is escaped (it can hold a Slack display name)")
 check("st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
       "after setup, a sign-out brings back no numbered setup bar and no second 'All set' toast")
+
+# #52 review: toasts never lie over a checklist row, at 400 px and at 1280 px, even with more arriving than the cap.
+# Layout needs a real browser: headless Chrome renders the served page from a file (the app is not needed: the check
+# paints the checklist itself), then measures every .row against every toast.
+import pwd  # noqa: E402
+def find_chrome():
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir) if hasattr(os, "getuid") else Path.home()   # HOME is a temp folder here
+    names = [os.environ.get("CHROME_BIN") or ""] + [shutil.which(n) or "" for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")]
+    names += ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"]
+    names += [str(x) for x in sorted((home / ".agent-browser" / "browsers").glob("**/Google Chrome for Testing"))]
+    return next((n for n in names if n and Path(n).is_file() and os.access(n, os.X_OK)), "")
+chrome = find_chrome()
+if not chrome:
+    show("SKIP the toast layout check: no Chrome or Chromium found (set CHROME_BIN)")
+else:
+    LAYOUT = r"""<script>
+window.addEventListener('load',()=>setTimeout(()=>{let r={};try{stopped=true;clearTimeout(loopT);banner('');
+ C={agent:'claude'};S={setup_done:true};$('#steps').innerHTML='';   // after setup: no intro, no bar, the rows start high up
+ DOC={all_ok:false,steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:false,title:'Signed in to Claude',fix:MSG.signin_needed.what+' '+MSG.signin_needed.fix,connect:'login'},
+  {id:'slack',ok:false,optional:true,title:'Slack connected (optional)',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected (optional)',fix:'Sign in to Claude first (the row above).'},
+  {id:'channel',ok:false,title:'At least one source connected (Slack or Gmail)',fix:'Sign in to Claude first (the row above).'},{id:'self',ok:false,optional:true,title:'Knows who you are on Slack',fix:'Sign in to Claude first (the row above).'}]};
+ document.querySelectorAll('#page_home>div').forEach(e=>{if(e.id!=='st_connect'&&e.id!=='steps')e.style.display='none'});$('#st_connect').style.display='';paintConnect();
+ for(let i=0;i<5;i++)toast('Toast '+i+': a long sentence that wraps over two or three lines on a narrow phone screen, so it takes real room.',{err:i%2===1,ms:600000});
+ const box=e=>e.getBoundingClientRect(),rows=[...document.querySelectorAll('.row')].map(box),ts=[...document.querySelectorAll('#toasts .toast')].map(box);
+ const hit=ts.some(a=>rows.some(b=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom));
+ r={w:innerWidth,rows:rows.length,toasts:ts.length,hit,first:(document.querySelector('#toasts .toast')||{}).textContent||''}}catch(e){r={error:String(e&&e.stack||e)}}
+ document.body.setAttribute('data-layout',JSON.stringify(r))},300));
+</script>"""
+    node_ = shutil.which("node")
+    for w_ in (400, 1280) if node_ else ():
+        work = Path(tempfile.mkdtemp(prefix="openloops-layout-"))
+        try:
+            (work / "page.html").write_text(html.replace("</body>", LAYOUT + "</body>"), encoding="utf-8")
+            wait_ = ("new Promise(r=>{const f=()=>document.body.getAttribute('data-layout')?r(document.body.getAttribute('data-layout'))"
+                     ":setTimeout(f,100);f()})")
+            rc_ = subprocess.run([node_, str(REPO / "tests" / "_chrome_layout.js"), chrome, (work / "page.html").as_uri(), str(w_), wait_],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        try:
+            lay = json.loads(json.loads(rc_.stdout.strip().splitlines()[-1]))
+        except (ValueError, IndexError, TypeError):
+            lay = {"error": (rc_.stdout + rc_.stderr)[-300:]}
+        check(not lay.get("error") and lay["w"] == w_ and lay["rows"] >= 6 and lay["toasts"] == 3 and lay["first"].startswith("Toast 2")
+              and lay["hit"] is False,
+              f"at {w_} px: five toasts leave the newest three (the oldest go), and none overlaps a checklist row ({lay})")
+    if not node_:
+        show("SKIP the toast layout check: node not installed")
 
 # the table goes into an inline <script>: a sentence holding </script>, quotes, backslashes or U+2028 must survive
 from html.parser import HTMLParser  # noqa: E402
