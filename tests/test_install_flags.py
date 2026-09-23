@@ -34,8 +34,9 @@ if sys.platform == "win32":
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from openloops import doctor
+from _helpers import free_port
 
-PORT = 8792
+PORT = free_port()  # the test copy's config.json port: chosen per run so it never meets another server
 LABEL = "com.openloops.refresh"
 t0 = time.time()
 
@@ -205,6 +206,7 @@ try:
     with socket.socket() as sk:
         check(sk.connect_ex(("127.0.0.1", PORT)) != 0, f"spare port {PORT} free")
     env = {k: v for k, v in os.environ.items() if k != "OPENLOOPS_PORT"}
+    env.update(HOME=str(tmp / "home1"), USERPROFILE=str(tmp / "home1"))  # the throwaway HOME it was installed from
     srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=dest, env=dict(env, BROWSER="/usr/bin/true"),
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     d = None
