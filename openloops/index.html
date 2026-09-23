@@ -368,7 +368,9 @@ function banner(msg){const b=$('#banner');if(!msg){b.style.display='none';lastBa
 const appDown=e=>banner(e&&e.offline?msg('server_offline'):msg('server_error'));
 // The one sentence to show for a failed request: the app's own plain words (its "said", else its "error"), never the raw
 // body, status or "detail" - api() has already put those in the Console.
-const errSaid=e=>(e&&e.body&&(e.body.said||e.body.error))||(e&&e.offline?msg('server_offline'):msg('server_error'));
+// A check made on the page itself ('pick a date', 'already pinned'): its own words are the sentence, so it says so
+const localErr=m=>Object.assign(new Error(m),{local:true});
+const errSaid=e=>(e&&e.local&&e.message)||(e&&e.body&&(e.body.said||e.body.error))||(e&&e.offline?msg('server_offline'):msg('server_error'));
 // ---------- console: what the page did, timestamped, kept across reloads, one Copy away from a bug report ----------
 const CON_KEY='ol.console',CON_MAX=400;let CON=[];
 try{CON=JSON.parse(localStorage.getItem(CON_KEY)||'[]');if(!Array.isArray(CON))CON=[]}catch(e){CON=[]}
@@ -665,12 +667,12 @@ function snooze(id){const l=S.loops.find(x=>x.id===id);if(!l)return;const day=n=
  const nextMon=()=>{const d=new Date();d.setDate(d.getDate()+((8-d.getDay())%7||7));return d.toISOString().slice(0,10)};
  dlgOpen({title:'Snooze',sub:who(l),ok:'Snooze',fields:[{id:'until',label:'Until',type:'date',value:day(2)}],
   html:`<div class="quick"><button type="button" onclick="$('#dlg_until').value='${day(1)}'">tomorrow</button><button type="button" onclick="$('#dlg_until').value='${day(2)}'">2 days</button><button type="button" onclick="$('#dlg_until').value='${nextMon()}'">next Monday</button><button type="button" onclick="$('#dlg_until').value='${day(7)}'">a week</button></div>`,
-  onOk:async()=>{const d=dlgVal('until');if(!d)throw new Error('pick a date');await act(id,'snooze',{until:d})}})}
+  onOk:async()=>{const d=dlgVal('until');if(!d)throw localErr('pick a date');await act(id,'snooze',{until:d})}})}
 function editNote(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  dlgOpen({title:l.notes?'Edit note':'Add a note',sub:who(l),ok:'Save',fields:[{id:'notes',label:'Note (links become clickable)',type:'textarea',value:l.notes||'',rows:4}],onOk:()=>act(id,'note',{notes:dlgVal('notes')})})}
 function addLink(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  dlgOpen({title:'Attach a link',sub:who(l),ok:'Add link',fields:[{id:'url',label:'Link (Drive, Miro, Notion, Figma…)',type:'url',placeholder:'https://…'},{id:'label',label:'Label (optional)',placeholder:'e.g. brief v2'}],
-  onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw new Error('the link must start with http:// or https://');await act(id,'add_link',{url:u,label:dlgVal('label')})}})}
+  onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw localErr('the link must start with http:// or https://');await act(id,'add_link',{url:u,label:dlgVal('label')})}})}
 function dropLink(id,url){act(id,'drop_link',{url})}
 
 // ---------- pinned links: yours, not a loop's. Stored in config.pinned_links; Miro boards can open in a view-only embed ----------
@@ -684,7 +686,7 @@ async function savePins(list,msg,undo){const prev=pins();try{await api('/api/con
  catch(e){toast('Pins not saved: '+errSaid(e),{err:true});throw e}}
 function pinAdd(){dlgOpen({title:'Pin a board or document',sub:'Shown at the top of Home. Miro boards can also open here, read-only.',ok:'Pin',
  fields:[{id:'url',label:'Link',type:'url',placeholder:'https://miro.com/app/board/…  or any document link'},{id:'label',label:'Label (optional)',placeholder:'e.g. Planning board'}],
- onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw new Error('the link must start with http:// or https://');if(pins().some(p=>p.url===u))throw new Error('already pinned');
+ onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw localErr('the link must start with http:// or https://');if(pins().some(p=>p.url===u))throw localErr('already pinned');
   await savePins(pins().concat([{url:u,label:dlgVal('label')}]),'Pinned: '+(dlgVal('label')||host(u)))}})}
 function pinDrop(url){const p=pins().find(x=>x.url===url);savePins(pins().filter(x=>x.url!==url),'Unpinned: '+((p&&p.label)||host(url)),true)}
 function pinEmbed(url){const w=$('#pin_embed_wrap'),f=$('#pin_embed');if(!url||url===pinShown){pinShown=null;w.style.display='none';f.removeAttribute('src');return}
@@ -695,7 +697,7 @@ function noteFor(id){const l=S.loops.find(x=>x.id===id);if(!l)return;$('#need_wh
 function closeVault(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  dlgOpen({title:'How are you closing '+(l.vault_id||id)+'?',sub:(l.owner?l.owner+' — ':'')+l.ask,ok:'Mark done',
   fields:[{id:'closure',label:'What did you do? Name any other standing items this changes (A7, A8…).',type:'textarea',rows:5}],
-  onOk:async()=>{const closure=dlgVal('closure');if(!closure)throw new Error('say how you closed it - this goes into the vault');
+  onOk:async()=>{const closure=dlgVal('closure');if(!closure)throw localErr('say how you closed it - this goes into the vault');
    await api('/api/action',{id,action:'done',closure});if(J)J.standing={running:true};await loadState();renderLists();toast('Marked done and written to the vault: '+(l.vault_id||id))}})}
 async function addNeed(){const owner=$('#need_who').value.trim(),ask=$('#need_ask').value.trim(),notes=$('#need_notes').value.trim();
  if(!ask){$('#need_ask').focus();toast('Type what needs doing first',{err:true});return}

@@ -316,7 +316,7 @@ check(banner_css, "the stylesheet hides #banner by default (so '' would hide it)
 JS = "\n".join([
     "const els={};const $=s=>els[s]||(els[s]={style:{},textContent:''});const CON=[];function clog(m){CON.push(String(m))}",
     "const PAGE='t';", grab("const MSG="), grab("const fill="), grab("function msg("), api_src,
-    "let lastBanner='';", grab("function banner("), grab("const appDown="), grab("const errSaid="),
+    "let lastBanner='';", grab("function banner("), grab("const appDown="), grab("const localErr="), grab("const errSaid="),
     """(async()=>{const out={};
  global.fetch=async()=>{throw new TypeError('Failed to fetch')};
  try{await api('/api/state')}catch(e){appDown(e)}out.offline={display:$('#banner').style.display,text:$('#banner').textContent};
@@ -330,6 +330,8 @@ JS = "\n".join([
  global.fetch=async()=>{throw new TypeError('Failed to fetch')};
  try{await api('/api/config',{})}catch(e){out.saidOff=errSaid(e)}
  out.console=CON.join(' | ');
+ out.local=errSaid(localErr('pick a date'));out.bare=errSaid(new Error('boom -> 500 {"x":1}'));
+ try{await (async()=>{throw localErr('already pinned')})()}catch(e){out.pinned=errSaid(e)}
  console.log(JSON.stringify(out))})();"""])
 r2 = subprocess.run([node, "-e", msg_line + "\nconsole.log(JSON.stringify(MSG.server_offline.what))"], capture_output=True, text=True, timeout=30)
 check(r2.returncode == 0 and json.loads(r2.stdout) == NASTY,
@@ -345,6 +347,9 @@ check(out["error"]["display"] == "block" and out["error"]["text"] == say("server
 check(out["cleared"] == "none", "banner('') hides it again")
 check(out["said400"] == "Open Loops cannot create a file in that folder. Check the folder exists." and out["said409"] == "Open Loops was updated."
       and out["saidOff"] == want, "a failed request shows the app's own sentence (said, else error), or 'not running' when offline")
+check(out["local"] == "pick a date" and out["pinned"] == "already pinned" and out["bare"] == say("server_error"),
+      "a check made on the page keeps its own words ('pick a date', 'already pinned'); an unmarked error never shows its raw text")
+check("throw new Error(" not in html and html.count("throw localErr(") >= 5, "every validation the page does itself is thrown as a local error")
 check("Permission denied" in out["console"] and "-> 400" in out["console"], "...while the status, raw body and detail go to the Console only")
 check("if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true)" in html and "j.failure==='job_signed_out'" not in html,
       "the page re-checks connections after any such failure, not only job_signed_out")
