@@ -15,7 +15,7 @@ PORT = 0  # set by start_app(): the port our own server says it bound, never jus
 t0 = time.time()
 from _helpers import isolate_this_process, isolated_env, start_app  # noqa: E402
 isolate_this_process("openloops-connect-parent-")  # doctor reads ~/.claude.json in-process: a throwaway one
-from openloops import agent, doctor  # noqa: E402
+from openloops import agent, doctor, messages  # noqa: E402
 
 
 def say(msg):
@@ -72,8 +72,10 @@ doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == 
 rows = {}
 doctor.claude_steps(rows.setdefault("steps", []))
 rows = {r["id"]: r for r in rows["steps"]}
-check(all("connect" not in rows[k] and "Couldn't ask Claude" in rows[k]["fix"] and "timed out" in rows[k]["fix"]
-          for k in ("slack", "gmail", "miro")), "a failed claude mcp list offers no Install/Connect button, says so")
+check(all("connect" not in rows[k] and rows[k]["fix"] == messages.say("listing_failed") for k in ("slack", "gmail", "miro")),
+      "a failed claude mcp list offers no Install/Connect button, says so in plain words (#25: discovery failed, not 'missing')")
+check(all(rows[k]["detail"] == "Error: timed out" and "timed out" not in rows[k]["fix"] for k in ("slack", "gmail", "miro")),
+      "...and what the CLI said is developer detail for the Console, not part of the sentence")
 doctor.run = lambda args, timeout=60: ((0, '{"loggedIn": true}') if args[1] == "auth" else (0, "No MCP servers configured."))
 rows = {}
 doctor.claude_steps(rows.setdefault("steps", []))
@@ -85,9 +87,39 @@ doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == 
 rows = {}
 doctor.claude_steps(rows.setdefault("steps", []))
 rows = {r["id"]: r for r in rows["steps"]}
-check("connect" not in rows["slack"] and "Couldn't ask Claude" in rows["slack"]["fix"],
+check("connect" not in rows["slack"] and rows["slack"]["fix"] == messages.say("listing_failed"),
       "a listing that failed part-way: a service it did not print gets no Install button")
 check(rows["gmail"].get("connect") == "gmail", "...while one it did print keeps its Connect button")
+
+# #25 wording: what blocks the source rows, an expired sign-in, a source that did not answer
+doctor.shutil.which = lambda _: None  # Claude not installed at all
+rows = []
+doctor.claude_steps(rows)
+rows = {r["id"]: r for r in rows}
+check(all(rows[k]["fix"] == messages.say("needs_install", ai="Claude") and "Sign in" not in rows[k]["fix"]
+          for k in ("login", "slack", "gmail", "miro")), "Claude not installed: the rows below say Install Claude first, not Sign in")
+doctor.shutil.which = lambda _: "/usr/local/bin/claude"
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version" else (1, '{"loggedIn": false}'))
+home = Path(os.environ["HOME"])
+(home / ".claude.json").write_text(json.dumps({"oauthAccount": {"emailAddress": "me@example.com"}}), encoding="utf-8")
+rows = []
+doctor.claude_steps(rows)
+rows = {r["id"]: r for r in rows}
+check(rows["login"]["fix"] == messages.say("signin_expired", email="me@example.com") and rows["login"]["connect"] == "login"
+      and rows["login"]["title"] == "Signed in to Claude", "a remembered account that is signed out: 'Claude has signed you out', Sign in button, no email in the red title")
+check(rows["slack"]["fix"] == messages.say("needs_signin", ai="Claude"), "...and the source rows say Sign in to Claude first")
+(home / ".claude.json").unlink()
+rows = []
+doctor.claude_steps(rows)
+check(rows[1]["fix"] == messages.say("signin_needed"), "never signed in: the plain Sign in sentence")
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version"
+                                       else (0, '{"loggedIn": true}') if args[1] == "auth"
+                                       else (0, "plugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ✗ Failed to connect"))
+rows = []
+doctor.claude_steps(rows)
+rows = {r["id"]: r for r in rows}
+check(rows["slack"]["fix"] == messages.say("source_not_answering", service="Slack") and rows["slack"]["connect"] == "slack",
+      "a source that is set up but did not answer: says so, keeps Connect Slack")
 doctor.run, doctor.shutil.which = _real
 
 # a check that takes a while must not write back a config.json it read before Settings were saved meanwhile
@@ -325,7 +357,8 @@ try:
     code, out = api("/api/connect/miro", {})
     check(code == 200 and out == {"started": True}, "POST /api/connect/miro answers at once with started")
     code, out = api("/api/connect/miro", {})
-    check(out.get("started") is False and out.get("error") == "already running", "a second click while it runs starts nothing")
+    check(out.get("started") is False and out.get("error") == "already running" and out.get("said") == messages.say("connect_busy"),
+          "a second click while it runs starts nothing, and says why in a sentence")
     s = wait_step("miro")
     link = "https://example.invalid/authorize?state=abc&redirect_uri=http%3A%2F%2Flocalhost%3A51580%2Fcallback"
     check(s["rc"] == 0, f"mcp login exited 0 on a terminal (got rc={s['rc']}, last={s['last']!r})")

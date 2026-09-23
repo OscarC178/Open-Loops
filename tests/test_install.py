@@ -207,6 +207,8 @@ out = sys.argv[sys.argv.index("-o") + 1]
 mode = open(os.path.join(here, "mode")).read().strip()
 if mode == "fail":  # curl -f on a 404: nothing saved
     sys.stderr.write("curl: (22) The requested URL returned error: 404\n"); sys.exit(22)
+if mode == "offline":  # no network: the host cannot be looked up
+    sys.stderr.write("curl: (6) Could not resolve host: claude.ai\n"); sys.exit(6)
 if mode == "partial":  # the connection drops after a stub that would install claude arrived: curl fails
     open(out, "w").write(open(os.path.join(here, "installer-stub.sh")).read())
     sys.stderr.write("curl: (18) end of file with 1234 bytes remaining to read\n"); sys.exit(18)
@@ -268,7 +270,7 @@ try:
     shown = {"agent": row(doc)["agent"], "command_id": row(doc)["command_id"]}  # what the page sends back with the press
     check(shown["agent"] == "claude" and len(shown["command_id"]) == 16, "the row names its agent and command id")
     login = next(x for x in doc["steps"] if x["id"] == "login")
-    check("connect" not in login and login["fix"].startswith("Install Claude first"), "the sign-in row points at Install, offers no button yet")
+    check("connect" not in login and "Install Claude first" in login["fix"], "the sign-in row points at Install, offers no button yet")
     code, s = api("/api/connect/install")
     check(code == 200 and s["running"] is False and s["rc"] is None and s["command"] == AT("claude") and s["command_id"] == shown["command_id"],
           "GET /api/connect/install: idle, with the commands it would run")
@@ -279,6 +281,9 @@ try:
     api("/api/config", {"agent": "grok"})  # another tab switches to Grok; this tab still shows Install Claude
     code, out = api("/api/connect/install", shown)
     check(code == 409 and out.get("said", "").startswith("The AI chosen in Settings changed"), "a stale tab's press is refused, in plain words")
+    code, out = api("/api/connect/install", dict(shown, agent="grok", command_id="0" * 16))
+    check(code == 409 and out.get("said", "").startswith("Open Loops was updated since this page loaded"),
+          "same AI, other command (the app was updated or moved): says that, not that the AI changed")
     code, s = api("/api/connect/install")
     check(s["agent"] == "grok" and s["command"] == AT("grok"), "idle status offers the AI chosen now")
     api("/api/config", {"agent": "claude"})
@@ -289,15 +294,23 @@ try:
     code, out = api("/api/connect/install", shown)
     check(code == 200 and out == {"started": True}, "POST /api/connect/install starts it")
     s = wait_install()
-    check(s["rc"] == 22 and s["why"] == "download" and "404" in s["last"], f"a failed download stops at the download (got {s['rc']}, {s['why']!r}, {s['last']!r})")
-    check(s["said"].startswith("Claude's installer couldn't download") and "curl" not in s["said"],
-          f"the page gets a plain sentence, not curl's error (got {s['said']!r})")
+    check(s["rc"] == 22 and s["why"] == "vendor" and "404" in s["last"], f"a failed download stops at the download (got {s['rc']}, {s['why']!r}, {s['last']!r})")
+    check(s["said"].startswith("Anthropic's download site answered with an error") and "curl" not in s["said"]
+          and "internet" not in s["said"], f"a vendor 404 is Anthropic's, not blamed on the user's internet (got {s['said']!r})")
+
+    # no network at all (curl exit 6, could not resolve host): that one is the user's connection
+    use("offline")
+    api("/api/connect/install", shown)
+    s = wait_install()
+    check(s["rc"] == 6 and s["why"] == "network" and "couldn't reach Anthropic" in s["said"] and "internet connection" in s["said"],
+          f"an unreachable site says check your internet connection (got {s['why']!r}, {s['said']!r})")
 
     # a download cut off half-way: what arrived is never run, and nothing is added to PATH
     use("partial")
     api("/api/connect/install", shown)
     s = wait_install()
     check(s["rc"] == 18 and s["why"] == "download" and not fake.exists(), "a partial download is never run: no claude appeared")
+    check(s["said"].startswith("Claude's installer couldn't download"), "...and says so without guessing whose fault it was")
     check(not (tmp / "state" / "install" / "claude-install.sh").exists(), "and the part that arrived is deleted")
     code, doc = api("/api/doctor", {})
     check(not row(doc)["ok"] and row(doc)["connect"] == "install", "the row stays red with its Install button")
@@ -336,7 +349,8 @@ try:
     code, out = api("/api/connect/install", shown)
     check(out == {"started": True}, "pressed again: started")
     code, out = api("/api/connect/install", shown)
-    check(out.get("started") is False and out.get("error") == "already running", "a second click while it runs starts nothing")
+    check(out.get("started") is False and out.get("error") == "already running"
+          and out.get("said", "").startswith("Open Loops is already installing Claude"), "a second click while it runs starts nothing, and says so")
     api("/api/config", {"agent": "grok"})  # settings change mid-install: the status still reports the run's own command
     code, s = api("/api/connect/install")
     check(s["running"] and s["agent"] == "claude" and s["command"] == AT("claude"), "a running install reports its own command, not a recomputed one")

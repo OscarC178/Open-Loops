@@ -321,6 +321,7 @@ try:
     check(r.returncode == 1 and [c.split()[0] for c in calls] == ["print", "bootout", "bootstrap"]
           and calls[-1].endswith(str(plist)), "paused, then lsof failed: the old job's own plist bootstrapped again")
     check("while copying" in r.stdout and "set up again" not in r.stdout, "... and no promise that it is set up again")
+    check("put back as it was" in r.stdout, "... but it does say the paused job was put back (#25)")
 
     say("4f. servers: quit only the old copy's (identity AND root); an older one without the identity stops the copy")
     home = tmp / "home4"
@@ -505,8 +506,10 @@ try:
     finally:
         holder.kill()
         holder.wait()
-    check(r.returncode == 1 and "still working in the old Open Loops folder" in r.stderr and str(holder.pid) in r.stderr,
-          "refused, naming the process")
+    ilog = home / "Library" / "Logs" / "OpenLoops" / "install.log"
+    check(r.returncode == 1 and "still working in the old Open Loops folder" in r.stderr and str(holder.pid) not in r.stderr
+          and "process" not in r.stderr and str(holder.pid) in ilog.read_text(encoding="utf-8"),
+          "refused in plain words; the process number is in the install log, not on screen (#25)")
     check(not (home / "Library" / "Application Support" / "OpenLoops" / "state.json").exists(), "... nothing copied")
     r = install(home, "--no-app", "--no-launch", "--no-task")
     check(r.returncode == 0 and snapshot(home / "Library" / "Application Support" / "OpenLoops") == before and old.exists(),

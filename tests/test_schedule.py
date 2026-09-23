@@ -20,7 +20,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
-from openloops import doctor
+from openloops import doctor, messages
 from _helpers import isolated_env, start_app
 
 PORT = 0  # set by start_app(): the port the app says it bound
@@ -64,7 +64,7 @@ try:
     check(doctor.schedule_step(logs, root) is None, "blank lines only: no row")
 
     touch(err, blocked * 6)   # six weekday mornings, like the live install
-    s = doctor.schedule_step(logs, root)
+    s = doctor.schedule_step(logs, root, usual=[root])   # as if this were the install in the usual place
     check(s is not None and s["id"] == "schedule" and s["ok"] is False, "Operation not permitted: red 'schedule' row")
     check(s["kind"] == "blocked" and s["alert"] is True, "... recognised as the privacy block")
     check(s.get("optional") is True, "... optional, so a set-up user is never sent back to the connection steps")
@@ -72,6 +72,12 @@ try:
           "... wording comes from the one SCHEDULE_MSG table")
     check(s["link"].startswith("https://github.com/") and "releases" in s["link"], "... links to the download page")
     check("Operation not permitted" in s["detail"], "... the raw line is kept as developer detail")
+    t = doctor.schedule_step(logs, root)   # the same, for a copy in a folder of its own (install.sh --dest)
+    check(t["kind"] == "blocked" and t.get("test_copy") and "link" not in t and "Download" not in t["fix"]
+          and t["fix"] == messages.say("schedule_test_copy"), "a --dest test copy: no 'download the latest installer', no download link")
+    check([str(p) for p in doctor.usual_places()] == [str(Path.home() / "Library" / "Application Support" / "OpenLoops"),
+                                                      str(Path.home() / "Documents" / "OpenLoops")],
+          "the usual places: install.sh's default, and ~/Documents where installs before #24 went (the installer fixes those)")
 
     touch(err, blocked * 3 + started)
     s = doctor.schedule_step(logs, root)
