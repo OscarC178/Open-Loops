@@ -2,11 +2,11 @@
 
     python3 tests/test_standing.py    # fast; no Slack/Gmail. Temp vault + temp install.
 """
-import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
-from pathlib import Path
+import json, shutil, time, urllib.error, urllib.request
 
-REPO = Path(__file__).resolve().parent.parent
-PORT = 8795
+from _helpers import fresh_install, isolated_env, start_app, stop
+
+PORT = 0  # set by start_app(): the port the app says it bound
 SAMPLE = """---
 title: Standing Items
 type: standing-items
@@ -55,33 +55,20 @@ def api(path, body=None):
         return e.code, json.loads(e.read().decode())
 
 
-tmp = Path(tempfile.mkdtemp(prefix="openloops-standing-"))
+tmp = app = fresh_install("openloops-standing-")
 vault = tmp / "vault"
 (vault / "02-Research").mkdir(parents=True)
 (vault / "02-Research" / "standing-items.md").write_text(SAMPLE, encoding="utf-8")
-app = tmp / "app"
-app.mkdir()
-shutil.copytree(REPO / "openloops", app / "openloops")
-shutil.copy(REPO / "config.template.json", app / "config.template.json")
-tpl = json.loads((app / "config.template.json").read_text(encoding="utf-8-sig"))
-tpl["owner_name"] = "Oscar"
-tpl["vault_path"] = str(vault)
-(app / "config.json").write_text(json.dumps(tpl, indent=2), encoding="utf-8")
+cfg = json.loads((app / "config.json").read_text(encoding="utf-8"))
+cfg.update(owner_name="Oscar", vault_path=str(vault))
+(app / "config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 (app / "state.json").write_text(json.dumps({
     "cursor": "2026-01-01T00:00", "last_refresh": "2026-01-02T00:00", "loops": [],
 }), encoding="utf-8")
 
-env = dict(os.environ, OPENLOOPS_PORT=str(PORT), OPENLOOPS_SKIP_AGENT="1")
-srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=app, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+env = isolated_env(tmp, OPENLOOPS_SKIP_AGENT="1")
+srv, PORT = start_app(app, env)
 try:
-    for _ in range(40):
-        if socket.socket().connect_ex(("127.0.0.1", PORT)) == 0:
-            break
-        time.sleep(0.1)
-    else:
-        raise SystemExit("FAIL: openloops.app did not come up")
-
     loops = api("/api/state")[1]["state"]["loops"]
     ids = {l["id"] for l in loops}
     check(ids == {"vault-A6", "vault-A7", "vault-A8"}, "open items A6–A8 on Needs me; snoozed A9 hidden")
@@ -118,8 +105,7 @@ try:
     check("closeVault(" in html and "How are you closing" in html and "dlgOpen(" in html and "Mark done" in html,
           "Home tab has the compulsory close popup")
 finally:
-    srv.terminate()
-    srv.wait(timeout=5)
+    stop(srv)
     shutil.rmtree(tmp, ignore_errors=True)
 
 say("all passed")

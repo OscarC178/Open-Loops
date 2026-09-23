@@ -7,11 +7,12 @@ Nothing here starts the agent: the slack-only refresh is SKIPPED because the tem
 Slack id, the day log is written with --digest-only, and every Roadmap mode that would talk to
 Miro is refused before it starts (not configured / no confirm).
 """
-import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import json, shutil, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-PORT = 8797
+from _helpers import fresh_install, isolated_env, start_app, stop
+
+PORT = 0  # set by start_app(): the port the app says it bound
 t0 = time.time()
 
 
@@ -52,13 +53,8 @@ def wait_job(name, secs=60):
     raise SystemExit(f"FAIL: job {name} still running after {secs}s")
 
 
-tmp = Path(tempfile.mkdtemp(prefix="openloops-extras-"))
+tmp = fresh_install("openloops-extras-", {"owner_name": "Oscar"})
 say(f"fresh install in {tmp}")
-shutil.copytree(REPO / "openloops", tmp / "openloops")
-shutil.copy(REPO / "config.template.json", tmp / "config.template.json")
-tpl = json.loads((tmp / "config.template.json").read_text(encoding="utf-8-sig"))
-tpl["owner_name"] = "Oscar"
-(tmp / "config.json").write_text(json.dumps(tpl, indent=2), encoding="utf-8")
 today = time.strftime("%Y-%m-%d")
 (tmp / "state.json").write_text(json.dumps({
     "cursor": "2026-01-01T00:00", "last_refresh": "2026-01-02T00:00",
@@ -70,16 +66,21 @@ today = time.strftime("%Y-%m-%d")
                "asked_at": "2026-02-01T10:00", "status": "done", "closed_at": f"{today}T10:00", "chases": 0, "snooze_until": None}],
 }), encoding="utf-8")
 
-env = dict(os.environ, OPENLOOPS_PORT=str(PORT))
-srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+# #33: the path a blank standing_file used to fall back to, seeded inside the isolated HOME. It must be ignored.
+legacy_todo = tmp / "home" / "ClaudeCloud" / "02-Research" / "standing-items.md"
+legacy_todo.parent.mkdir(parents=True)
+legacy_todo.write_text("- [ ] A6 | Dev vault | a developer's own item | added 2026-08-28\n", encoding="utf-8")
+env = isolated_env(tmp)  # HOME inside the temp install: nothing is read from the developer's own files
+srv, PORT = start_app(tmp, env)
 try:
-    for _ in range(40):
-        if socket.socket().connect_ex(("127.0.0.1", PORT)) == 0:
-            break
-        time.sleep(0.1)
-    else:
-        raise SystemExit("FAIL: openloops.app did not come up")
+    # ---- #33: blank standing_file reads nothing, even with the old ~/ClaudeCloud file present
+    first = api("/api/state")[1]["state"]["loops"]
+    check(sorted(l["id"] for l in first) == ["alice-report", "bob-deck", "cat-quote"] and not any(l.get("channel") == "vault" for l in first),
+          "first /api/state: only the seeded loops, no card from ~/ClaudeCloud/02-Research/standing-items.md")
+    code, err = api("/api/standing/create", {})
+    check(code == 400 and err.get("error") == "No to-do file is selected. Choose a file in Settings → Connections.",
+          f"starter file refused with no path set, in plain words (got {code} {err!r})")
+    check(legacy_todo.read_text(encoding="utf-8").count("\n") == 1, "...and the old fallback file is left as it was")
 
     # ---- snooze: zero-padded, bad dates refused
     code, _ = api("/api/action", {"id": "alice-report", "action": "snooze", "until": "2099-1-5"})
@@ -157,7 +158,7 @@ try:
     # ---- model: saved from Settings, passed to claude as --model, blank = no flag
     def claude_cmd():
         r = subprocess.run([sys.executable, "-c", "from openloops import agent; print(' '.join(agent.claude_args(['slack.read_channel'])))"],
-                           cwd=tmp, capture_output=True, text=True)
+                           cwd=tmp, env=env, capture_output=True, text=True)
         return r.stdout.strip()
     check("--model sonnet" in claude_cmd() and "--effort xhigh" in claude_cmd(), "fresh install runs the jobs on sonnet at xhigh (template default)")
     api("/api/config", {"model": "opus", "effort": "medium"})
@@ -174,6 +175,7 @@ try:
     # ---- to-do file: status, starter file, path forms, legacy folder setting
     s = api("/api/standing")[1]
     check(s["exists"] is False and s["open"] == 0, "no to-do file on a fresh install")
+    check(s["path"] == "", f"blank standing_file points at no file at all, not a default under HOME (got {s['path']!r})")
     todo = tmp / "notes" / "todo.md"
     api("/api/config", {"standing_file": str(todo)})
     code, r = api("/api/standing/create", {})
@@ -222,9 +224,5 @@ try:
         check(needle in html, f"page has {needle}")
     say("ALL OK")
 finally:
-    srv.terminate()
-    try:
-        srv.wait(5)
-    except Exception:
-        srv.kill()
+    stop(srv)
     shutil.rmtree(tmp, ignore_errors=True)

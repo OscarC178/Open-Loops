@@ -34,8 +34,10 @@ if sys.platform == "win32":
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from openloops import doctor
+from _helpers import free_port
 
-PORT = 8792
+PORT = free_port()  # the test copy's config.json port: chosen per run so it never meets another server
+PORT2 = free_port()  # a second valid port for the re-install check, chosen on its own (PORT + 100 could pass 65535)
 LABEL = "com.openloops.refresh"
 t0 = time.time()
 
@@ -178,9 +180,9 @@ try:
     check(not (home / "Library" / "Application Support" / "OpenLoops").exists(), "nothing written to the default place")
     check("--no-launch" in r.stdout, "--no-launch: says it did not start")
 
-    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT + 100))
+    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT2))
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
-    check(r.returncode == 0 and cfg.get("port") == PORT + 100 and cfg.get("owner_name") == "Test",
+    check(r.returncode == 0 and cfg.get("port") == PORT2 and cfg.get("owner_name") == "Test",
           "re-run with a new --port: port updated, the rest of config.json kept")
     for bad_at in ("9:15", "24:00", "09:60", "noon"):
         before = (dest / "config.json").read_bytes()
@@ -205,6 +207,7 @@ try:
     with socket.socket() as sk:
         check(sk.connect_ex(("127.0.0.1", PORT)) != 0, f"spare port {PORT} free")
     env = {k: v for k, v in os.environ.items() if k != "OPENLOOPS_PORT"}
+    env.update(HOME=str(tmp / "home1"), USERPROFILE=str(tmp / "home1"))  # the throwaway HOME it was installed from
     srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=dest, env=dict(env, BROWSER="/usr/bin/true"),
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     d = None
@@ -294,6 +297,10 @@ try:
     py_dir = os.path.dirname(shutil.which("python3"))
     for label, extra in (("missing", {"PATH": f"{fakebin}:{py_dir}:/usr/bin:/bin"}),   # lsof lives in /usr/sbin
                          ("failing", {"PATH": f"{tmp / 'badlsof'}:{fakebin}:{os.environ['PATH']}"})):
+        if label == "missing" and shutil.which("lsof", path=extra["PATH"]):
+            # Linux keeps lsof in /usr/bin, which install.sh needs for everything else: no PATH hides only lsof there
+            say(f"SKIP lsof missing: lsof is in {os.path.dirname(shutil.which('lsof', path=extra['PATH']))} on this system")
+            continue
         home = tmp / f"home-lsof-{label}"
         old = old_install(home, "L")
         (tmp / "badlsof").mkdir(exist_ok=True)

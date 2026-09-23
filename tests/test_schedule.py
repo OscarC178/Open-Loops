@@ -15,21 +15,15 @@ background job a script under ~/Documents). Checks, all against temp folders, ne
   5. the page shows the row once set up, re-checks it, puts the download button in the checklist too, and
      does not promise a morning refresh while the row is red.
 """
-import contextlib, inspect, io, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request
+import contextlib, inspect, io, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from openloops import doctor
+from _helpers import isolated_env, start_app
 
-def free_port():
-    """A port nobody is using right now, so the test does not depend on a fixed one being free."""
-    with socket.socket() as sk:
-        sk.bind(("127.0.0.1", 0))
-        return sk.getsockname()[1]
-
-
-PORT = free_port()
+PORT = 0  # set by start_app(): the port the app says it bound
 t0 = time.time()
 
 
@@ -181,11 +175,8 @@ try:
     tpl["owner_name"] = "Testuser"
     (app / "config.json").write_text(json.dumps(tpl), encoding="utf-8")
     (app / "state.json").write_text(json.dumps({"cursor": "2026-01-01T00:00", "last_refresh": None, "loops": []}), encoding="utf-8")
-    with socket.socket() as sk:
-        check(sk.connect_ex(("127.0.0.1", PORT)) != 0, f"spare port {PORT} free")
-    srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=app,
-                           env=dict(os.environ, OPENLOOPS_PORT=str(PORT), BROWSER="/usr/bin/true"),
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    (app / "home").mkdir()
+    srv, PORT = start_app(app, isolated_env(app, BROWSER="/usr/bin/true"))
 
     def diag():
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/diag", timeout=5) as r:

@@ -10,15 +10,14 @@ CLI that installs but won't start, an installer that asks a question (fails at o
 $HOME/.local/bin (HOME is a temp folder) and turns the row green. The runner's Windows branch is checked in-process.
 The API half is skipped on Windows (the fake installers are shell scripts).
 """
-import json, os, shlex, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import json, os, shlex, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-with socket.socket() as _s:  # a port nothing else holds
-    _s.bind(("127.0.0.1", 0))
-    PORT = _s.getsockname()[1]
+PORT = 0  # set by start_app(): the port the app says it bound
 t0 = time.time()
-sys.path.insert(0, str(REPO))
+from _helpers import isolate_this_process, start_app  # noqa: E402
+isolate_this_process("openloops-install-parent-")  # the in-process checks below import app: never from the checkout
 from openloops import agent, doctor  # noqa: E402
 
 
@@ -256,19 +255,11 @@ if shutil.which("claude", path=PATH):  # a claude in the system folders would ma
 calls = lambda: (tmp / "bin" / "calls.txt").read_text().splitlines() if (tmp / "bin" / "calls.txt").exists() else []
 AT = lambda ag: SHOWN(ag).replace(str(agent.ROOT), str(tmp))  # the command as the app in tmp shows it
 TIMEOUT_S = 6  # the app's install deadline for this run; the fake installers other than "hang" take about a second
-env = dict(os.environ, OPENLOOPS_PORT=str(PORT), PATH=PATH, HOME=str(tmp / "home"), BROWSER="true",
+env = dict(os.environ, PATH=PATH, HOME=str(tmp / "home"), BROWSER="true",
            OPENLOOPS_INSTALL_TIMEOUT_S=str(TIMEOUT_S))
 waiting = lambda: subprocess.run(["pgrep", "-f", f"{tmp}/state/install/"], capture_output=True).returncode == 0
-srv = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+srv, PORT = start_app(tmp, env)
 try:
-    for _ in range(40):
-        if socket.socket().connect_ex(("127.0.0.1", PORT)) == 0:
-            break
-        time.sleep(0.1)
-    else:
-        raise SystemExit("FAIL: openloops.app did not come up")
-
     row = lambda r: next(x for x in r["steps"] if x["id"] == "claude")
     code, doc = api("/api/doctor", {"force": True})
     check(code == 200 and not row(doc)["ok"] and row(doc).get("connect") == "install", "the checklist says Claude is missing, offers Install")

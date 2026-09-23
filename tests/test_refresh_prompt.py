@@ -10,7 +10,8 @@ import sys, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+from _helpers import isolate_this_process  # noqa: E402
+isolate_this_process("openloops-refresh-")  # importing refresh creates state/logs next to the package: not in the checkout
 from openloops import refresh  # noqa: E402
 
 t0 = time.time()

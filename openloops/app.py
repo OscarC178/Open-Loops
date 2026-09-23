@@ -561,6 +561,8 @@ class H(BaseHTTPRequestHandler):
                 p = standing.create_starter(body.get("path") or None)
             except FileExistsError as e:
                 return self._json({"ok": False, "error": f"there is already a file at {e}"}, 400)
+            except ValueError as e:  # no path set: standing.py's own sentence says what to do
+                return self._json({"ok": False, "error": str(e)}, 400)
             except OSError as e:
                 return self._json({"ok": False, "error": f"could not write there: {e}"}, 400)
             return self._json({"ok": True, "path": str(p)})
@@ -806,6 +808,15 @@ def stop_running(now=False):
     return 1
 
 
+class Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer minus the socket.getfqdn() that HTTPServer.server_bind does: a reverse lookup of 127.0.0.1
+    that some Macs (GitHub's macOS runners, for one) take 35 s to answer, before the app can print its address."""
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "localhost", self.server_address[1]
+
+
 if __name__ == "__main__":
     if "--stop" in sys.argv:
         sys.exit(stop_running(now="--now" in sys.argv))
@@ -826,7 +837,7 @@ if __name__ == "__main__":
             open_browser()
         sys.exit(0)
     add_install_dirs()  # a CLI installed after this terminal (or Finder session) started is still found
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+    srv = Server(("127.0.0.1", PORT), H)
     print("Open Loops ->", url)
     if PORT != PREFERRED:
         print(f"(port {PREFERRED} was taken by another program; use --port or OPENLOOPS_PORT to choose)")

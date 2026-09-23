@@ -9,8 +9,7 @@ Line format (one item per line, ids A1, A2, ...; must stay Telegram-compatible):
     - [-] A1 | project | action | added YYYY-MM-DD | dropped YYYY-MM-DD
 
 config.json "standing_file" is the path to that file. The older "vault_path" (a folder holding
-02-Research/standing-items.md) still works. Blank = the feature is off unless ~/ClaudeCloud/
-02-Research/standing-items.md happens to exist.
+02-Research/standing-items.md) still works. Blank = the feature is off: no file is read or written.
 """
 import hashlib, json, re
 from datetime import date, datetime
@@ -32,12 +31,12 @@ def _cfg():
 
 
 def standing_path(cfg=None):
-    """The file, from "standing_file" (a file path), else "vault_path" (a folder or a file), else
-    the historical default under ~/ClaudeCloud. A folder means <folder>/02-Research/standing-items.md."""
+    """The file, from "standing_file" (a file path), else "vault_path" (a folder or a file), else None:
+    with both blank there is no to-do file. A folder means <folder>/02-Research/standing-items.md."""
     cfg = cfg if cfg is not None else _cfg()
     p = (cfg.get("standing_file") or cfg.get("vault_path") or "").strip()
     if not p:
-        return Path.home() / "ClaudeCloud" / LEGACY_REL
+        return None
     p = Path(p).expanduser()
     if p.suffix.lower() in (".md", ".txt", ".markdown"):
         return p
@@ -45,7 +44,8 @@ def standing_path(cfg=None):
 
 
 def vault_root():
-    return standing_path().parent
+    p = standing_path()
+    return p.parent if p else None
 
 
 STARTER = """# Standing items
@@ -69,8 +69,11 @@ Format: - [ ] A<number> | project | what to do | added YYYY-MM-DD
 
 
 def create_starter(path=None):
-    """Write an example file at the configured path (or `path`). Never overwrites. Returns the Path."""
+    """Write an example file at the configured path (or `path`). Never overwrites. Returns the Path.
+    ValueError when no path is given and none is set (the message is shown to the person as it is)."""
     p = Path(path).expanduser() if path else standing_path()
+    if p is None:
+        raise ValueError("No to-do file is selected. Choose a file in Settings → Connections.")
     if p.exists():
         raise FileExistsError(str(p))
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -82,6 +85,8 @@ def status(path=None):
     """For the Settings box: where the file is, whether it exists, how many open items it has.
     `path` (the value typed in Settings, not yet saved) is resolved the same way as the setting."""
     p = standing_path({"standing_file": path}) if path else standing_path()
+    if p is None:
+        return {"path": "", "exists": False, "open": 0}
     ok = p.exists()
     n = 0
     if ok:
@@ -96,7 +101,7 @@ def _today():
 
 def _read():
     p = standing_path()
-    if not p.exists():
+    if p is None or not p.exists():
         return None
     return p.read_text(encoding="utf-8").splitlines()
 
@@ -146,7 +151,8 @@ def _fp(it):
 
 
 def _source_label():
-    return standing_path().name
+    p = standing_path()
+    return p.name if p else ""
 
 
 def touch_seen(state, items):
@@ -200,7 +206,7 @@ def as_loops(state=None):
     src = _source_label()
     p = standing_path()
     mtime = None
-    if p.exists():
+    if p and p.exists():
         mtime = datetime.fromtimestamp(p.stat().st_mtime).astimezone().isoformat(timespec="minutes")
     out = []
     recs = (state or {}).get("vault_seen") or {}

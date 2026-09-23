@@ -9,13 +9,13 @@ port made the launcher think Open Loops was already running, so double-clicking 
   1. Something else on the port -> Open Loops must start on the next free port, not exit.
   2. Stray still there and Open Loops on the next port -> relaunching must find the running instance
      (Server: OpenLoops) and exit 0 instead of starting a third server.
-Builds a fresh install in a temp folder and cleans up. Exit code 0 = both hold.
+Builds a fresh install in a temp folder and cleans up. The clashing pair of ports is the first two of a reserved
+block, so it never meets the installed copy or another suite. Exit code 0 = both hold.
 """
-import http.server, json, os, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.request
-from pathlib import Path
+import http.server, shutil, socketserver, subprocess, sys, threading, time, urllib.request
 
-REPO = Path(__file__).resolve().parent.parent
-PORT = 8787
+from _helpers import fresh_install, isolated_env, listening, reserve, start_app, stop
+
 t0 = time.time()
 
 
@@ -27,11 +27,6 @@ def check(cond, what):
     if not cond:
         raise SystemExit(f"FAIL: {what}")
     say(f"ok   {what}")
-
-
-def listening(port):
-    with socket.socket() as sk:
-        return sk.connect_ex(("127.0.0.1", port)) == 0
 
 
 def wait_for(port, up=True, tries=50):
@@ -47,33 +42,44 @@ def server_header(port):
         return r.headers.get("Server", "")
 
 
-tmp = Path(tempfile.mkdtemp(prefix="openloops-portclash-"))
+class Stray(http.server.ThreadingHTTPServer):
+    """A plain http.server, minus the reverse lookup of 127.0.0.1 at bind that takes 35 s on GitHub's macOS runners."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "localhost", self.server_address[1]
+
+
+tmp = fresh_install("openloops-portclash-")
 say(f"fresh install in {tmp}")
-shutil.copytree(REPO / "openloops", tmp / "openloops")
-shutil.copy(REPO / "config.template.json", tmp / "config.template.json")
-(tmp / "config.json").write_text((tmp / "config.template.json").read_text(encoding="utf-8-sig"), encoding="utf-8")
-env = dict(os.environ, OPENLOOPS_PORT=str(PORT))
-
-def launch():
-    return subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
-# 1. A foreign server (plain directory listing) squats on the port.
-stray = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), http.server.SimpleHTTPRequestHandler)
-threading.Thread(target=stray.serve_forever, daemon=True).start()
-check(wait_for(PORT) and not server_header(PORT).startswith("OpenLoops"), "stray http.server is on the port")
+env = isolated_env(tmp)
 
 app = None
 app2 = None
+stray = None
 try:
-    app = launch()
-    check(wait_for(PORT + 1), "Open Loops moved to the next free port instead of quitting")
+    # 1. A foreign server (plain directory listing) squats on the preferred port. PORT and PORT + 1 are the first
+    #    two of a reserved block (the rest stay guarded); if something takes PORT + 1 in between, use a new block.
+    for attempt in range(3):
+        block = reserve()
+        PORT = block.port
+        block.free(PORT, PORT + 1)
+        stray = Stray(("127.0.0.1", PORT), http.server.SimpleHTTPRequestHandler)
+        threading.Thread(target=stray.serve_forever, daemon=True).start()
+        check(wait_for(PORT) and not server_header(PORT).startswith("OpenLoops"), f"stray http.server is on port {PORT}")
+        app, got = start_app(tmp, env, port=PORT)
+        if got == PORT + 1 or attempt == 2:
+            break
+        say(f"port {PORT + 1} was taken meanwhile (app came up on {got}); trying a new pair")
+        stop(app)
+        stray.shutdown(); stray.server_close()
+    check(got == PORT + 1 and wait_for(PORT + 1), "Open Loops moved to the next free port instead of quitting")
     check(server_header(PORT + 1).startswith("OpenLoops"), "Server: OpenLoops header identifies the app")
     check(app.poll() is None, "Open Loops is still serving (did not mistake the stray for itself)")
 
     # 2. Stray still on the preferred port, Open Loops on the next one: relaunching with the same
     #    preferred port must find the running instance and exit 0, not start a third server.
-    app2 = launch()
+    app2 = subprocess.Popen([sys.executable, "-m", "openloops.app", "--no-browser"], cwd=tmp, env=dict(env, OPENLOOPS_PORT=str(PORT)),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         out, _ = app2.communicate(timeout=15)
     except subprocess.TimeoutExpired:
@@ -82,13 +88,10 @@ try:
     check(app2.returncode == 0, "second launch exits 0 when Open Loops already owns the port")
     check(not listening(PORT + 2), "second launch did not start a duplicate server on another port")
     check("localhost" in out, "second launch printed the page address")
-    stray.shutdown(); stray.server_close()
     say("PASS")
 finally:
     for p in (app, app2):
-        if p and p.poll() is None:
-            p.kill()
-            p.wait()
+        stop(p)
     try:
         stray.shutdown(); stray.server_close()
     except Exception:
