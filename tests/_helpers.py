@@ -4,10 +4,10 @@
 
 Nothing here touches the developer's files or ports. The install is a temp folder built from
 config.template.json, HOME points at an empty folder inside it (so nothing is read from the real ~), and the
-port comes from the OS and is read back from what the app announces ("Open Loops -> http://localhost:N"), so
+port comes from a reserved block (see reserve()) and is read back from what the app announces ("Open Loops -> http://localhost:N"), so
 any number of suites can run side by side, next to the installed copy on 8765.
 """
-import atexit, json, os, queue, re, shutil, socket, subprocess, sys, tempfile, threading, time
+import atexit, json, os, queue, random, re, shutil, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -47,10 +47,14 @@ class Reservation:
 _held = []  # every reservation, so the guards live as long as the test process unless released earlier
 
 
-def _os_port():
-    with socket.socket() as sk:
-        sk.bind(("127.0.0.1", 0))
-        return sk.getsockname()[1]
+# Blocks are drawn at random from below the OSes' ephemeral ranges (macOS 49152-65535, Linux 32768-60999). Every
+# HTTP request a test makes leaves its client port in TIME_WAIT for a while, and a plain bind (a guard) fails on one,
+# so under a busy suite whole blocks of 20 are rarely free up there; down here only listening servers get in the way.
+BLOCKS = (20000, 32000)
+
+
+def _candidate():
+    return random.randrange(BLOCKS[0], BLOCKS[1] - SCAN)
 
 
 def _try_reserve(p):
@@ -71,11 +75,11 @@ def _try_reserve(p):
 
 
 def reserve(candidates=(), tries=200):
-    """A Reservation of SCAN ports: the `candidates` first (tests use this to aim at a taken block), then ports the
-    OS hands out. Raises when no whole block is free, rather than hand back a port whose neighbours were not held."""
+    """A Reservation of SCAN ports: the `candidates` first (tests use this to aim at a taken block), then random
+    blocks in BLOCKS. Raises when no whole block is free, rather than hand back a port whose neighbours were not held."""
     todo = list(candidates)
     for _ in range(tries + len(todo)):
-        r = _try_reserve(todo.pop(0) if todo else _os_port())
+        r = _try_reserve(todo.pop(0) if todo else _candidate())
         if r:
             _held.append(r)
             return r

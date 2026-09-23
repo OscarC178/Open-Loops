@@ -9,8 +9,8 @@ port made the launcher think Open Loops was already running, so double-clicking 
   1. Something else on the port -> Open Loops must start on the next free port, not exit.
   2. Stray still there and Open Loops on the next port -> relaunching must find the running instance
      (Server: OpenLoops) and exit 0 instead of starting a third server.
-Builds a fresh install in a temp folder and cleans up. The clashing pair of ports is chosen per run from ones
-the OS says are free, so it never meets the installed copy or another suite. Exit code 0 = both hold.
+Builds a fresh install in a temp folder and cleans up. The clashing pair of ports is the first two of a reserved
+block, so it never meets the installed copy or another suite. Exit code 0 = both hold.
 """
 import http.server, shutil, socketserver, subprocess, sys, threading, time, urllib.request
 

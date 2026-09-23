@@ -8,7 +8,7 @@ Guards the two bugs that broke Desktop double-click and the launchd weekday refr
   2. launchd (and a thin Finder shell) hand children PATH=/usr/bin:/bin:/usr/sbin:/sbin, where
      claude never lives - the three shell entry points must export the fixed PATH before python3.
 Builds everything in a temp folder, stubs launchctl so nothing real is registered, and cleans up. Ports come
-from the OS, so it runs next to the installed copy and other suites. The live doctor checks use throwaway HOMEs
+from reserved blocks, so it runs next to the installed copy and other suites. The live doctor checks use throwaway HOMEs
 and a fake claude, so they give the same answer on any Mac; OPENLOOPS_TEST_REAL_CLAUDE=1 adds one against this
 machine's real claude and HOME.
 Exit code 0 = both fixes still hold.
