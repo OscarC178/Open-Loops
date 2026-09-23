@@ -100,30 +100,15 @@ DEST="${DEST%/}"
 OLD="$HOME/Documents/OpenLoops"   # where installs before #24 went
 
 # ---------- 3a. Move an older ~/Documents install here (keeps config, list, tone and logs) ----------
-# One mv, so there is only ever one copy. The old copy's server is asked to quit first: a server left
-# running would keep writing to the old path. If it is still busy (a job running), stop and say so
-# rather than move a folder that is in use.
-# Only for the default place: a --dest test install must never move the copy you use.
-if [ "$DEST" = "$DEFAULT_DEST" ] && [ -f "$OLD/openloops/app.py" ] && [ ! -e "$DEST" ]; then
-    say "Moving Open Loops out of Documents to $DEST ..."
-    if curl -s --max-time 3 http://127.0.0.1:8765/api/diag 2>/dev/null | grep -q "\"root\": \"$OLD\""; then
-        curl -s --max-time 5 -X POST -H "Content-Type: application/json" -d '{}' http://127.0.0.1:8765/api/quit >/dev/null 2>&1 || true
-        for _ in $(seq 1 30); do
-            curl -s --max-time 1 -o /dev/null http://127.0.0.1:8765/api/diag 2>/dev/null || break
-            sleep 1
-        done
-        if curl -s --max-time 1 -o /dev/null http://127.0.0.1:8765/api/diag 2>/dev/null; then
-            echo "  Open Loops is still finishing a job. Close its browser tab, wait a minute, then run this again." >&2
-            echo "  Nothing was moved." >&2
-            exit 1
-        fi
+# Only for the default place: a --dest test install must never move the copy you use. The work is in
+# scripts/migrate_install.py: it stops every writer first (the weekday job, any Open Loops server on
+# 8765-8784 running from the old folder, anything else with its working folder there), then either renames
+# in one step or copies, checks every byte and switches over. On any doubt it changes nothing and exits 1.
+if [ "$DEST" = "$DEFAULT_DEST" ] && [ -f "$OLD/openloops/app.py" ]; then
+    python3 "$SRC/scripts/migrate_install.py" --old "$OLD" --dest "$DEST"
+    if [ "$SRC" = "$OLD" ] && [ ! -e "$OLD" ]; then
+        SRC="$DEST"   # was running from the old copy itself: it is now at DEST
     fi
-    mkdir -p "$(dirname "$DEST")"
-    mv "$OLD" "$DEST"
-    [ "$SRC" = "$OLD" ] && SRC="$DEST"   # running from the old copy itself: it is now at DEST
-    ok "Moved (your list and settings came with it)"
-elif [ "$DEST" = "$DEFAULT_DEST" ] && [ -f "$OLD/openloops/app.py" ]; then
-    echo "  Note: an older copy is still in $OLD. It is no longer used; delete it when you are happy."
 fi
 
 if [ "$SRC" = "$DEST" ]; then
