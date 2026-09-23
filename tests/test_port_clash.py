@@ -12,7 +12,7 @@ port made the launcher think Open Loops was already running, so double-clicking 
 Builds a fresh install in a temp folder and cleans up. The clashing pair of ports is chosen per run from ones
 the OS says are free, so it never meets the installed copy or another suite. Exit code 0 = both hold.
 """
-import http.server, shutil, subprocess, sys, threading, time, urllib.request
+import http.server, shutil, socketserver, subprocess, sys, threading, time, urllib.request
 
 from _helpers import fresh_install, free_port, isolated_env, listening, start_app, stop
 
@@ -42,6 +42,13 @@ def server_header(port):
         return r.headers.get("Server", "")
 
 
+class Stray(http.server.ThreadingHTTPServer):
+    """A plain http.server, minus the reverse lookup of 127.0.0.1 at bind that takes 35 s on GitHub's macOS runners."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "localhost", self.server_address[1]
+
+
 tmp = fresh_install("openloops-portclash-")
 say(f"fresh install in {tmp}")
 env = isolated_env(tmp)
@@ -54,7 +61,7 @@ try:
     #    free_port(); if some other program takes PORT + 1 in between, start again on a new pair.
     for attempt in range(3):
         PORT = free_port()
-        stray = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), http.server.SimpleHTTPRequestHandler)
+        stray = Stray(("127.0.0.1", PORT), http.server.SimpleHTTPRequestHandler)
         threading.Thread(target=stray.serve_forever, daemon=True).start()
         check(wait_for(PORT) and not server_header(PORT).startswith("OpenLoops"), f"stray http.server is on port {PORT}")
         app, got = start_app(tmp, env, port=PORT)
