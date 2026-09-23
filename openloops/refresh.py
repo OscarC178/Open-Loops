@@ -134,7 +134,7 @@ def sent_before_close(ts, iso):
 
 def link(l, key="link"):
     """A permalink for comparison: no query string, fragment or trailing slash (the path keeps the p<ts>)."""
-    return re.split(r"[?#]", str(l.get(key) or "").strip(), 1)[0].rstrip("/")
+    return re.split(r"[?#]", str(l.get(key) or "").strip(), maxsplit=1)[0].rstrip("/")
 
 
 # Principle: a missing ts or permalink is never proof that two messages are the same. With no evidence
