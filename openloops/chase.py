@@ -13,7 +13,7 @@ import json, sys
 from datetime import datetime
 from pathlib import Path
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
 from .store import load_cfg, load_state, read_json, update_state
 CFG = load_cfg()
@@ -126,6 +126,7 @@ def main(loop_id):
                     x["last_chase_mode"] = mode
         update_state(mark)
     else:
+        messages.report(p)   # last line: why the AI failed, if its own diagnostics say (app.py reads only that)
         sys.exit(1)
 
 

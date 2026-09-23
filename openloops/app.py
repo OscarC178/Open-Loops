@@ -116,17 +116,23 @@ def kill_tree(p):
         pass  # already gone, or never ours: nothing left to stop
 
 
-def _ended(name, rc, log):
+def _ai_now():
+    """The AI chosen now, by name for a sentence ("Claude"); read when a job STARTS, so a switch in Settings while it
+    runs never blames the other AI (#25 review)."""
+    from . import agent
+    try:
+        return agent.display_name()
+    except Exception:  # an unreadable config.json must not lose the job's result
+        return "Claude"
+
+
+def _ended(name, rc, log, ai="Claude", last=None):
     """A finished job's entry in `jobs`. A failure (not 0, not 2 = SKIPPED) also carries "failure" (a messages.py id)
-    and "said", the plain sentence the page shows (#25); the log itself stays for the Console and Settings."""
+    and "said", the plain sentence the page shows (#25), read from the job's own OPENLOOPS_FAILURE line only; the log
+    itself stays for the Console and Settings."""
     j = {"running": False, "log": log, "rc": rc}
     if rc not in (0, 2):
-        from . import agent
-        try:
-            ai = agent.display_name()
-        except Exception:  # an unreadable config.json must not lose the job's result
-            ai = "Claude"
-        j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai)
+        j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai, last=last)
     return j
 
 
@@ -134,11 +140,12 @@ def run_job(name, extra=None):
     if jobs[name]["running"]:
         return False
     args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
+    ai = _ai_now()  # the AI this run uses, for its sentence if it fails
     try:  # started here, not in the thread: a job the page sees as running always has a process /api/quit can stop
         p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              encoding="utf-8", errors="replace", start_new_session=sys.platform != "win32")
     except Exception as e:  # no interpreter, no permission: say so in the job log rather than hang as "running"
-        jobs[name] = _ended(name, -1, f"could not start {name}: {type(e).__name__}: {e}")
+        jobs[name] = _ended(name, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
         return False
     procs[name] = p
     jobs[name] = {"running": True, "log": ""}
@@ -146,9 +153,10 @@ def run_job(name, extra=None):
     def go():
         try:
             out, err = p.communicate()
-            jobs[name] = _ended(name, p.returncode, (out + err)[-4000:])
+            last = (out.strip().splitlines() or [""])[-1]   # the job's own last stdout line: its OPENLOOPS_FAILURE, if any
+            jobs[name] = _ended(name, p.returncode, (out + err)[-4000:], ai, last)
         except Exception as e:
-            jobs[name] = _ended(name, -1, f"{name} broke off: {type(e).__name__}: {e}")
+            jobs[name] = _ended(name, -1, f"{name} broke off: {type(e).__name__}: {e}", ai)
         finally:
             procs.pop(name, None)
 

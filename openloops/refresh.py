@@ -20,7 +20,7 @@ was running (a note, a snooze, a done click) is kept.
 import json, re, sys
 from datetime import datetime, timedelta
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
 from .store import load_cfg, load_state, update_state
 LOG = ROOT / "state" / "logs"
@@ -382,6 +382,7 @@ def main():
     if not m:
         print("!! no OPENLOOPS block in output (rc %s). See log." % p.returncode)
         print(p.stdout[-1500:])
+        messages.report(p)   # last line: why the AI failed, if its own diagnostics say (app.py reads only that)
         sys.exit(1)
     out = json.loads(m.group(1))
     counts = {}

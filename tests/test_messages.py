@@ -69,7 +69,7 @@ for name, text in SOURCES.items():
     used |= set(re.findall(r"""\b(?:say|part|msg)\(\s*["']([a-z_]+)["']""", text))
     used |= set(re.findall(r"""_F\[["']([a-z_]+)["']\]""", text))
 from openloops import app  # noqa: E402  (importing app writes config/state into the throwaway install only)
-used |= set(app.INSTALL_WHY.values()) | {i for i, _ in messages.JOB_SIGNS}
+used |= set(app.INSTALL_WHY.values()) | {i for i, _ in messages.AI_SIGNS}
 missing = sorted(i for i in used if i not in FAILURES)
 for text in SOURCES.values():  # an id picked by a condition on the same line: say("ai_broken" if broken else "ai_missing")
     for line in text.splitlines():
@@ -100,28 +100,75 @@ check(needs_list == sorted(messages.RECHECK_AFTER_JOB) and all(page[k]["recheck"
       f"every job failure that points at the checklist re-runs the check, Codex sign-outs included ({needs_list})")
 
 # ---------------------------------------------------------------- 4. job failures
-show("4. job_failure() reads why a job stopped")
-jf = messages.job_failure
-check(jf("refresh", 1, "!! no OPENLOOPS block\nInvalid API key · Please run /login")[0] == "job_signed_out", "signed out -> job_signed_out")
-check("Claude has signed you out" in jf("refresh", 1, "Not logged in")[1], "...said as Claude signing you out")
-check(jf("chase", 1, "Claude AI usage limit reached|1760000000")[0] == "job_usage_limit", "usage limit")
-check(jf("people", 1, "API Error: Connection error. getaddrinfo ENOTFOUND api.anthropic.com")[0] == "job_network", "no network")
+show("4. a failed job's sentence comes from the AI process's own diagnostics, via the job's last line")
+from subprocess import CompletedProcess  # noqa: E402
+af, jf = messages.ai_failure, messages.job_failure
+check(af(1, "", "Invalid API key · Please run /login") == "job_signed_out", "stderr-only sign-in error -> job_signed_out")
+check(af(1, "Not logged in · Please run /login", "") == "job_signed_out", "a one-line stdout diagnostic counts too")
+check(af(1, "", "Claude AI usage limit reached|1760000000") == "job_usage_limit", "usage limit")
+check(af(1, "", "API Error: Connection error.") == "job_network", "no network")
+check(af(0, "", "Invalid API key") == "", "an AI run that exited 0 is never classified")
+EMAIL = "\n".join(['<<<OPENLOOPS', '{"new_loops": [{"owner": "Sam",', '"ask": "reset my expenses login"}]', "Sam wrote:",
+                    "Not logged in to the expenses portal, can you help?", "usage limit reached on the analytics plan"])
+check(af(1, EMAIL, "") == "", "a model answer quoting an email ('Not logged in…', 'usage limit reached…') is NOT classified")
+check(af(1, "", "warning: something\nthe email said: not logged in") == "", "...nor a stderr line that only contains the words")
+check(af(3, "", "", refused="expired") == "codex_expired", "Codex's own structured reason wins")
+
+
+def printed(p):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        messages.report(p)
+    return buf.getvalue()
+
+
+import contextlib, io  # noqa: E402,E401
+check(printed(CompletedProcess([], 1, "", "Invalid API key · Please run /login")) == "OPENLOOPS_FAILURE: job_signed_out\n",
+      "report() prints the one machine line")
+check(printed(CompletedProcess([], 1, EMAIL, "")) == "", "...and nothing for a quoted email")
+check(jf("refresh", 1, "!! no OPENLOOPS block\nNot logged in\nInvalid API key")[0] == "job_failed",
+      "job_failure: text anywhere in the job's output no longer decides, only the marker line")
+check(jf("refresh", 1, "x", last="OPENLOOPS_FAILURE: job_signed_out", ai="Grok")[1].startswith("The refresh stopped because Grok"),
+      "the marker line decides, and the AI is named as given")
+check(jf("refresh", 1, "OPENLOOPS_FAILURE: job_signed_out\nTraceback …", last="Traceback …")[0] == "job_failed",
+      "a marker that is not the job's last stdout line is ignored")
 i, said = jf("voice", 1, "!! no VOICE block. See log.")
 check(i == "job_failed" and said.startswith("Learning your tone didn't finish."), f"anything else: the job, named, didn't finish ({said!r})")
 i, said = jf("refresh", -1, "could not start refresh: FileNotFoundError: python")
 check(i == "job_start_failed" and "couldn't start the refresh" in said, "a job that could not start")
-check(jf("refresh", 1, "Not logged in", ai="Grok")[1].startswith("The refresh stopped because Grok"), "the AI is named as chosen")
 line = agent.CODEX_REFUSE["timeout"].format(limit="15 minutes")
-check(jf("refresh", 3, "[2026-09-23_0915] refresh: 3 open loops\n" + line) == ("codex_timeout", line),
+check(jf("refresh", 3, "[2026-09-23_0915] refresh: 3 open loops\n" + line + "\nOPENLOOPS_FAILURE: codex_timeout") == ("codex_timeout", line),
       "a Codex job's own sentence (agent.CODEX_REFUSE) is what the page shows")
 check(agent.CODEX_REFUSE["unlisted"] == say("codex_unlisted") and "{store}" in agent.CODEX_REFUSE["keyring"],
       "agent.CODEX_REFUSE is built from the table, placeholders left for the caller")
 
-e = app._ended("refresh", 1, "Invalid API key · Please run /login")
-check(e["failure"] == "job_signed_out" and e["said"].startswith("The refresh stopped because") and e["rc"] == 1,
+e = app._ended("refresh", 1, "x\nOPENLOOPS_FAILURE: job_signed_out", ai="Claude", last="OPENLOOPS_FAILURE: job_signed_out")
+check(e["failure"] == "job_signed_out" and e["said"].startswith("The refresh stopped because Claude") and e["rc"] == 1,
       "app: a failed job carries its failure id and sentence for the page")
 check("said" not in app._ended("refresh", 0, "done") and "said" not in app._ended("chase", 2, "SKIPPED: x"),
       "app: a job that worked, or was SKIPPED (exit 2, it says why itself), carries no failure")
+src = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
+check(src.index("ai = _ai_now()") < src.index("p = subprocess.Popen(args"), "app: the AI's name is taken when the job starts, not when it ends")
+
+# end to end: a real job (people.py) against a fake claude that fails only on stderr
+if sys.platform != "win32":
+    e2e = fresh_install("openloops-jobfail-")
+    (e2e / "bin").mkdir()
+    fake = e2e / "bin" / "claude"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('Invalid API key · Please run /login\\n'); sys.exit(1)\n", encoding="utf-8")
+    fake.chmod(0o755)
+    r = subprocess.run([sys.executable, "-m", "openloops.people"], cwd=e2e, capture_output=True, text=True, timeout=60,
+                       env=isolated_env(e2e, PATH=f"{e2e / 'bin'}:/usr/bin:/bin"))
+    got = jf("people", r.returncode, r.stdout + r.stderr, last=(r.stdout.strip().splitlines() or [""])[-1])
+    check(r.returncode == 1 and r.stdout.strip().endswith("OPENLOOPS_FAILURE: job_signed_out") and got[0] == "job_signed_out",
+          f"people.py with a signed-out claude (stderr only): ends with the marker, classified as signed out ({r.stdout.strip()[-120:]!r})")
+    fake.write_text(f"#!{sys.executable}\nprint({EMAIL!r}); raise SystemExit(1)\n", encoding="utf-8")
+    r = subprocess.run([sys.executable, "-m", "openloops.people"], cwd=e2e, capture_output=True, text=True, timeout=60,
+                       env=isolated_env(e2e, PATH=f"{e2e / 'bin'}:/usr/bin:/bin"))
+    got = jf("people", r.returncode, r.stdout + r.stderr, last=(r.stdout.strip().splitlines() or [""])[-1])
+    check(r.returncode == 1 and "OPENLOOPS_FAILURE" not in r.stdout and got[0] == "job_failed",
+          "people.py whose AI answer quotes 'Not logged in' from an email: plain didn't-finish, not a sign-out")
+    shutil.rmtree(e2e, ignore_errors=True)
 
 show("4b. download_why(): a vendor's error is not the user's internet")
 lg = Path(tempfile.mkdtemp(prefix="openloops-dlwhy-")) / "install.log"
