@@ -5,8 +5,9 @@
 launchd writes state/logs/launchd.err.log when it cannot start scripts/run-refresh.sh at all; the case that hid
 for a week was "/bin/bash: .../run-refresh.sh: Operation not permitted" (macOS privacy protection refusing a
 background job a script under ~/Documents). Checks, all against temp folders, never the real install:
-  1. doctor.schedule_step: missing log, empty log, the blocked line, a later run ("started", green), an
-     older run, another failure, the LATEST failure deciding, and lines about any other install ignored.
+  1. doctor.schedule_step: missing log, empty log, the blocked line, run-refresh.sh's start line after it
+     (green, its own time), the order of lines deciding (not mtimes, not runner logs), another failure, and
+     lines about any other install - appended later or carried over from the old one - ignored.
   2. the user-facing sentences follow #25's plain-words rules.
   3. doctor.main() adds the row on a Mac (optional, so setup is not sent back to step 1) and only there.
   4. /api/diag carries the tail of launchd.err.log, and "" when there is none; /api/schedule/status answers
@@ -52,6 +53,8 @@ try:
     logs.mkdir(parents=True)
     err = logs / "launchd.err.log"
     blocked = f"/bin/bash: {root}/scripts/run-refresh.sh: Operation not permitted\n"
+    missing = f"/bin/bash: {root}/scripts/run-refresh.sh: No such file or directory\n"
+    started = f"openloops-refresh started 2026-09-24T09:15:02+0100 {root}\n"
 
     check(doctor.schedule_step(logs, root) is None, "no launchd.err.log (never due yet): no row")
     touch(err, "")
@@ -59,7 +62,7 @@ try:
     touch(err, "\n  \n")
     check(doctor.schedule_step(logs, root) is None, "blank lines only: no row")
 
-    touch(err, blocked * 6, ago=60)   # six weekday mornings, like the live install
+    touch(err, blocked * 6)   # six weekday mornings, like the live install
     s = doctor.schedule_step(logs, root)
     check(s is not None and s["id"] == "schedule" and s["ok"] is False, "Operation not permitted: red 'schedule' row")
     check(s["kind"] == "blocked" and s["alert"] is True, "... recognised as the privacy block")
@@ -69,44 +72,55 @@ try:
     check(s["link"].startswith("https://github.com/") and "releases" in s["link"], "... links to the download page")
     check("Operation not permitted" in s["detail"], "... the raw line is kept as developer detail")
 
-    touch(logs / "runner-2026-09-22.log", "=== refresh 09:15:01\n", ago=3600)
-    check(doctor.schedule_step(logs, root)["ok"] is False, "a runner log OLDER than the error: still red")
-    touch(logs / "runner-2026-09-23.log", "=== refresh 09:15:01\nrefresh exit 1\n", ago=0)
+    touch(err, blocked * 3 + started)
     s = doctor.schedule_step(logs, root)
-    check(s["ok"] is True and s["kind"] == "started" and "started" in s["title"] and "fix" in s and not s["fix"],
-          "a runner log NEWER than the error: green, and it says 'started' (not 'worked': that run exited 1)")
-    for f in logs.glob("runner-*.log"):
-        f.unlink()
-    err.unlink()
-    touch(logs / "runner-2026-09-23.log", "weekend - skipped\n")
-    check(doctor.schedule_step(logs, root)["kind"] == "started", "runner log and no error log at all: green 'started'")
-    for f in logs.glob("runner-*.log"):
-        f.unlink()
+    check(s["ok"] is True and s["kind"] == "started" and "Thu 24 Sep at 09:15" in s["title"] and not s["fix"],
+          "a start line after the failures: green, 'started' with the start line's own time")
+    touch(err, started + blocked)
+    check(doctor.schedule_step(logs, root)["kind"] == "blocked", "a failure after a start: red again (order decides)")
 
-    touch(err, f"/bin/bash: {root}/scripts/run-refresh.sh: No such file or directory\n")
+    touch(logs / "runner-2026-09-25.log", "=== refresh 09:15:01\n")   # newer mtime than the log: no longer counts
+    check(doctor.schedule_step(logs, root)["ok"] is False, "a newer runner log does not clear a red row (a manual run is not the schedule)")
+    (logs / "runner-2026-09-25.log").unlink()
+
+    other = tmp / "other"                    # another install that exists: not ours
+    touch(other / "scripts" / "run-refresh.sh", "#!/bin/bash\n")
+    foreign_fail = f"/bin/bash: {other}/scripts/run-refresh.sh: Operation not permitted\n"
+    touch(err, blocked + started + foreign_fail + f"openloops-refresh started 2026-09-25T09:15:00+0100 {other}\n")
+    s = doctor.schedule_step(logs, root)
+    check(s["ok"] is True and "Thu 24 Sep" in s["title"],
+          "lines appended for ANOTHER install (failure or start) neither revive our old failure nor change our time")
+    touch(err, foreign_fail)
+    check(doctor.schedule_step(logs, root) is None, "only another install's lines: no row")
+
+    touch(err, missing)
     s = doctor.schedule_step(logs, root)
     check(s is not None and s["kind"] == "failed" and s["title"] == doctor.SCHEDULE_MSG["failed"]["title"],
           "another start failure: red row, the general wording")
-    touch(err, blocked * 3 + f"/bin/bash: {root}/scripts/run-refresh.sh: No such file or directory\n")
+    touch(err, blocked * 3 + missing)
     s = doctor.schedule_step(logs, root)
     check(s["kind"] == "failed" and "No such file" in s["detail"], "older privacy lines, newer other failure: the LATEST decides")
-    touch(err, f"/bin/bash: {root}/scripts/run-refresh.sh: No such file or directory\n" + blocked)
+    touch(err, missing + blocked)
     check(doctor.schedule_step(logs, root)["kind"] == "blocked", "... and the other way round")
     touch(err, "some other launchd complaint without a script path\n")
     check(doctor.schedule_step(logs, root) is None, "a line that names no run-refresh.sh: not counted")
 
-    gone = tmp / "Documents" / "OpenLoops"   # an install that install.sh has since moved: the path no longer exists
+    gone = tmp / "Documents" / "OpenLoops"   # the old install this one was copied from: its lines came along
     touch(err, f"/bin/bash: {gone}/scripts/run-refresh.sh: Operation not permitted\n" * 3)
-    check(doctor.schedule_step(logs, root) is None, "lines about a moved-away install (path gone): no row")
-
-    other = tmp / "other"                    # another install that exists: still not ours, so not reported here
-    touch(other / "scripts" / "run-refresh.sh", "#!/bin/bash\n")
-    touch(err, f"/bin/bash: {other}/scripts/run-refresh.sh: Operation not permitted\n")
-    check(doctor.schedule_step(logs, root) is None, "lines about ANOTHER install's script (even one on disk): no row")
+    check(doctor.schedule_step(logs, root) is None, "the old install's lines, carried over in the copy: no row")
 
     spaced = tmp / "Application Support" / "OpenLoops"   # the new default has a space in it
     touch(spaced / "state" / "logs" / "launchd.err.log", f"/bin/bash: {spaced}/scripts/run-refresh.sh: Operation not permitted\n")
     check(doctor.schedule_step(spaced / "state" / "logs", spaced) is not None, "a path with a space is matched to its own install")
+
+    big = "x" * 1000 + "\n"
+    touch(err, blocked + big * 400 + started)   # ~400 KB: the failure falls outside the tail that is read
+    check(doctor.schedule_step(logs, root)["kind"] == "started", "a long log: only the tail is read, and its last line decides")
+
+    rr = (REPO / "scripts" / "run-refresh.sh").read_text(encoding="utf-8")
+    check('echo "openloops-refresh started $(date +%Y-%m-%dT%H:%M:%S%z) $ROOT" >&2' in rr
+          and rr.index("openloops-refresh started") < rr.index("DOW=$(date"),
+          "run-refresh.sh writes the start line to stderr before anything else can stop it")
 
     say("2. plain-words rules (#25) for every sentence the page shows")
     for kind, m in doctor.SCHEDULE_MSG.items():
@@ -179,6 +193,7 @@ try:
     else:
         raise SystemExit("FAIL: app did not come up")
     check(d.get("launchd_err_log") == "", "no launchd.err.log: launchd_err_log is \"\"")
+    check(d.get("app") == "openloops", "/api/diag says it is Open Loops (the installer only stops a server that does)")
     alog = app / "state" / "logs" / "launchd.err.log"
     touch(alog, "old noise line\n" * 300 + f"/bin/bash: {app}/scripts/run-refresh.sh: Operation not permitted\n")
     d = diag()
