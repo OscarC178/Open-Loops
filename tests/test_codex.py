@@ -355,10 +355,20 @@ check(got == "/Applications/Codex.app/Contents/Resources/codex", f"Codex.app alo
 n = len(execs())
 AUTH.unlink()
 p = agent.run("hello", ["gmail.search_threads"])
-check(p.returncode != 0 and "keychain" in p.stdout and "codex logout" in p.stdout and len(execs()) == n,
+store = agent.codex_keyring_store()  # "the Mac keychain" / "Windows Credential Manager" / "the system keyring"
+check(p.returncode != 0 and p.refused == "keyring" and store in p.stdout and "codex logout" in p.stdout and len(execs()) == n,
       "no auth.json but signed in (keychain): the job refuses and Codex does not run")
+real_platform = sys.platform
+for plat, name in (("linux", "the system keyring"), ("darwin", "the Mac keychain")):  # the refusal is the same everywhere
+    sys.platform = plat
+    try:
+        p = agent.run("hello", ["gmail.search_threads"])
+    finally:
+        sys.platform = real_platform
+    check(p.returncode != 0 and p.refused == "keyring" and name in p.stdout and len(execs()) == n,
+          f"...on {plat} too, naming {name}")
 r, _ = rows()
-check(not r["login"]["ok"] and "keychain" in r["login"]["fix"] and "connect" not in r["login"] and len(execs()) == n,
+check(not r["login"]["ok"] and store in r["login"]["fix"] and "connect" not in r["login"] and len(execs()) == n,
       "...and the sign-in row says why, with no probe run")
 (BIN / "mode").unlink()
 p = agent.run("hello", [])
