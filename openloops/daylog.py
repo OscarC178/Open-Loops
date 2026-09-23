@@ -12,7 +12,7 @@ import html, json, re, sys
 from datetime import date, datetime
 from pathlib import Path
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
 from .store import load_cfg, load_state, read_json, write_json
 
@@ -199,6 +199,7 @@ def main():
         if not m:
             print("!! no DAYLOG block in output (rc %s). See log." % p.returncode)
             print(p.stdout[-1500:])
+            messages.report(p, "daylog")   # this run's failure file (state/jobs/): why the AI failed, if it says (#47 review)
             sys.exit(1)
         try:
             out = json.loads(m.group(1))

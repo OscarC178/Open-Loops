@@ -191,6 +191,22 @@ p = agent.run("Reply with ONLY the current logged-in user's Slack user id", ["sl
 check(not re.search(r"\bU[0-9A-Z]{8,}\b", p.stdout or "") and "U12345678" in p.error_text,
       "doctor: a Slack-id-looking string in an error result is not in stdout, so it is never stored")
 
+# ---------------------------------------------------------------- 3c. roadmap and daylog report why they failed
+show("3c. roadmap and daylog record a Claude sign-out for the page (#47 review)")
+cfgf = TMP / "config.json"
+c = json.loads(cfgf.read_text(encoding="utf-8-sig"))
+c.update(roadmap_board="Planning", roadmap_frame="Roadmap Sep 2026")
+cfgf.write_text(json.dumps(c), encoding="utf-8")
+fake(result("Not logged in · Please run /login", is_error=True), rc=1)
+os.environ["OPENLOOPS_RUN_ID"], os.environ["OPENLOOPS_AI"] = RID, "Claude"
+for name, args in (("roadmap", ("openloops.roadmap", "read")), ("daylog", ("openloops.daylog",))):
+    f = messages.failure_file(name, RID)
+    f.unlink(missing_ok=True)
+    r = job(*args)
+    rec = json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    check(r.returncode == 1 and rec and rec["failure"] == "job_signed_out",
+          f"{name}: a signed-out run writes its failure file (job_signed_out), so the page names the cause (rc {r.returncode})")
+
 # ---------------------------------------------------------------- 4. the model's own words never classify
 show("4. a normal answer that mentions a sign-out is not one")
 fake(result("Sam wrote: Not logged in to the expenses portal, can you help?\nAlso: usage limit reached on analytics."))
