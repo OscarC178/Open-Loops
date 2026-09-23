@@ -79,6 +79,14 @@ rows = {}
 doctor.claude_steps(rows.setdefault("steps", []))
 rows = {r["id"]: r for r in rows["steps"]}
 check(rows["slack"].get("connect") == "slack_install", "an empty listing that ran fine still offers Install Slack plugin")
+doctor.run = lambda args, timeout=60: ((0, '{"loggedIn": true}') if args[1] == "auth"
+                                       else (1, "claude.ai Gmail: https://g - ! Needs authentication\nError: timed out"))
+rows = {}
+doctor.claude_steps(rows.setdefault("steps", []))
+rows = {r["id"]: r for r in rows["steps"]}
+check("connect" not in rows["slack"] and "Couldn't ask Claude" in rows["slack"]["fix"],
+      "a listing that failed part-way: a service it did not print gets no Install button")
+check(rows["gmail"].get("connect") == "gmail", "...while one it did print keeps its Connect button")
 doctor.run, doctor.shutil.which = _real
 
 # ---------------------------------------------------------------- login_cmd

@@ -92,7 +92,8 @@ def claude_steps(steps):
     if logged:
         rc, txt = run(["claude", "mcp", "list"], timeout=90)
         servers = parse_mcp_list(txt)
-        if rc != 0 and not servers:  # the listing itself failed (timeout, CLI error): not the same as "nothing set up"
+        if rc != 0:  # the listing failed (timeout, CLI error), perhaps part-way: a service it did not print may
+            # still be set up, so it is "unknown", not "missing". Services it did print keep what it said about them.
             unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]
     (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (route(k, servers) for k in ("slack", "gmail", "miro"))
     names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
@@ -104,7 +105,7 @@ def claude_steps(steps):
         if not ok:
             if not logged:
                 r["fix"] = first
-            elif unlisted:  # no button: installing or signing in again would not fix a listing that did not run
+            elif unlisted and not state:  # no button: installing would not fix a listing that did not finish
                 r["fix"] = f"Couldn't ask Claude which connections it has just now ({unlisted}). Press Check again."
             elif not state:
                 r["fix"], r["connect"] = fix_missing
