@@ -98,7 +98,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <button onclick="doctor(true)">Check again</button>
    <span class="sub" id="setup_msg"></span>
   </div>
-  <div class="sub" style="margin-top:10px" id="agent_help"><b>Open Claude</b> opens a black window. If it asks you to sign in, follow the link. For Slack or Gmail, type <code>/mcp</code> in that window, press Enter, pick <b>Slack</b> or <b>claude.ai Gmail</b>, choose <b>Authenticate</b>, and click Allow in your browser. If they're already connected there's nothing to do here — the ticks will appear within a minute.</div>
+  <div class="sub" style="margin-top:10px" id="agent_help">Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens. <b>Open Claude (advanced)</b> is the old way, for anything a button can't do: it opens a black window where <code>/mcp</code> lists every connection.</div>
  </div>
 
  <!-- stage: people -->
@@ -403,14 +403,15 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
 async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>(C&&C.agent)==='grok'?'Grok':'Claude';
-function agentUI(){if(!$('#agent_btn'))return;$('#agent_btn').textContent='Open '+agentLabel();
+function agentUI(){if(!$('#agent_btn'))return;
  const grok=(C&&C.agent)==='grok';
+ $('#agent_btn').textContent='Open '+agentLabel()+(grok?'':' (advanced)');$('#agent_btn').classList.toggle('primary',grok);   // Claude: the row buttons are the way in; the terminal is the fallback
  if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=grok?'':'none';
  $('#agent_help').innerHTML=grok
   ?((C&&C.use_slack)
     ?'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.'
     :'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.')
-  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Open Claude</b> opens a black window. If it asks you to sign in, follow the link. For Slack or Gmail, type <code>/mcp</code> in that window, press Enter, pick <b>Slack</b> or <b>claude.ai Gmail</b>, choose <b>Authenticate</b>, and click Allow in your browser. If they\'re already connected there\'s nothing to do here — the ticks will appear within a minute.';}
+  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens. <b>Open Claude (advanced)</b> is the old way, for anything a button can\'t do: it opens a black window where <code>/mcp</code> lists every connection.';}
 const running=n=>!!(J&&J[n]&&J[n].running);
 const havePeople=()=>!!(C&&C.people&&Object.keys(C.people).length);
 const haveVoice=()=>!!(V&&V.people&&Object.keys(V.people).length);
@@ -436,7 +437,30 @@ async function tick(){
  renderLists();paintVoice();paintButtons(st)}
 
 function paintConnect(){$('#st_connect').style.display='';
- $('#setup_steps').innerHTML=DOC.steps.map(s=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px">${s.ok?'✅':s.optional?'▫️':'⬜'}</span><div><b>${s.title}</b>${s.ok?'':`<div class="sub">${s.fix}</div>`}</div></div>`).join('')}
+ const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
+ $('#setup_steps').innerHTML=DOC.steps.map(s=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px">${s.ok?'✅':s.optional?'▫️':'⬜'}</span><div><b>${s.title}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,s.connect===first)}`}</div></div>`).join('')}
+
+// ---------- Claude setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
+// and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.
+const CONNECT_LABEL={login:'Sign in',slack_install:'Install Slack plugin',slack:'Connect Slack',gmail:'Connect Gmail',miro:'Connect Miro'};
+const CONN={};   // step -> {busy, url, msg}: kept here because the rows are repainted on every tick
+const repaint=()=>{if(DOC&&stage()==='connect')paintConnect()};   // never bring the checklist back once the page has moved on
+function connectBtn(s,primary){if(!s.connect||(C&&C.agent)==='grok'||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
+ if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}</div>`;
+ return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${CONNECT_LABEL[s.connect]}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>`}
+async function connectStep(step){
+ CONN[step]={busy:true,msg:step==='slack_install'?'Installing the Slack plugin…':'Waiting for you in the browser: click Allow there.'};repaint();
+ try{const r=await api('/api/connect/'+step,{});clog('setup: '+step+(r.started?' started':' already running'))}
+ catch(e){CONN[step]={msg:"Couldn't start that. Try again, or use Open Claude (advanced)."};repaint();return}
+ const t0=Date.now();
+ while(Date.now()-t0<120000){await new Promise(z=>setTimeout(z,3000));   // every 3 s for up to 2 minutes
+  let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
+  if(s.url&&!CONN[step].url){CONN[step].url=s.url;repaint()}
+  if(s.running)continue;
+  clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
+  CONN[step]=s.rc===0?{}:{msg:"That didn't finish"+(s.last?` (${s.last.slice(0,160)})`:'')+'. Try again, or use Open Claude (advanced).'};
+  await doctor(true);return}   // repaints the checklist: the row goes green, or offers its next step
+ CONN[step]={msg:'Still waiting for the browser. Finish there and the tick appears within a minute, or press the button to start again.'};repaint()}
 
 let peopleRendered='';
 async function stagePeople(){
