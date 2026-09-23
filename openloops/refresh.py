@@ -16,6 +16,10 @@ account with no Gmail connector, or a run reporting "gmail_available": false) le
 
 The final write goes through store.update_state, so anything the page changed while the agent
 was running (a note, a snooze, a done click) is kept.
+
+Every cursor read from state.json goes through parse_when() (#51): a naive value (a hand-edited state.json, a very
+early build) is local time, and one that is not a date at all falls back to Settings > History with a plain line on
+stderr, so a refresh never stops on a TypeError comparing naive and aware times.
 """
 import json, re, sys
 from datetime import datetime, timedelta
@@ -191,12 +195,49 @@ def in_scope(l, slack_only, recent):
         l["status"] == "done" and (l.get("closed_at") or "") >= recent)
 
 
+def history_days():
+    """Settings > History (config.json "history_days"), 1..365, 30 when unset or not a number (as app.history_days)."""
+    try:
+        return max(1, min(int(CFG.get("history_days") or 30), 365))
+    except (TypeError, ValueError):
+        return 30
+
+
+_when_warned = set()   # each unreadable value is reported once per run, not once per source that falls back to it
+
+
+def parse_when(v, now=None, days=None):
+    """A cursor or last_refresh from state.json -> an aware datetime (#51).
+    - aware ISO ("2026-09-01T09:00+01:00"): as it is;
+    - naive ISO ("2026-09-01T09:00", a hand-edited or very old state.json): local time, like the rest of the app;
+    - missing or not a date: now minus Settings > History, with the plain-words line on stderr (the job's log and
+      the page's Console), never a traceback."""
+    try:
+        d = datetime.fromisoformat(str(v).strip())
+        return d if d.tzinfo is not None else d.astimezone()   # astimezone() on a naive value takes it as local time
+    except (TypeError, ValueError):
+        days = history_days() if days is None else days
+        key = repr(v)
+        if key not in _when_warned:
+            _when_warned.add(key)
+            print(messages.say("cursor_unreadable", days=days), file=sys.stderr)
+        return (now or datetime.now().astimezone()) - timedelta(days=days)
+
+
+def when_str(d):
+    """An aware datetime as the cursors are written: minutes, with its offset (2026-09-01T09:00+01:00)."""
+    return d.isoformat(timespec="minutes")
+
+
 def build_prompt(s, slack_only, slack_on):
     recent = (datetime.now() - timedelta(days=5)).isoformat()
     open_loops = [l for l in s["loops"] if in_scope(l, slack_only, recent)]
-    slack_since = s.get("slack_cursor") or s["cursor"]
-    slack_date = (datetime.fromisoformat(slack_since) - timedelta(days=1)).date().isoformat()
-    gmail_date = (datetime.fromisoformat(s.get("gmail_cursor") or s["cursor"]) - timedelta(days=1)).date().isoformat()
+    # every cursor through parse_when (#51): naive or unreadable values never reach a comparison with an aware one
+    slack_when = parse_when(s.get("slack_cursor") or s.get("cursor"))
+    gmail_when = parse_when(s.get("gmail_cursor") or s.get("cursor"))
+    slack_since = when_str(slack_when)
+    slack_date = (slack_when - timedelta(days=1)).date().isoformat()
+    gmail_date = (gmail_when - timedelta(days=1)).date().isoformat()
     name = CFG.get("owner_name") or "the owner"
     sources = []
     if slack_on:
@@ -240,8 +281,7 @@ def build_prompt(s, slack_only, slack_on):
         loops=json.dumps([{k: l[k] for k in ("id", "owner", "ask", "channel", "thread", "asked_at", "status", "closed_at", "inbound", "priority", "priority_by", "theme") if k in l} for l in open_loops], indent=1, ensure_ascii=False),
         # headline cursor: the OLDEST cut-off among the sources this run searches, so it never contradicts their own
         # after: dates (a Gmail cursor held back while Gmail was not connected is older than the shared one)
-        since=slack_since if slack_only else min([s.get("gmail_cursor") or s["cursor"]] + ([slack_since] if slack_on else []),
-                                                 key=lambda c: datetime.fromisoformat(c)),
+        since=slack_since if slack_only else when_str(min([gmail_when] + ([slack_when] if slack_on else []))),
         exclude_people=", ".join(CFG.get("exclude_people", [])) or "none",
         exclude_topics="; ".join(CFG.get("exclude_topics", [])) or "none",
     )
@@ -371,7 +411,7 @@ def main():
     prompt, n_open = build_prompt(s, SLACK_ONLY, slack_on)
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     kind = "refresh-slack" if SLACK_ONLY else "refresh"
-    print(f"[{stamp}] {kind}: {n_open} open loops, cursor {s.get('slack_cursor') or s['cursor'] if SLACK_ONLY else s['cursor']}")
+    print(f"[{stamp}] {kind}: {n_open} open loops, cursor {s.get('slack_cursor') or s.get('cursor') if SLACK_ONLY else s.get('cursor')}")
     tools = SLACK_TOOLS if SLACK_ONLY else (SLACK_TOOLS if slack_on else []) + GMAIL_TOOLS
     # the new cursor is taken BEFORE the agent searches: anything that lands while it runs is after it
     now = datetime.now().astimezone().isoformat(timespec="minutes")

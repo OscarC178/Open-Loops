@@ -127,6 +127,13 @@ FAILURES = {
         "fix": "Press Check again: it asks Slack again.",
         "button": None},
 
+    # ---- a refresh reading state.json (refresh.parse_when, #51): a cursor that is not a date. Printed on stderr (the
+    # job's log and the page's Console); the refresh carries on.
+    "cursor_unreadable": {
+        "what": "Open Loops couldn't read the date its last scan stopped at, so this refresh looks back {days} days instead.",
+        "fix": "Nothing to do: the next refresh carries on from this one.",
+        "button": None},
+
     # ---- the Mac's weekday morning refresh (doctor.schedule_step, #24 / #31)
     "schedule_blocked": {
         "what": "Your Mac's privacy settings stopped the automatic morning refresh, so your list only updates when you press Refresh.",
