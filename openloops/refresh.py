@@ -3,7 +3,8 @@
     python3 -m openloops.refresh                # full: Slack + Gmail, both cursors advance
     python3 -m openloops.refresh --slack-only   # quick mid-day pass: Slack tools only
 
-Reads state.json, asks the agent to (a) find new asks the owner made since the cursor,
+Reads state.json, asks the agent to (a) find new asks the owner made since the cursor, and asks
+made OF the owner (Gmail inbox on a full run; Slack DMs and @-mentions whenever Slack is on),
 (b) re-check every open loop for a reply from its owner, and merges the JSON it returns
 back into state.json. Never sends anything.
 
@@ -89,11 +90,27 @@ Reply with ONLY a JSON object between the markers, nothing else:
 
 
 PRIORITIES = ("high", "normal", "low")
+SLACK_CID = re.compile(r"\b([CDG][A-Z0-9]{8,})\b")   # Slack conversation id: C channel, D DM, G group
+SLACK_TS = re.compile(r"\b(\d{10}\.\d{6})\b")        # Slack message / thread timestamp
 
 
 def from_mail(l):
     # typed reminders (channel "note") and vault items stay until the owner marks them done
     return not l.get("manual") and l.get("channel") not in ("note", "vault")
+
+
+def slack_key(l):
+    """What makes two Slack inbound loops the same ask, whatever id or wording the agent used:
+    a DM is its id; a channel or group is its id plus the thread ts (the asker if the ts is missing);
+    no id -> the thread text. None when there is no thread to go on."""
+    t = str(l.get("thread") or "")
+    cid = SLACK_CID.search(t)
+    if not cid:
+        return " ".join(t.lower().split()) or None
+    if cid.group(1).startswith("D"):
+        return cid.group(1)
+    ts = SLACK_TS.search(t)
+    return cid.group(1) + "/" + (ts.group(1) if ts else str(l.get("owner") or "").strip().lower())
 
 
 def in_scope(l, slack_only, recent):
@@ -117,17 +134,31 @@ def build_prompt(s, slack_only, slack_on):
         sources.append(f'   - Slack (if the Slack tools are available): slack_search_public_and_private query "from:<@{SELF_ID}> after:{slack_date}" sort=timestamp, paginate until you pass the cursor.')
     if not slack_only:
         sources.append(f'   - Gmail (if the Gmail tools are available): search_threads query "in:sent after:{gmail_date.replace("-", "/")}".')
-    inbound = "" if slack_only else (
-        "1b. ASKS OF {n} (inbound). Gmail (if available): search_threads query "
-        '"in:inbox after:{g} -category:promotions -category:social". Keep only mail from real people '
-        "(not newsletters, marketing, notifications, receipts, no-reply) where the thread's LATEST message "
-        "asks {n} for a specific action or answer and {n} has not replied since. These become new loops with "
-        '"status": "needs_me" and "inbound": true - owner is the person asking; ask = one line on what they '
-        "need from {n}. The same exclusions and duplicate rule apply.").format(n=name, g=gmail_date.replace("-", "/"))
+    # 1b. asks OF the owner: Gmail inbox on a full run, Slack DMs + @-mentions whenever Slack is on (so a
+    # slack-only pass has them too, from slack_cursor). One shared closing sentence keeps the JSON the same.
+    inbound = []
+    if not slack_only:
+        inbound.append(
+            '   - Gmail (if available): search_threads query '
+            '"in:inbox after:{g} -category:promotions -category:social". Keep only mail from real people '
+            "(not newsletters, marketing, notifications, receipts, no-reply) where the thread's LATEST message "
+            "asks {n} for a specific action or answer and {n} has not replied since.".format(n=name, g=gmail_date.replace("-", "/")))
+    if slack_on:
+        inbound.append(
+            '   - Slack (if the Slack tools are available): slack_search_public_and_private queries '
+            '"to:<@{u}> after:{d}" (DMs) and "<@{u}> after:{d}" (@-mentions), sort=timestamp, paginate until '
+            "you pass the cursor. Read each DM/thread and keep it only where the LATEST message is from someone "
+            "else, asks {n} for a specific action or answer, and {n} has not replied since. Drop bots, apps, "
+            "workflows, joins, reminders, reactions and {n}'s own messages. Slack loops: channel \"slack\", "
+            'thread "DM <asker> <DM channel id>" or "#<channel> <channel id> <thread ts>", link = the message '
+            "permalink.".format(n=name, u=SELF_ID, d=slack_date))
+    inbound = ("1b. ASKS OF {n} (inbound). Search what others sent {n}:\n{parts}\n   These become new loops with "
+               '"status": "needs_me" and "inbound": true - owner is the person asking; ask = one line on what they '
+               "need from {n}. The same exclusions and duplicate rule apply.").format(n=name, parts="\n".join(inbound)) if inbound else ""
     prompt = PROMPT.format(
         name=name,
-        mode_note=("SLACK-ONLY RUN: you have no Gmail tools. Ignore email entirely - do not report email loops.\n\n"
-                   if slack_only else ""),
+        mode_note=("SLACK-ONLY RUN: you have no Gmail tools. Ignore email entirely - do not report email loops. "
+                   f"Slack asks both ways (by {name} and of {name}) are in scope.\n\n" if slack_only else ""),
         inbound=inbound,
         slack_note=f" {name}'s Slack user id is <@{SELF_ID}>." if slack_on else "",
         sources="\n".join(sources),
@@ -163,6 +194,10 @@ def merge_links(loop, links):
 def apply(s, out, slack_only, now):
     """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated)."""
     by_id = {l["id"]: l for l in s["loops"]}
+    # Slack asks of the owner already open (Needs me or answered-and-waiting): the same DM or thread is
+    # not added again under a new id. Closed ones do not count - a fresh ask there is a fresh loop.
+    inbound_open = {slack_key(l) for l in s["loops"]
+                    if l.get("inbound") and l.get("channel") == "slack" and l.get("status") in ("waiting", "needs_me")}
     n_new = n_upd = 0
     for nl in out.get("new_loops", []) or []:
         nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
@@ -170,8 +205,11 @@ def apply(s, out, slack_only, now):
             continue
         if slack_only and nl.get("channel") != "slack":
             continue  # belt and braces: the prompt says no email, the merge enforces it
+        key = slack_key(nl) if nl.get("inbound") and nl.get("channel") == "slack" else None
+        if key and key in inbound_open:
+            continue
         links = nl.pop("links", None)
-        nl.setdefault("status", "waiting")
+        nl.setdefault("status", "needs_me" if nl.get("inbound") else "waiting")
         nl["priority"] = nl.get("priority") if nl.get("priority") in PRIORITIES else "normal"
         nl["priority_by"] = "ai"
         nl["theme"] = str(nl.get("theme") or "")[:40]
@@ -179,6 +217,8 @@ def apply(s, out, slack_only, now):
         merge_links(nl, links)
         s["loops"].append(nl)
         by_id[nl["id"]] = nl
+        if key:
+            inbound_open.add(key)
         n_new += 1
     for u in out.get("updates", []) or []:
         l = by_id.get(u.get("id"))
