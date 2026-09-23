@@ -3,7 +3,8 @@
 #   Not installed yet?  -> runs the installer (install.sh), which puts Open Loops in
 #                          ~/Library/Application Support/OpenLoops and a launcher on your Desktop.
 #   Already installed?  -> starts it (backgrounded) and opens the page in your browser.
-#   Installed in the old place (~/Documents/OpenLoops)? -> runs the installer, which moves it (#24).
+#   Installed in the old place (~/Documents/OpenLoops)? -> runs the installer, which copies the list and
+#                          settings across and leaves the old folder as it is (#24).
 set -e
 # Non-interactive shells don't read the user's profile, so claude (Homebrew or the official
 # installer) may not be on PATH. Jobs inherit this.

@@ -93,12 +93,14 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
      `~/Library/Application Support/OpenLoops`, creates **Open Loops.app** (logo icon) on the Desktop and in
      `~/Applications` and pins it to the Dock, and registers
      the weekday refresh as a `launchd` agent (`com.openloops.refresh`, default 09:15).
-     Older versions installed to `~/Documents/OpenLoops`; running the installer again moves that copy (list,
-     settings, tone, logs, `.grok/` and anything else in the folder) and re-registers the morning refresh. See
-     gotcha 8 for why. The move stops Open Loops first and refuses, changing nothing, if anything is still
-     working in the old folder. On the same disk it is a single rename; otherwise (or with files still only in
-     iCloud) it copies, checks every file byte for byte, and only then switches over and says the old folder can
-     be deleted. With Grok, open Grok once in the new folder and trust it.
+     Older versions installed to `~/Documents/OpenLoops`. Running the installer again copies that copy's list and
+     settings (`state.json`, `config.json`, `voice.json`, `people_suggested.json`, `state/`, `.grok/`,
+     `google_oauth_client.json`, `profiles/`, `private/`) into the new place and registers the morning refresh
+     there. The old folder is never moved, changed or deleted; Open Loops simply stops using it. Before copying,
+     the installer pauses the old morning refresh and makes sure the old copy is not running; if it can't be sure,
+     it stops and says what to do. Every copied file is checked byte for byte, and shortcuts (symbolic links) are
+     left out and listed. If the new place already has a list, nothing is copied again. See gotcha 8 for why.
+     With Grok, open Grok once in the new folder and trust it.
 
    The downloaded folder can be deleted afterwards either way.
 2. On first open the app shows the **connection checklist** (`doctor.py`, re-checked every minute) until Claude is
@@ -121,7 +123,7 @@ bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "T
 ```
 
 - `--dest DIR` installs there instead of `~/Library/Application Support/OpenLoops` (or set `OPENLOOPS_DEST`). It never
-  moves an older `~/Documents/OpenLoops`; only a default install does that.
+  reads an older `~/Documents/OpenLoops`; only a default install copies from it.
 - `--no-app` leaves `Open Loops.app` in `~/Applications`, on the Desktop and in the Dock alone.
 - `--no-task` leaves the weekday refresh alone. There is one `com.openloops.refresh` job per Mac; without this flag
   the test copy would take it over.

@@ -341,7 +341,8 @@ class H(BaseHTTPRequestHandler):
             stamp = ROOT / "INSTALLED.txt"
             dl = ROOT / "state" / "logs" / "doctor-last.log"
             le = ROOT / "state" / "logs" / "launchd.err.log"  # Mac: why the weekday morning refresh did not start (#24)
-            self._json({"python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
+            self._json({"app": "openloops",   # identity: install.sh only asks a server to quit if this is here and root matches
+                        "python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
                         "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},

@@ -19,7 +19,7 @@ install logic and means the installer rarely needs rebuilding.
   *Apps & features*; it removes the program files, both shortcuts and the scheduled task, and asks before
   deleting personal files.
 - **Mac**: unchanged from `install.sh` — code in `~/Library/Application Support/OpenLoops` (an older `~/Documents/OpenLoops`
-  install is moved there), `Open Loops.app` in `~/Applications`
+  install's list and settings are copied there; the old folder is left as it is), `Open Loops.app` in `~/Applications`
   and on the Desktop, pinned to the Dock, `launchd` agent for the weekday refresh.
 
 ## Releasing

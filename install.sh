@@ -7,8 +7,8 @@
 # What it does (all on this computer, nothing sent anywhere):
 #   1. Checks for Python 3 and Claude Code, offering to install via Homebrew / the official
 #      installer if missing.
-#   2. Copies Open Loops to ~/Library/Application Support/OpenLoops (moving an older
-#      ~/Documents/OpenLoops install there first).
+#   2. Copies Open Loops to ~/Library/Application Support/OpenLoops (copying the list and settings of
+#      an older ~/Documents/OpenLoops install across first; the old folder is left as it is).
 #   3. Puts Open Loops.app (with the logo) on the Desktop and in ~/Applications.
 #   4. Sets it to refresh every weekday morning (default 09:15) via launchd.
 #   5. Opens the app - which walks you through connecting Slack and email.
@@ -16,7 +16,7 @@
 # Options: --at HH:MM (refresh time), --name <first name> (skips the question).
 # Testing a fresh install beside the one you use, without touching it (INSTALL.md "Testing a fresh install"):
 #   bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "Test"
-#   --dest DIR    install there instead (or env OPENLOOPS_DEST); never moves an older ~/Documents install
+#   --dest DIR    install there instead (or env OPENLOOPS_DEST); never reads an older ~/Documents install
 #   --no-app      do not write Open Loops.app to ~/Applications and the Desktop, or touch the Dock
 #   --no-task     do not register the weekday refresh (there is one launchd job per Mac; this keeps yours)
 #   --port N      the port this copy answers on, saved in its config.json (default 8765)
@@ -101,16 +101,12 @@ case "$DEST" in /*) ;; *) DEST="$PWD/$DEST" ;; esac   # a relative --dest is rel
 DEST="${DEST%/}"
 OLD="$HOME/Documents/OpenLoops"   # where installs before #24 went
 
-# ---------- 3a. Move an older ~/Documents install here (keeps config, list, tone and logs) ----------
-# Only for the default place: a --dest test install must never move the copy you use. The work is in
-# scripts/migrate_install.py: it stops every writer first (the weekday job, any Open Loops server on
-# 8765-8784 running from the old folder, anything else with its working folder there), then either renames
-# in one step or copies, checks every byte and switches over. On any doubt it changes nothing and exits 1.
+# ---------- 3a. Bring over an older ~/Documents install's list and settings (copy only) ----------
+# Only for the default place: a --dest test install never reads the copy you use. scripts/migrate_install.py
+# copies the named personal files into the new place after making sure the old copy is idle; it never moves,
+# renames or deletes anything in the old folder. If it cannot be sure, it stops the installer (exit 1).
 if [ "$DEST" = "$DEFAULT_DEST" ] && [ -f "$OLD/openloops/app.py" ]; then
     python3 "$SRC/scripts/migrate_install.py" --old "$OLD" --dest "$DEST"
-    if [ "$SRC" = "$OLD" ] && [ ! -e "$OLD" ]; then
-        SRC="$DEST"   # was running from the old copy itself: it is now at DEST
-    fi
 fi
 
 if [ "$SRC" = "$DEST" ]; then
