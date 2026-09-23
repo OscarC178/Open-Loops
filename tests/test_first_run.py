@@ -151,7 +151,7 @@ const shown=()=>['connect','checkfail','people','auto','start'].filter(k=>$('#st
 const jobCalls=()=>CALLS.filter(c=>/^\\/api\\/(people|voice|refresh) /.test(c));
 async function boot(){await loadCfg();await loadState();DOC=await api('/api/doctor',{force:true,detect:true})}
 const snap=()=>({stage:stage(),shown:shown(),jobs:jobCalls(),said:$('#start_said').textContent,ask:$('#start_ask').textContent,
-  later:$('#start_msg').textContent,uslack:$('#uslack').style.display,pill:$('#isolated_pill').style.display,lists:$('#lists').style.display});
+  later:$('#start_msg').textContent,uslack:$('#uslack').style.display,uslack_label:$('#uslack').textContent,uslack_disabled:$('#uslack').disabled,pill:$('#isolated_pill').style.display,lists:$('#lists').style.display});
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);out.SS=SS;console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
@@ -196,7 +196,10 @@ if NODE:
               f"before the press: the Start the first scan box and no job started ({b})")
         check(b["said"] == "Looking back 30 days across Slack. The first pass can take ten minutes.",
               f"...saying what the first scan reads and how long, from history_days and what is connected ({b['said']!r})")
-        check(b["uslack"] == "", "Update Slack is on show during setup, Slack being connected")
+        check(b["uslack"] == "" and b["uslack_label"] == "Update Slack" and b["uslack_disabled"] is False,
+              "Update Slack is on show during setup, Slack being connected, and pressable")
+        check(out["scan"]["uslack_label"] == "Updating…" and out["scan"]["uslack_disabled"] is True,
+              "...and while the first scan (a refresh) runs it is disabled and says Updating…")
         check(out["seen"] == ["slack-id"], f"...and the fake claude was asked nothing but the Slack id before the press ({out['seen']})")
         check(out["people"]["stage"] == "people" and out["people"]["shown"] == ["people"] and out["P"] == 1,
               "after Start the first scan: who's who ran and its picks are on show")

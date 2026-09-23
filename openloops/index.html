@@ -620,7 +620,8 @@ function retryStage(){const st=stage();kicked[st==='voice'?'voice':'scan']=false
 // Update Slack needs Slack connected AND the owner's Slack id known (refresh --slack-only is SKIPPED without it)
 const slackOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='slack'&&x.ok)&&DOC.steps.some(x=>x.id==='self'&&x.ok));
 function paintButtons(st){const rb=$('#refresh');rb.style.display=st==='ready'&&$('#page_home').style.display!=='none'?'':'none';rb.disabled=running('refresh');rb.textContent=running('refresh')?'Refreshing…':'Refresh';   // hidden, not disabled, until setup is done
- const ub=$('#uslack');ub.style.display=slackOk()&&$('#page_home').style.display!=='none'?'':'none';   // setup included (#38): the quick pass needs no Who's whoub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
+ // Update Slack: whenever Slack is connected, setup included (#38): the quick pass needs no Who's who
+ const ub=$('#uslack');ub.style.display=slackOk()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
  const vb=$('#voicebtn');vb.disabled=!havePeople()||running('voice');vb.textContent=running('voice')?'Learning…':'Learn my tone';vb.title=havePeople()?'':'save Who\'s who first';
  $('#meta').textContent=S?[S.last_refresh?'last refresh '+fmt(S.last_refresh):S.last_slack_refresh?'':'last refresh never',S.last_slack_refresh?'slack '+fmt(S.last_slack_refresh):''].filter(Boolean).join(' · '):'';
  $('#isolated_pill').style.display=ISO?'':'none';
