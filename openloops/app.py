@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .paths import PKG, ROOT
-from .store import load_cfg, norm_date, read_json, write_json
+from .store import load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
@@ -498,17 +498,14 @@ class H(BaseHTTPRequestHandler):
             else:
                 r = subprocess.run(["bash", str(ROOT / "scripts" / "register-task.sh"), "--at", t],
                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if r.returncode == 0:
-                c = cfg()
-                c["refresh_time"] = t
-                write_json(CONFIG, c)
+            if r.returncode == 0 and update_json(CONFIG, lambda c: c.update(refresh_time=t)) is False:
+                return self._json({"ok": False, "error": "config.json could not be read, so the new time was not saved there"}, 500)
             return self._json({"ok": r.returncode == 0, "out": (r.stdout + r.stderr)[-500:]})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":
             return self._json({"started": run_job("people")})
         if self.path == "/api/config":
-            c = cfg()
             if "pinned_links" in body:  # http(s) only, one entry per url, label trimmed
                 seen, clean = set(), []
                 for p in body.get("pinned_links") or []:
@@ -518,20 +515,16 @@ class H(BaseHTTPRequestHandler):
                     seen.add(u)
                     clean.append({"url": u, "label": str((p or {}).get("label") or "").strip()[:60]})
                 body["pinned_links"] = clean
-            for k, v in body.items():
-                if k in EDITABLE:
-                    c[k] = v
-            write_json(CONFIG, c)
+            # applied to config.json as it is now, under the lock doctor.py takes too (its own process)
+            if update_json(CONFIG, lambda c: c.update({k: v for k, v in body.items() if k in EDITABLE})) is False:
+                return self._json({"ok": False, "error": "config.json could not be read; nothing saved (fix or delete it)"}, 500)
             return self._json({"ok": True})
         if self.path == "/api/reset":
             # "Start over": back to the state a brand-new user sees, keeping only name/domains/tone settings.
             for f in (STATE, VOICEF, PEOPLEF):
                 if f.exists():
                     f.unlink()
-            c = cfg()
-            for k in ("people", "voice_sample_people", "slack_self_id"):
-                c[k] = {} if k == "people" else ([] if k == "voice_sample_people" else "")
-            write_json(CONFIG, c)
+            update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id=""))
             STATE.write_text(fresh_state(), encoding="utf-8")
             doctor_gen["n"] += 1
             doctor_cache = {"at": 0, "result": None}

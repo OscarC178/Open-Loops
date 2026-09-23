@@ -109,6 +109,18 @@ saved = json.loads(doctor.CONFIG.read_text(encoding="utf-8"))
 check(saved.get("owner_name") == "Saved meanwhile" and saved.get("slack_source") == "plugin"
       and saved.get("claude_servers") == {"slack": "plugin:slack:slack"},
       f"doctor merges its own keys into config.json as it is now, keeping Settings saved meanwhile (got {saved})")
+# config.json there but unreadable: doctor must leave it alone, not write its four keys over everything else
+for label, prep in (("corrupt", lambda f: f.write_text('{"agent": "claude", "people": {', encoding="utf-8")),
+                    ("unreadable", lambda f: (f.write_text('{"agent": "claude", "people": {"A": {}}}', encoding="utf-8"), f.chmod(0)))):
+    if label == "unreadable" and (sys.platform == "win32" or os.geteuid() == 0):
+        continue  # chmod 0 does not stop Windows or root from reading
+    prep(doctor.CONFIG)
+    before = (doctor.CONFIG.stat().st_mtime_ns, doctor.CONFIG.stat().st_size)
+    with contextlib.redirect_stderr(io.StringIO()) as errbuf:
+        doctor._save({"slack_source": "plugin"}, {"slack": "plugin:slack:slack"})
+    doctor.CONFIG.chmod(0o600)
+    check((doctor.CONFIG.stat().st_mtime_ns, doctor.CONFIG.stat().st_size) == before and "left as it is" in errbuf.getvalue(),
+          f"{'an' if label[0] in 'aeiou' else 'a'} {label} config.json is left untouched by doctor's write, and it says why")
 doctor.CONFIG, doctor.claude_steps, agent.name = _real_cfg, _real_steps, _real_name
 shutil.rmtree(_cfgdir, ignore_errors=True)
 
@@ -395,6 +407,25 @@ try:
     check(code == 200 and out["ok"], "the page's own origin gets through (close-tab beacon)")
     code, out = api("/api/bye", {"page": "x"})
     check(code == 200, "no Origin at all (--stop, scripts) gets through")
+
+    # doctor (its own process) and Settings (the app) rewriting config.json at the same moment: no error, nothing lost
+    WRITER = ("import os, sys\nsys.path.insert(0, os.getcwd())\nfrom openloops import doctor\n"
+              "for i in range(int(sys.argv[1]), int(sys.argv[2])):\n"
+              "    doctor._save({'miro_source': 'plugin'}, {'t%d' % i: 'plugin:slack:slack'})\nprint('WRITER OK')\n")
+    codes, rounds, per = [], 3, 60
+    for r in range(rounds):
+        w = subprocess.Popen([sys.executable, "-c", WRITER, str(r * per), str((r + 1) * per)], cwd=tmp,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for i in range(r * per, (r + 1) * per):
+            codes.append(api("/api/config", {"owner_name": f"n{i}"})[0])
+        wout = w.communicate(timeout=60)[0]
+        check(w.returncode == 0 and "WRITER OK" in wout, f"round {r + 1}: doctor's writer ran without an error ({wout.strip()[-300:]})")
+    saved = json.loads((tmp / "config.json").read_text(encoding="utf-8"))
+    lost = [f"t{i}" for i in range(rounds * per) if f"t{i}" not in (saved.get("claude_servers") or {})]
+    check(set(codes) == {200}, f"every Settings save succeeded (codes {sorted(set(codes))})")
+    check(not lost and saved.get("owner_name") == f"n{rounds * per - 1}",
+          f"no write lost on either side (lost {len(lost)} of doctor's keys; owner_name={saved.get('owner_name')!r})")
+    check(not list(tmp.glob("config.json.*.tmp")), "no temp files left behind")
 
     # Grok: no setup buttons
     api("/api/config", {"agent": "grok"})

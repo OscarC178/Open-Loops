@@ -192,13 +192,20 @@ def grok_steps(steps):
     return email, slack, gmail, "", False, "", {}
 
 
-def _save(updates):
-    """Write doctor's own keys into config.json, re-read just now: a check can take minutes (claude mcp list, the
-    Slack-id prompt), and Settings saved meanwhile must not be overwritten with the copy read at the start."""
-    from .store import read_json, write_json
-    cfg = read_json(CONFIG, {}) or {}
-    cfg.update(updates)
-    write_json(CONFIG, cfg)
+def _save(updates, names=None):
+    """Write doctor's own keys into config.json as it is now, under its cross-process lock: a check can take minutes
+    (claude mcp list, the Slack-id prompt), and Settings saved meanwhile must survive. names (service -> server
+    name) are merged into the claude_servers the file holds now, not the copy read at the start."""
+    from .store import update_json
+
+    def mutate(cfg):
+        new = dict(updates)
+        if names:
+            new["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
+        if all(cfg.get(k) == v for k, v in new.items()):
+            return False  # already so: leave the file alone
+        cfg.update(new)
+    update_json(CONFIG, mutate)
 
 
 def main(detect=False):
@@ -207,15 +214,11 @@ def main(detect=False):
     email, slack, gmail, slack_source, miro, miro_source, names = (grok_steps if agent.name() == "grok" else claude_steps)(out["steps"])
     out["miro"] = miro
     # Remember which Slack / Miro route Claude has, so the job scripts allow the right tool prefix.
-    updates = {}
-    for key, val in (("slack_source", slack_source), ("miro_source", miro_source)):
-        if val and cfg.get(key) != val:
-            cfg[key] = updates[key] = val
     # ...and the exact server names, so a Connect button signs in to the server that is really there
-    if names and {**(cfg.get("claude_servers") or {}), **names} != cfg.get("claude_servers"):
-        cfg["claude_servers"] = updates["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
-    if updates:
-        _save(updates)
+    updates = {k: v for k, v in (("slack_source", slack_source), ("miro_source", miro_source)) if v}
+    cfg.update(updates)
+    if updates or names:
+        _save(updates, names)
     out["slack_source"] = slack_source or cfg.get("slack_source") or ""
     out["miro_source"] = miro_source or cfg.get("miro_source") or ""
 
