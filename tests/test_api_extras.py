@@ -174,6 +174,7 @@ try:
     # ---- to-do file: status, starter file, path forms, legacy folder setting
     s = api("/api/standing")[1]
     check(s["exists"] is False and s["open"] == 0, "no to-do file on a fresh install")
+    check(s["path"] == "", f"blank standing_file points at no file at all, not a default under HOME (got {s['path']!r})")
     todo = tmp / "notes" / "todo.md"
     api("/api/config", {"standing_file": str(todo)})
     code, r = api("/api/standing/create", {})

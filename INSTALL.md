@@ -164,7 +164,8 @@ Windows: `powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoo
 - **Your own to-do file (optional)**: Settings → Connections. Point it at a markdown file you already keep (or press
   *Create a starter file there*). Open lines appear under Needs me; pressing done asks how you closed the item and
   writes that back. The format and everything else Open Loops logs are listed under that setting. The old
-  `vault_path` folder setting still works.
+  `vault_path` folder setting still works. Left blank (`standing_file` in config.json), no to-do file is read at
+  all: set the path in your own config.json, never in `config.template.json`.
 - **Closing the tab stops the app** a few seconds later (it waits for any running job first), so the next
   double-click starts fresh with whatever code is installed. *Quit Open Loops* under Settings → App does the same
   without closing the tab, and `python -m openloops.app --stop` does it from a terminal. If the tab just vanished
