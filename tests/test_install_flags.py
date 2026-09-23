@@ -315,7 +315,7 @@ try:
           and calls[-1].endswith(str(plist)), "paused, then lsof failed: the old job's own plist bootstrapped again")
     check("while copying" in r.stdout and "set up again" not in r.stdout, "... and no promise that it is set up again")
 
-    say("4f. servers: quit only the old copy's; one it cannot confirm stops the copy")
+    say("4f. servers: quit only the old copy's (identity AND root); an older one without the identity stops the copy")
     home = tmp / "home4"
     old = old_install(home, "Busy")
     servers.write_text(f"8765 openloops /somewhere/else/OpenLoops\n8767 openloops {old}\n8768 noapp /another/OpenLoops\n")
@@ -329,37 +329,14 @@ try:
 
     home = tmp / "home4c"
     old = old_install(home, "Legacy")
-    servers.write_text(f"8769 noapp {old}\n")   # an older version (no "app" field) claiming the old root, nothing really listening
+    servers.write_text(f"8769 noapp {old}\n")   # an older version (no "app" field) running the old folder
+    curl_log.unlink(missing_ok=True)
     r = install(home, "--no-app", "--no-launch", "--no-task")
-    check(r.returncode == 1 and "couldn't confirm that the old copy has stopped" in r.stderr and "8769/api/quit" not in curl_log.read_text(),
-          "an older server claiming the old root that cannot be confirmed: nothing sent, refused")
+    check(r.returncode == 1 and "An older copy of Open Loops is still running on port 8769." in r.stderr
+          and "Quit it (close its tab and wait a few seconds), then run the installer again." in r.stderr
+          and "8769/api/quit" not in curl_log.read_text(),
+          "an older server without the identity: nothing sent to it, stopped with the plain two-sentence message")
     check(not (home / "Library" / "Application Support" / "OpenLoops" / "state.json").exists(), "... nothing copied")
-
-    with socket.socket() as sk:
-        legacy_free = sk.connect_ex(("127.0.0.1", 8783)) != 0
-    if legacy_free:   # an older version really listening, working in the old folder: confirmed by its process
-        home = tmp / "home4d"
-        old = old_install(home, "Legacy2")
-        listener = subprocess.Popen([sys.executable, "-m", "http.server", "8783", "--bind", "127.0.0.1"], cwd=old,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
-            for _ in range(50):
-                with socket.socket() as sk:
-                    if sk.connect_ex(("127.0.0.1", 8783)) == 0:
-                        break
-                time.sleep(0.1)
-            servers.write_text(f"8783 noapp {old}\n")
-            curl_log.unlink(missing_ok=True)
-            r = install(home, "--no-app", "--no-launch", "--no-task")
-        finally:
-            listener.kill()
-            listener.wait()
-        check("8783/api/quit" in curl_log.read_text(),
-              "an older server without the identity, confirmed by its process working in the old folder: asked to quit")
-        check(r.returncode == 1 and "still working in the old Open Loops folder" in r.stderr,
-              "... and while its process is still in the old folder, the copy stops rather than going ahead")
-    else:
-        say("skip  port 8783 busy: the listener check for older servers was not exercised")
 
     home = tmp / "home4b"
     old = old_install(home, "Slow")
@@ -440,6 +417,34 @@ try:
     r = install(home, "--no-app", "--no-launch", "--no-task")
     check(r.returncode == 1 and "where its install log should be" in r.stderr and tree(old) == old_tree,
           "a symlinked log folder: refused, old untouched")
+
+    home = tmp / "home-alias7"
+    old = old_install(home, "Alias7")
+    (home / "Library" / "Logs" / "OpenLoops").mkdir(parents=True)
+    os.link(old / "voice.json", home / "Library" / "Logs" / "OpenLoops" / "install.log")   # the log IS an old file
+    old_tree = tree(old)
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and "where its install log should be" in r.stderr and tree(old) == old_tree,
+          "a hard-linked install.log: refused before anything is written, old untouched")
+
+    home = tmp / "home-alias8"
+    old = old_install(home, "Alias8")
+    (home / "Library").mkdir(parents=True)
+    os.symlink(old, home / "Library" / "Logs")               # a HIGHER ancestor of the log is a link into the old folder
+    old_tree = tree(old)
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 1 and "where its install log should be" in r.stderr and tree(old) == old_tree
+          and not list(old.rglob("install.log")), "a symlinked ancestor of the log folder: refused, no log written into the old folder")
+
+    home = tmp / "home-alias9"
+    old = old_install(home, "Alias9")
+    elsewhere = tmp / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, home / "Linked")   # DEST three levels under a symlinked ancestor (pointing outside the old folder)
+    old_tree = tree(old)
+    r = migrate(home, old, home / "Linked" / "a" / "b" / "OpenLoops")
+    check(r.returncode == 1 and ALIAS in r.stderr and tree(old) == old_tree and not any(elsewhere.iterdir()),
+          "a new place three levels under a symlinked folder: refused, nothing written anywhere, old untouched")
 
     say("4j. an interrupted copy is finished by the next run; the sentinel makes later runs a no-op")
     home = tmp / "home-resume2"
