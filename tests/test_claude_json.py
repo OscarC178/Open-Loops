@@ -126,7 +126,8 @@ for text, status, rc, want, fid in cases:
           f"{text[:45]!r} (status {status}, exit {rc}) -> refused {want!r}, non-zero exit")
     rec = reported(p)
     check(rec and rec["failure"] == fid and sentence(rec)[0] == fid, f"...report() -> {fid}")
-check("FAILED: expired" in p.stderr and "claude said: Not logged in" in p.stderr, "the run's stderr says why, for the log")
+check("FAILED: expired" in p.stderr and "claude error: Not logged in" in p.stderr and p.stdout == "",
+      "the run's stderr says why, for the log; the job gets no stdout from a failed run")
 check(sentence(reported(p))[1].startswith("The refresh stopped because Claude has signed you out."),
       "the page's sentence names Claude, not ChatGPT (Codex's 'expired' sentence is not used)")
 # The API status decides before any text is read, and a number merely quoted in the text decides nothing (#47 review).
@@ -149,6 +150,46 @@ fake(dict(REAL, subtype="error_max_turns", is_error=True, result=None, errors=["
 p = agent.run("Refresh.", ["gmail.search_threads"])
 check(p.is_error and p.stdout == "" and p.refused == "failed" and "maximum number of turns" in p.error_text,
       "an error subtype with no result: empty stdout, the errors list is the error text")
+
+# ---------------------------------------------------------------- 3b. a failed run's text is never applied
+show("3b. an error result's text never reaches a job (#47 review)")
+import re, subprocess  # noqa: E402,E401
+
+
+def job(*args):
+    """Run one job module in the throwaway install, against the fake claude -> CompletedProcess."""
+    return subprocess.run([sys.executable, "-m", *args], cwd=TMP, env=dict(os.environ), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=60)
+
+
+def chases():
+    return json.loads((TMP / "state.json").read_text(encoding="utf-8"))["loops"][0].get("chases", 0)
+
+
+(TMP / "state.json").write_text(json.dumps({"cursor": None, "last_refresh": None, "loops": [
+    {"id": "L1", "channel": "email", "owner": "Sam", "ask": "the budget", "thread": "Budget", "chases": 0}]}), encoding="utf-8")
+fake(result("Drafted the reply.\nDRAFT_CREATED: Gmail draft on 'Budget'", is_error=True), rc=1)
+r = job("openloops.chase", "L1")
+check(r.returncode == 1 and chases() == 0, f"chase: DRAFT_CREATED inside an error result does not count a chase (rc {r.returncode})")
+fake(result("Drafted the reply.\nDRAFT_CREATED: Gmail draft on 'Budget'"))
+r = job("openloops.chase", "L1")
+check(r.returncode == 0 and chases() == 1, "...the same line in a normal answer does (so the check above can fail)")
+
+people = TMP / "people_suggested.json"
+people.unlink(missing_ok=True)
+fake(result('<<<PEOPLE>>>{"people": [{"name": "Sam"}]}<<<END>>>', is_error=True), rc=1)
+r = job("openloops.people")
+check(r.returncode == 1 and not people.exists(), f"people: a PEOPLE block inside an error result is not saved (rc {r.returncode})")
+fake(result('<<<PEOPLE>>>{"people": [{"name": "Sam"}]}<<<END>>>'))
+r = job("openloops.people")
+check(r.returncode == 0 and people.exists(), "...the same block in a normal answer is (so the check above can fail)")
+
+src = (TMP / "openloops" / "doctor.py").read_text(encoding="utf-8")
+check('re.search(r"\\bU[0-9A-Z]{8,}\\b", p.stdout or "")' in src, "doctor's Slack-id lookup reads p.stdout with this pattern")
+fake(result("Slack said: unauthorised for U12345678", is_error=True), rc=1)
+p = agent.run("Reply with ONLY the current logged-in user's Slack user id", ["slack.search_users"])
+check(not re.search(r"\bU[0-9A-Z]{8,}\b", p.stdout or "") and "U12345678" in p.error_text,
+      "doctor: a Slack-id-looking string in an error result is not in stdout, so it is never stored")
 
 # ---------------------------------------------------------------- 4. the model's own words never classify
 show("4. a normal answer that mentions a sign-out is not one")

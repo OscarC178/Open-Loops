@@ -1148,7 +1148,7 @@ def _claude_json(out):
 
 def claude_result(p):
     """A finished `claude -p --output-format json` -> the CompletedProcess the jobs expect: .stdout is the answer text
-    (the "result" field), so their <<<BLOCK>>> parsing is unchanged. Extra attributes: agent ("claude"), is_error (True,
+    (the "result" field), so their <<<BLOCK>>> parsing is unchanged; "" when the run is an error. Extra attributes: agent ("claude"), is_error (True,
     False, or None when the output was not JSON), error_text (the CLI's own error when is_error), refused (claude_failure's
     reason when is_error, else ""), usage, cost_usd, session_id. A run marked is_error never exits 0 here.
     Output that is not JSON (an older CLI, a crash) is passed on as it came, with a warning once per process."""
@@ -1170,7 +1170,10 @@ def claude_result(p):
     p.is_error = bool(j.get("is_error")) or str(j.get("subtype") or "success") != "success"
     p.usage = j.get("usage") if isinstance(j.get("usage"), dict) else None
     p.cost_usd, p.session_id = j.get("total_cost_usd"), str(j.get("session_id") or "")
-    p.stdout = result
+    # A failed run's text never reaches the job (#47 review): chase counts a DRAFT_CREATED line, people/refresh/voice
+    # save a block, doctor stores anything shaped like a Slack id - none of them checks the exit code first. So an
+    # is_error result leaves stdout empty; its text is in .error_text and on stderr, for the log.
+    p.stdout = "" if p.is_error else result
     note = "claude: " + str(j.get("subtype") or "result")
     if p.usage:
         note += f"; tokens in {p.usage.get('input_tokens', '?')}, out {p.usage.get('output_tokens', '?')}"
@@ -1181,7 +1184,7 @@ def claude_result(p):
         p.error_text = "\n".join(x for x in [result] + errors if x).strip() or str(j.get("subtype") or "error")
         p.refused = claude_failure(status if isinstance(status, int) else None, p.error_text)
         note += f"; FAILED: {p.refused}" + (f" (API status {status})" if status else "")
-        note += "; claude said: " + " ".join(p.error_text.split())[:300]
+        note += "\n" + "".join(f"claude error: {ln}\n" for ln in p.error_text.splitlines() if ln.strip()).rstrip("\n")
         if p.returncode == 0:
             p.returncode = 1
     p.stderr = (p.stderr or "") + ("\n" if p.stderr and not p.stderr.endswith("\n") else "") + note + "\n"
