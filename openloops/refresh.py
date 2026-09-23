@@ -165,17 +165,18 @@ def known_ask(c, loops):
 
 def reply_seen(c, replies):
     """Whether Slack inbound candidate c is a reply this run already reported on one of the owner's loops
-    (loop, update). A candidate with a ts matches only a reply with that ts; wording is used only when the
-    candidate has no ts, and then only for the same asker."""
+    (loop, update). As in known_ask: when both have a ts, the ts alone decides (a different ts is a different
+    message, whatever it says); when either has none, the same asker + the same wording."""
     conv, ts = slack_conv(c), ask_ts(c)
     for l, u in replies:
         if slack_conv(l) != conv:
             continue
         rts = str(u.get("reply_ts") or "").strip()
-        if ts:
+        if ts and SLACK_TS.fullmatch(rts):
             if ts == rts:
                 return True
-        elif same_asker(c, l) and words(u.get("reply_snippet")) and words(u.get("reply_snippet")) == words(c.get("ask")):
+            continue
+        if same_asker(c, l) and words(u.get("reply_snippet")) and words(u.get("reply_snippet")) == words(c.get("ask")):
             return True
     return False
 

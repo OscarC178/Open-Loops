@@ -241,6 +241,10 @@ s, ids, _ = run([{"id": "sam-deck", "owner": "Sam", "ask": "send the deck", "cha
                 [inb("sam-q", "Sam", "which format?", "DM Sam D0SAMDM001 1757950000.000900")],
                 [{"id": "sam-deck", "status": "needs_me", "reply_snippet": "which format?", "reply_ts": "1757900000.000700"}])
 check("sam-q" in ids, "a new message repeating (quoting) the reply's words but with its own ts is kept")
+s, ids, _ = run([{"id": "sam-deck", "owner": "Sam", "ask": "send the deck", "channel": "slack", "thread": "DM Sam D0SAMDM001 1757800000.000500", "status": "waiting"}],
+                [inb("sam-q", "Sam", "Which format?", "DM Sam D0SAMDM001 1757950000.000900")],
+                [{"id": "sam-deck", "status": "needs_me", "reply_snippet": "which format?", "reply_ts": None}])
+check("sam-q" not in ids, "a reply reported without reply_ts matches a ts-carrying ask by asker + wording (no second row)")
 s, ids, n = run([], [{"id": "ro-plan", "owner": "Ro", "ask": "send the plan", "channel": "slack", "thread": "DM Ro D0RODM0001 1757800000.000100", "status": "waiting"},
                      inb("ro-q", "Ro", "which plan?", "DM Ro D0RODM0001 1757900000.000200")],
                 [{"id": "ro-plan", "status": "needs_me", "reply_snippet": "which plan?", "reply_ts": "1757900000.000200"}])
