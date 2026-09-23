@@ -17,6 +17,9 @@ server has gone. Placeholders ({ai}, {vendor}, ...) are filled by whoever shows 
 import json
 import string
 import sys
+from datetime import datetime
+
+from .paths import ROOT
 
 FAILURES = {
     # ---- the page and the server
@@ -402,9 +405,9 @@ def page_json(win=None, table=None):
     return text
 
 
-# Why the AI process itself failed, read from its own diagnostic lines only (#25 review): a line must START with one of
-# these (lower-cased, stripped), the process must have exited non-zero, and stdout counts only when it is a short
-# diagnostic (a few lines), never a model answer that might quote an email saying "not logged in".
+# Why the AI process itself failed, read from its own diagnostic lines only (#25 review): the process must have exited
+# non-zero, and a line of its STDERR must START with one of these (lower-cased, stripped). Stdout is never read: it is
+# where the model's answer goes, and an answer can quote an email saying "Not logged in to the expenses portal".
 AI_SIGNS = (
     ("job_signed_out", ("invalid api key", "not logged in", "please run /login", "oauth token has expired",
                         "api error: 401", "error: not logged in")),
@@ -413,53 +416,62 @@ AI_SIGNS = (
     ("job_network", ("api error: connection error", "api error: request timed out", "api error: unable to connect",
                      "error: getaddrinfo", "error: connect econnrefused", "error: connect etimedout")),
 )
-STDOUT_DIAG_LINES = 3   # a stdout longer than this is the model's answer, not a diagnostic
 # the Codex refusals a job can end with (agent.CODEX_REFUSE keys, prefixed): its run printed the filled-in sentence
 CODEX_JOB_IDS = ("codex_keyring", "codex_signin", "codex_link", "codex_cold", "codex_limit", "codex_expired",
                  "codex_failed", "codex_unlisted", "codex_notools", "codex_stale", "codex_nosources", "codex_timeout",
                  "codex_start")
-MARK = "OPENLOOPS_FAILURE: "   # the one machine line a job prints last when it knows why the AI failed
+FAILURE_DIR = ROOT / "state" / "jobs"   # <job>.failure.json: why a job's AI run failed, written by the job itself
 
 
-def ai_failure(rc, stdout="", stderr="", refused=""):
-    """Why one AI run failed -> a FAILURES id, or "" (it did not, or nothing says why). refused: Codex's own reason
-    (agent.codex_run's p.refused), which is structured and wins."""
+def failure_file(job):
+    return FAILURE_DIR / f"{job}.failure.json"
+
+
+def ai_failure(rc, stderr="", refused=""):
+    """Why one AI run failed -> a FAILURES id, or "" (it did not, or nothing says why). From Codex's own structured
+    reason (agent.codex_run's p.refused), which wins, else the run's stderr; never its stdout."""
     if refused and "codex_" + refused in FAILURES:
         return "codex_" + refused
     if rc == 0:
         return ""
-    out = [ln.strip().lower() for ln in (stdout or "").splitlines() if ln.strip()]
     lines = [ln.strip().lower() for ln in (stderr or "").splitlines() if ln.strip()][-40:]
-    if len(out) <= STDOUT_DIAG_LINES:
-        lines += out
     for id_, signs in AI_SIGNS:
         if any(ln.startswith(signs) for ln in lines):
             return id_
     return ""
 
 
-def report(p):
-    """For a job about to exit 1 after an AI run p (a CompletedProcess): print MARK + id as the LAST line when the run
-    says why it failed. app.py reads only that line; the rest of the job's output never decides the sentence."""
-    fid = ai_failure(p.returncode, p.stdout, p.stderr, getattr(p, "refused", "") or "")
-    if fid:
-        print(MARK + fid, flush=True)
+def report(p, job, ai):
+    """For a job about to exit 1 after an AI run p (a CompletedProcess): when the run's stderr or Codex's structured
+    reason says why it failed, write state/jobs/<job>.failure.json = {"failure", "ai", "at"} (plus "said": the filled-in
+    sentence Codex's run printed). A file, not a line on stdout: nothing the model writes can forge it (#25 review).
+    app.py deletes the file when the job starts and reads it when the job has exited."""
+    fid = ai_failure(p.returncode, p.stderr, getattr(p, "refused", "") or "")
+    if not fid:
+        return
+    rec = {"failure": fid, "ai": ai, "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+    if fid in CODEX_JOB_IDS:  # a refused Codex run's stdout is Open Loops' own sentence (agent.CODEX_REFUSE), not the model's
+        lead = FAILURES[fid]["what"].split("{")[0].strip()
+        first = ((p.stdout or "").strip().splitlines() or [""])[0].strip()
+        rec["said"] = first if lead and first.startswith(lead) else say(fid, limit="the time allowed", store="your system keychain")
+    try:
+        FAILURE_DIR.mkdir(parents=True, exist_ok=True)
+        failure_file(job).write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # the page falls back to "didn't finish"
 
 
-def job_failure(name, rc, log, ai="Claude", last=None):
+def job_failure(name, rc, log, ai="Claude", failure=None):
     """The failure id and sentence for a job that ended with exit code rc (not 0, not 2 = SKIPPED) -> (id, said).
-    Only the job's own last stdout line (last; default: the log's last line) decides: "OPENLOOPS_FAILURE: <id>"
-    (report()), where a Codex refusal also keeps the sentence Codex's run printed. Anything else: "didn't finish"."""
+    failure: the job's own state/jobs/<job>.failure.json (report()), the only thing that picks a specific sentence; its
+    "ai" (the AI the run used) names the party. Without it: the plain "didn't finish". The log is never read for why."""
     job = JOBS.get(name, "The " + name)
     if rc == -1 and log.startswith("could not start"):
         return "job_start_failed", say("job_start_failed", job=job, job_lower=job[0].lower() + job[1:])
-    lines = [ln.strip() for ln in (log or "").splitlines() if ln.strip()]
-    last = (lines[-1] if lines else "") if last is None else last.strip()
-    fid = last[len(MARK):].strip() if last.startswith(MARK) else ""
-    if fid in CODEX_JOB_IDS:  # the sentence the run printed, with {store} / {limit} filled in
-        lead = FAILURES[fid]["what"].split("{")[0].strip()
-        said = next((ln for ln in reversed(lines) if lead and ln.startswith(lead)), "")
-        return fid, said or say(fid, limit="the time allowed", store="your system keychain")
+    rec = failure if isinstance(failure, dict) else {}
+    fid, ai = rec.get("failure") or "", rec.get("ai") or ai
+    if fid in CODEX_JOB_IDS:
+        return fid, rec.get("said") or say(fid, limit="the time allowed", store="your system keychain")
     if fid in ("job_signed_out", "job_usage_limit", "job_network"):
         return fid, say(fid, job=job, ai=ai)
     return "job_failed", say("job_failed", job=job)

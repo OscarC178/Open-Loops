@@ -126,13 +126,13 @@ def _ai_now():
         return "Claude"
 
 
-def _ended(name, rc, log, ai="Claude", last=None):
+def _ended(name, rc, log, ai="Claude", failure=None):
     """A finished job's entry in `jobs`. A failure (not 0, not 2 = SKIPPED) also carries "failure" (a messages.py id)
-    and "said", the plain sentence the page shows (#25), read from the job's own OPENLOOPS_FAILURE line only; the log
+    and "said", the plain sentence the page shows (#25), from the job's own state/jobs/<job>.failure.json only; the log
     itself stays for the Console and Settings."""
     j = {"running": False, "log": log, "rc": rc}
     if rc not in (0, 2):
-        j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai, last=last)
+        j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai, failure=failure)
     return j
 
 
@@ -141,6 +141,11 @@ def run_job(name, extra=None):
         return False
     args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
     ai = _ai_now()  # the AI this run uses, for its sentence if it fails
+    ff = messages.failure_file(name)
+    try:
+        ff.unlink(missing_ok=True)  # a failure file left by an earlier run must not speak for this one
+    except OSError:
+        pass
     try:  # started here, not in the thread: a job the page sees as running always has a process /api/quit can stop
         p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              encoding="utf-8", errors="replace", start_new_session=sys.platform != "win32")
@@ -153,8 +158,11 @@ def run_job(name, extra=None):
     def go():
         try:
             out, err = p.communicate()
-            last = (out.strip().splitlines() or [""])[-1]   # the job's own last stdout line: its OPENLOOPS_FAILURE, if any
-            jobs[name] = _ended(name, p.returncode, (out + err)[-4000:], ai, last)
+            try:  # why the AI failed, as the job itself recorded it (messages.report); never read from its output
+                failure = json.loads(ff.read_text(encoding="utf-8")) if p.returncode not in (0, 2) else None
+            except (OSError, ValueError):
+                failure = None
+            jobs[name] = _ended(name, p.returncode, (out + err)[-4000:], ai, failure)
         except Exception as e:
             jobs[name] = _ended(name, -1, f"{name} broke off: {type(e).__name__}: {e}", ai)
         finally:

@@ -64,7 +64,7 @@ def main():
     # some agents drop the markers and emit bare JSON - accept that too
     m = re.search(r"<<<PEOPLE>>>(.*?)<<<END>>>", p.stdout, re.S) or re.search(r'(\{\s*"people"\s*:.*\})', p.stdout, re.S)
     if not m:
-        print("!! no PEOPLE block. See log."); print(p.stdout[-800:]); messages.report(p); sys.exit(1)
+        print("!! no PEOPLE block. See log."); print(p.stdout[-800:]); messages.report(p, "people", agent.display_name()); sys.exit(1)
     d = json.loads(m.group(1))
     d["found_at"] = datetime.now().isoformat(timespec="minutes")
     OUT.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")

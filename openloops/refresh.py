@@ -382,7 +382,7 @@ def main():
     if not m:
         print("!! no OPENLOOPS block in output (rc %s). See log." % p.returncode)
         print(p.stdout[-1500:])
-        messages.report(p)   # last line: why the AI failed, if its own diagnostics say (app.py reads only that)
+        messages.report(p, "refresh", agent.display_name())   # state/jobs/refresh.failure.json: why the AI failed, if its stderr says (app.py reads only that)
         sys.exit(1)
     out = json.loads(m.group(1))
     counts = {}
