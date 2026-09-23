@@ -176,13 +176,16 @@ def _launch(step, *args, **kw):
         return p
 
 
-def _reap(step, p, secs):
+def _reap(step, p, secs, on_timeout=None):
     """Wait for a setup step's process (killing it if it outstays secs) -> exit code, then stop tracking it.
-    Tracked until here, so a child that closed its terminal but lives on can still be stopped by Quit."""
+    Tracked until here, so a child that closed its terminal but lives on can still be stopped by Quit.
+    on_timeout, if given, is called once the outstayer has been killed (the install says why it stopped)."""
     try:
         return p.wait(max(1, secs))
     except subprocess.TimeoutExpired:
         kill_tree(p)
+        if on_timeout:
+            on_timeout()
         return -1
     finally:
         with connect_lock:
@@ -307,22 +310,19 @@ def _install_one(step, argv, log, deadline):
     with open(log, "a", encoding="utf-8") as f:
         f.write("$ " + (subprocess.list2cmdline(argv) if WIN else shlex.join(argv)) + "\n")
         f.flush()
-        how = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if WIN else {"start_new_session": True}
-        # started and registered through _launch, as the sign-ins are, so a Quit either stops it or it never starts
+        how = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if WIN else {}
+        if sys.platform != "win32":  # a process group of its own, which is what kill_tree stops off Windows
+            how["start_new_session"] = True
+        # started and registered through _launch, stopped and untracked through _reap, as the sign-ins are
         p = _launch(step, argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, **how)
         if p is None:
             f.write("\nnot started: Open Loops is closing\n")
             return -1, False
-        try:
-            return p.wait(max(1, deadline - time.time())), False
-        except subprocess.TimeoutExpired:
-            kill_tree(p)
+        late = []
+        rc = _reap(step, p, deadline - time.time(), on_timeout=lambda: late.append(True))
+        if late:
             f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S} seconds\n")
-            return -1, True
-        finally:
-            with connect_lock:
-                if connect_procs.get(step) is p:
-                    connect_procs.pop(step)
+        return rc, bool(late)
 
 
 def run_install(body):
