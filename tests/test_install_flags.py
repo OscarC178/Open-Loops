@@ -296,6 +296,10 @@ try:
     py_dir = os.path.dirname(shutil.which("python3"))
     for label, extra in (("missing", {"PATH": f"{fakebin}:{py_dir}:/usr/bin:/bin"}),   # lsof lives in /usr/sbin
                          ("failing", {"PATH": f"{tmp / 'badlsof'}:{fakebin}:{os.environ['PATH']}"})):
+        if label == "missing" and shutil.which("lsof", path=extra["PATH"]):
+            # Linux keeps lsof in /usr/bin, which install.sh needs for everything else: no PATH hides only lsof there
+            say(f"SKIP lsof missing: lsof is in {os.path.dirname(shutil.which('lsof', path=extra['PATH']))} on this system")
+            continue
         home = tmp / f"home-lsof-{label}"
         old = old_install(home, "L")
         (tmp / "badlsof").mkdir(exist_ok=True)
