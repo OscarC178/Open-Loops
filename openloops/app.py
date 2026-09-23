@@ -75,6 +75,9 @@ if not STATE.exists():
 (ROOT / "state" / "logs").mkdir(parents=True, exist_ok=True)
 
 doctor_cache = {"at": 0, "result": None}
+# Bumped whenever the answer may have changed under a check already running (a setup step finished, Start over):
+# such a check still answers its caller but is never cached, so it cannot bring back a row the user just fixed.
+doctor_gen = {"n": 0}
 JOB_MOD = {"refresh": "refresh", "chase": "chase", "voice": "voice", "people": "people", "standing": "close_standing",
            "daylog": "daylog", "roadmap": "roadmap"}
 jobs = {k: {"running": False, "log": ""} for k in JOB_MOD}
@@ -138,6 +141,7 @@ CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later c
 URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
 connects = {}  # step -> {"running", "rc", "url", "started"}
+connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
 
 
 def connect_log(step):
@@ -205,14 +209,15 @@ def _connect_one(step, argv, log, deadline):
 def run_connect(step):
     """Start a Claude setup step in the background -> (started, error). One run per step at a time."""
     from . import agent
-    if (connects.get(step) or {}).get("running"):
-        return False, "already running"
     if agent.name() != "claude" or step not in agent.CONNECT_STEPS:
         return False, "no such setup step for " + agent.display_name()
+    with connect_lock:  # check and claim in one go
+        if (connects.get(step) or {}).get("running"):
+            return False, "already running"
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
     log = connect_log(step)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("", encoding="utf-8")
-    connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
 
     def go():
         rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
@@ -225,6 +230,7 @@ def run_connect(step):
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
         finally:
+            doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
             doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
             connects[step].update(running=False, rc=rc)
 
@@ -384,6 +390,7 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/doctor":
             import time as _t
             if body.get("force") or _t.time() - doctor_cache["at"] > 55:
+                gen = doctor_gen["n"]
                 args = [sys.executable, "-m", "openloops.doctor"] + (["--detect"] if body.get("detect") else [])
                 for attempt in (1, 2):  # a check that produced nothing gets one quiet retry before anyone hears about it
                     try:
@@ -402,11 +409,14 @@ class H(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 try:
-                    doctor_cache = {"at": _t.time(), "result": json.loads(out.strip().splitlines()[-1])}
+                    res = json.loads(out.strip().splitlines()[-1])
                 except Exception:
                     why = (out + err).strip()[-300:] or f"the check produced no output (exit code {rc})"
                     # not a connection problem: the checker itself did not answer. The page keeps its last good answer.
-                    doctor_cache = {"at": _t.time(), "result": {"all_ok": False, "error": why, "steps": [], "rc": rc}}
+                    res = {"all_ok": False, "error": why, "steps": [], "rc": rc}
+                if gen == doctor_gen["n"]:  # a check that started before a sign-in finished answers, but is not kept
+                    doctor_cache = {"at": _t.time(), "result": res}
+                return self._json(res)
             return self._json(doctor_cache["result"])
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
@@ -472,6 +482,7 @@ class H(BaseHTTPRequestHandler):
                 c[k] = {} if k == "people" else ([] if k == "voice_sample_people" else "")
             write_json(CONFIG, c)
             STATE.write_text(fresh_state(), encoding="utf-8")
+            doctor_gen["n"] += 1
             doctor_cache = {"at": 0, "result": None}
             return self._json({"ok": True})
         if self.path == "/api/chase":

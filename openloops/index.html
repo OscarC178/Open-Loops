@@ -727,9 +727,11 @@ async function startOver(){if(!confirm('Wipe the list, people picks and learned 
 async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').textContent=agentLabel()+' window opened — finish there, then come back. The ticks update by themselves.'}
 
 // ---------- doctor + the main loop ----------
-let docAt=0,docFails=0,docT=null,docSaid='';
+let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0;
 async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent=force?'checking…':'';
+ const seq=++docSeq;   // only the newest check may repaint: an older one can finish last and would undo a tick
  let r;try{r=await api('/api/doctor',{force:!!force,detect:true})}catch(e){r={all_ok:false,error:e.message,steps:[]}}
+ if(seq!==docSeq)return;
  docAt=Date.now();
  if(r.error){docFails++;clog(`connection check did not run (${docFails}x): `+r.error);
   if(!DOC||DOC.error)DOC=r;                                   // nothing good to fall back on: the page says so, plainly
