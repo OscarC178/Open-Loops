@@ -233,6 +233,10 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
    Saving writes `config.people`, then runs *Learn my tone* (`voice.py`) and the first scan automatically. With Gmail
    not connected, the first scan is the Slack-only pass (**Update Slack**), and setup finishes when it has run.
    Setup stays finished (`setup_done` in state.json): connecting Gmail later only offers **Run a full scan**.
+   The choice is also saved as `first_scan` (`"go"` / `"later"`) in config.json; a new install starts with `"later"`,
+   and the weekday refresh (and auto-chase) skips with one `SKIPPED:` line in the runner log until it is `"go"`. A run
+   the app starts (a button) always runs. An install from before this setting has no key, which counts as `"go"`.
+   `npm run refresh` / `python -m openloops.refresh` from a terminal counts as scheduled.
 4. Everything else (name, refresh time, domains, sending, timer) is in ⚙ Settings — no file editing needed.
 
 Manual equivalents, for support: `python -m openloops.doctor`, `python -m openloops.people`, `python -m openloops.voice`, `python -m openloops.refresh`,
@@ -262,6 +266,8 @@ its Settings is read, and written back when you press *done*.
 - the page never starts *Who's who*, *Learn my tone* or the first scan by itself, not even after a reload: each
   page load waits for **Start the first scan** (the button still works, and so do **Refresh** / **Update Slack**);
 - the header shows a grey **Test copy: no automatic scans** pill;
+- the weekday refresh and auto-chase skip on it even if a scheduled job points at it, and `--isolated` removes that
+  copy's own weekday job if it has one (a job for another copy is left alone);
 - the old-install port probe (8765–8784) is skipped, so nothing is sent to the copy you use every day.
 
 `OPENLOOPS_ISOLATED=1` in the environment does the same for any copy at run time

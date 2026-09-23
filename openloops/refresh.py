@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 
 from . import agent, messages
 from .paths import ROOT
-from .store import load_cfg, load_state, update_state
+from .store import load_cfg, load_state, scheduled_skip, update_state
 LOG = ROOT / "state" / "logs"
 LOG.mkdir(parents=True, exist_ok=True)
 CFG = load_cfg()
@@ -360,6 +360,10 @@ def apply(s, out, slack_only, now, slack_on=True, gmail_on=True):
 
 
 def main():
+    # not started by the app (the weekday task): nothing is read before Start the first scan, or on an isolated copy
+    skip = scheduled_skip()
+    if skip:
+        print("SKIPPED: " + messages.say("scheduled_isolated" if skip == "isolated" else "scheduled_later")); sys.exit(2)
     slack_on = bool(SELF_ID) and agent.slack_enabled()
     if SLACK_ONLY and not slack_on:
         print("SKIPPED: Slack is off or your Slack id is not known yet - run a full Refresh"); sys.exit(2)

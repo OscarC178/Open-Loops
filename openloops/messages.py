@@ -350,6 +350,14 @@ FAILURES = {
         "what": "Open Loops is ready to read your own messages, read-only, to see who you talk to, how you write and what is still open.",
         "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do.",
         "button": None},
+    "scheduled_isolated": {
+        "what": "This copy is an isolated test copy, so the scheduled refresh did not read anything.",
+        "fix": "Open its page and press Refresh when you want a scan.",
+        "button": None},
+    "scheduled_later": {
+        "what": "The first scan hasn't been started yet, so the scheduled refresh did not read anything.",
+        "fix": "Open Open Loops and press Start the first scan.",
+        "button": None},
     "first_scan_later": {
         "what": "Not started.",
         "fix": "Press Start the first scan when you're ready.",

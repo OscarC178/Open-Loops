@@ -133,6 +133,21 @@ def isolated(cfg=None):
         return False
 
 
+def scheduled_skip(cfg=None):
+    """Why a job NOT started by the app (the weekday task, a terminal) must not read anyone's accounts, or "" (#38/#36
+    review). The app starts every job with OPENLOOPS_RUN_ID set; without it the run is treated as scheduled.
+    -> "isolated": an isolated test copy starts no scan by itself;
+       "later":    config.json "first_scan" is "later": the first scan was not started on the page yet (a new install
+                   is written with "later"; Start the first scan writes "go"). No key at all = "go": installs from
+                   before this setting keep their morning refresh."""
+    if os.environ.get("OPENLOOPS_RUN_ID"):
+        return ""
+    cfg = cfg if cfg is not None else read_json(CONFIG, {}) or {}
+    if isolated(cfg if isinstance(cfg, dict) else {}):
+        return "isolated"
+    return "later" if isinstance(cfg, dict) and cfg.get("first_scan") == "later" else ""
+
+
 def load_state():
     return read_json(STATE, {"cursor": None, "last_refresh": None, "loops": []})
 

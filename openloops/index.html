@@ -492,8 +492,10 @@ const scanAllowed=()=>pressed||(!ISO&&GO==='go');
 const JOB_OF={people:'people',voice:'voice',scan:'refresh'};
 function waitsForGo(st){return !scanAllowed()&&!!JOB_OF[st]&&!kicked[st]&&!running(JOB_OF[st])&&!(st==='people'&&P)}
 function goRemember(v){GO=v;try{v?sessionStorage.setItem(GO_KEY,v):sessionStorage.removeItem(GO_KEY)}catch(e){}}
-function startScan(){pressed=true;goRemember('go');clog('first scan: started by the button');tick()}
-function notNow(){goRemember('later');clog('first scan: not now');tick()}
+// the choice also goes to config.json "first_scan", which the weekday task obeys (store.scheduled_skip)
+function saveChoice(v){api('/api/config',{first_scan:v}).catch(e=>clog('first scan choice not saved: '+errSaid(e)))}
+function startScan(){pressed=true;goRemember('go');saveChoice('go');clog('first scan: started by the button');tick()}
+function notNow(){goRemember('later');saveChoice('later');clog('first scan: not now');tick()}
 function paintStart(){$('#st_start').style.display='';$('#start_said').textContent=msg('first_scan',{days:histDays(),sources:scanSources()});
  $('#start_ask').textContent=msg('first_scan_ask');$('#start_msg').textContent=GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)

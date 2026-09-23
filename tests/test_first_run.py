@@ -222,6 +222,8 @@ if NODE:
               f"setup finished: the lists appear with the Slack loop, no full refresh needed ({e}, {out['state']})")
         check(out["meta"].startswith("slack ") and "never" not in out["meta"], f"the header says when Slack was read, not 'never' ({out['meta']!r})")
         check(out["persisted"] is True, "reaching ready saves setup_done in state.json")
+        check(json.loads((tmp / "config.json").read_text(encoding="utf-8")).get("first_scan") == "go",
+              "Start the first scan saved first_scan \"go\" in config.json")
         check(out["withGmail"] == {"stage": "ready", "lists": "", "later": "", "sources": "Slack and Gmail"},
               f"Gmail connected later: setup stays done, the lists stay, and a full scan is offered ({out['withGmail']})")
         check(out["fresh"] == {"stage": "scan", "slackOnly": False},
@@ -243,10 +245,14 @@ if NODE:
               "five ticks and Not now: no job started, by the page or on the server")
         check(out["after"]["later"] == "Not started. Press Start the first scan when you're ready." and out["SS"] == {"ol.firstscan": "later"},
               f"Not now says so and is remembered for the tab ({out['after']['later']!r}, {out['SS']})")
+        check(json.loads((tmp / "config.json").read_text(encoding="utf-8")).get("first_scan") == "later",
+              "...and saved as first_scan \"later\" in config.json, for the weekday task")
         out = page_js(port, {"ol.firstscan": "later"}, "await boot();await tick();await tick();out.reload=snap();", tmp)
         check(out["reload"]["shown"] == ["start"] and out["reload"]["jobs"] == [] and out["reload"]["later"].startswith("Not started."),
               "a reload after Not now still waits, and still says so")
         out = page_js(port, {"ol.firstscan": "go"}, "await boot();await tick();out.reload=snap();await waitJob('people');", tmp)
+        check(json.loads((tmp / "config.json").read_text(encoding="utf-8")).get("first_scan") == "later",
+              "a reload changes nothing in config.json")
         check(out["reload"]["jobs"] == ["/api/people {}"] and out["reload"]["shown"] == ["people"],
               "a session that pressed Start the first scan carries on after a reload (not an isolated copy)")
     finally:
@@ -378,6 +384,46 @@ else:
           and not rows["self"]["ok"], f"Claude missing: 'At least one source' says install Claude first ({rows['channel']['fix']!r})")
     shutil.rmtree(tmp, ignore_errors=True)
 
+# ---------------------------------------------------------------- 6. the scheduled runner obeys the choice and isolation
+say("6. a refresh not started by the app (the weekday task) skips before the first scan and on an isolated copy")
+if sys.platform == "win32":
+    say("SKIP part 6 on Windows: the fake claude here is a POSIX script")
+else:
+    tmp = install_with_fake("openloops-firstrun-sched-", {"slack_self_id": "U0TEST12345"})
+    (tmp / "state.json").write_text(json.dumps({"cursor": "2026-09-01T00:00+00:00", "last_refresh": None, "loops": []}), encoding="utf-8")
+    cfgf = tmp / "config.json"
+    base_cfg = json.loads(cfgf.read_text(encoding="utf-8"))
+    env = {k: v for k, v in env_for(tmp).items() if k != "OPENLOOPS_RUN_ID"}   # as run-refresh.sh starts it
+    for label, extra, want in (("first_scan later", {"first_scan": "later"}, messages.say("scheduled_later")),
+                               ("isolated", {"isolated": True, "first_scan": "go"}, messages.say("scheduled_isolated")),
+                               ("no first_scan key (an install from before)", {}, None)):
+        cfgf.write_text(json.dumps(dict(base_cfg, **extra), indent=2), encoding="utf-8")
+        (tmp / "bin" / "prompts.txt").unlink(missing_ok=True)
+        r = subprocess.run([sys.executable, "-m", "openloops.refresh"], cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+        if want:
+            check(r.returncode == 2 and r.stdout.strip().endswith("SKIPPED: " + want) and prompts(tmp) == [],
+                  f"scheduled, {label}: SKIPPED in one plain line, the AI never asked ({r.stdout.strip()[-160:]!r})")
+        else:
+            check(r.returncode == 0 and prompts(tmp) == ["refresh-full"], f"scheduled, {label}: runs as before (rc {r.returncode})")
+    r = subprocess.run([sys.executable, "-m", "openloops.autochase"], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
+    cfgf.write_text(json.dumps(dict(base_cfg, isolated=True, auto_chase={"enabled": True}), indent=2), encoding="utf-8")
+    r = subprocess.run([sys.executable, "-m", "openloops.autochase"], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
+    check(r.returncode == 0 and "SKIPPED: auto-chase (isolated)" in r.stdout, f"scheduled auto-chase skips on an isolated copy ({r.stdout.strip()!r})")
+    for label, extra in (("first_scan later", {"first_scan": "later"}), ("isolated", {"isolated": True})):
+        cfgf.write_text(json.dumps(dict(base_cfg, **extra), indent=2), encoding="utf-8")
+        (tmp / "bin" / "prompts.txt").unlink(missing_ok=True)
+        srv, port = start_app(tmp, env_for(tmp))
+        try:
+            api(port, "/api/refresh", {})
+            t1 = time.time()
+            while time.time() - t1 < 20 and api(port, "/api/state")["jobs"]["refresh"]["running"]:
+                time.sleep(0.1)
+            j = api(port, "/api/state")["jobs"]["refresh"]
+            check(j.get("rc") == 0 and prompts(tmp) == ["refresh-full"], f"started by the app, {label}: the refresh runs (a press is consent) ({j.get('rc')}, {prompts(tmp)}, {j.get('log', '')[-200:]!r})")
+        finally:
+            stop(srv)
+    shutil.rmtree(tmp, ignore_errors=True)
+
 # ---------------------------------------------------------------- 4. the installers
 say("4. install.sh --isolated, and setup.ps1 -Isolated (static)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
@@ -386,6 +432,8 @@ check("[switch]$Isolated" in code and "if ($Isolated) { $NoApp = [switch]$true; 
       "setup.ps1 takes -Isolated, which implies -NoApp and -NoTask")
 check(code.count("-NotePropertyName isolated -NotePropertyValue $true") == 2 and "PSObject.Properties.Remove('isolated')" in code
       and "-or $Isolated" in code, "setup.ps1 writes isolated (and test_copy) on a new and an existing config.json, and takes it off without")
+check('-NotePropertyName first_scan -NotePropertyValue "later"' in code and 'Get-ScheduledTask -TaskName "Claude Open Loops Refresh"' in code
+      and 'register-task.ps1") -Remove' in code, "setup.ps1: a new config.json waits for the page; -Isolated removes this folder's own task")
 check("AddDays(-7)" not in code and "history_days" in code and "AddDays(-$days)" in code,
       "setup.ps1: the first-scan cursor is history_days back, not a week")
 if sys.platform == "win32":
@@ -398,7 +446,7 @@ try:
     fakebin = tmp / "bin"
     fakebin.mkdir()
     for name, body in (("claude", "#!/bin/bash\nexit 0\n"),
-                       ("launchctl", f"#!/bin/bash\necho \"$*\" >> '{tmp / 'launchctl.log'}'\nexit 113\n"),
+                       ("launchctl", f"#!/bin/bash\necho \"$*\" >> '{tmp / 'launchctl.log'}'\n[ \"$1\" = print ] && exit 113\nexit 0\n"),
                        ("curl", f"#!/bin/bash\necho \"$*\" >> '{tmp / 'curl.log'}'\nexit 7\n")):
         (fakebin / name).write_text(body)
         (fakebin / name).chmod(0o755)
@@ -415,6 +463,7 @@ try:
     r = install(home, "--dest", str(dest), "--isolated", "--no-launch", "--port", "8790", "--name", "Test")
     check(r.returncode == 0, f"install.sh --isolated finished ({(r.stdout + r.stderr)[-300:].strip() if r.returncode else 'ok'})")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
+    check(cfg.get("first_scan") == "later", "a new config.json starts with first_scan \"later\": the weekday task waits for the page")
     check(cfg.get("isolated") is True and cfg.get("test_copy") is True and cfg.get("port") == 8790,
           "--isolated writes \"isolated\": true and \"test_copy\": true into config.json")
     check(not (home / "Applications").exists() and not (home / "Desktop" / "Open Loops.app").exists()
@@ -428,6 +477,18 @@ try:
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
     check(r.returncode == 0 and "isolated" not in cfg and cfg.get("test_copy") is True and cfg.get("owner_name") == "Test",
           "a re-run without --isolated takes the mark off (still a test copy by its flags), keeping the rest")
+    # a copy that has the weekday job, then made isolated: its job goes
+    dest3 = tmp / "OpenLoops-scheduled"
+    r = install(home, "--dest", str(dest3), "--no-app", "--no-launch", "--name", "Sched")
+    plist = home / "Library" / "LaunchAgents" / "com.openloops.refresh.plist"
+    check(r.returncode == 0 and plist.exists() and str(dest3) in plist.read_text(errors="replace"),
+          f"a copy installed with its weekday job ({(r.stdout + r.stderr)[-200:].strip() if r.returncode else 'ok'})")
+    r = install(home, "--dest", str(dest3), "--isolated", "--no-launch")
+    check(r.returncode == 0 and not plist.exists() and "Removed this copy's weekday refresh" in r.stdout,
+          "install.sh --isolated over it removes that copy's weekday job, so the pill is true")
+    r = install(home, "--dest", str(dest3), "--no-app", "--no-launch")
+    install(home, "--dest", str(dest), "--isolated", "--no-launch")
+    check(plist.exists(), "...and --isolated on another copy leaves a job that runs a different copy alone")
 
     # over an old ~/Documents install, at the default place: copied, and no port probed
     home2 = tmp / "home2"

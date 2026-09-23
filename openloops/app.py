@@ -15,7 +15,7 @@ STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
 VOICEF = ROOT / "voice.json"
-EDITABLE = ("agent", "model", "effort", "codex_model", "codex_effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
+EDITABLE = ("first_scan", "agent", "model", "effort", "codex_model", "codex_effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
 import os
 def _port_arg():
     """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
@@ -795,7 +795,8 @@ class H(BaseHTTPRequestHandler):
             # "Start over": back to the state a brand-new user sees, keeping only name/domains/tone settings.
             # Config first: if it cannot be read, refuse before deleting anything, so an unreadable
             # config.json never leaves the user with no list AND stale people/Slack id (Codex review, #21).
-            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="")) is False:
+            # first_scan "later": a brand-new user again, so the weekday task reads nothing until Start the first scan
+            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="", first_scan="later")) is False:
                 return self._json({"ok": False, "error": messages.say("config_unreadable"),
                                    "detail": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
             for f in (STATE, VOICEF, PEOPLEF):

@@ -153,6 +153,7 @@ if (-not (Test-Path $CfgFile)) {
     if ($Port) { $tpl | Add-Member -NotePropertyName port -NotePropertyValue $Port -Force }   # app.py: --port, OPENLOOPS_PORT, then this
     if ($TestCopy) { $tpl | Add-Member -NotePropertyName test_copy -NotePropertyValue $true -Force }   # doctor.is_test_copy
     if ($Isolated) { $tpl | Add-Member -NotePropertyName isolated -NotePropertyValue $true -Force }   # store.isolated (#36)
+    $tpl | Add-Member -NotePropertyName first_scan -NotePropertyValue "later" -Force   # the task reads nothing until Start the first scan
     $tpl | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
 }
 Ok "Files in place"
@@ -176,6 +177,15 @@ if ($NoApp) {
 }
 
 # ---------- 5. Morning refresh ----------
+# -Isolated over a copy that has the weekday task (one per user): remove it, so "no automatic scans" is true. Only a
+# task whose action runs in THIS folder; one for another copy is left alone (refresh.py skips on an isolated copy anyway).
+if ($Isolated) {
+    $task = Get-ScheduledTask -TaskName "Claude Open Loops Refresh" -ErrorAction SilentlyContinue
+    if ($task -and ($task.Actions | Where-Object { $_.WorkingDirectory -and ([IO.Path]::GetFullPath($_.WorkingDirectory).TrimEnd('\') -eq $Dest.TrimEnd('\')) })) {
+        powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -Remove | Out-Null
+        Ok "Removed this copy's weekday refresh (-Isolated: it starts no scan by itself)"
+    }
+}
 if ($NoTask) {
     Ok "Skipped the weekday refresh (-NoTask): whatever was already scheduled is unchanged"
 } else {

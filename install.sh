@@ -187,6 +187,7 @@ if test_copy == "1":
     cfg["test_copy"] = True  # doctor.is_test_copy
 if isolated == "1":
     cfg["isolated"] = True   # store.isolated: no to-do file, no scan by itself (#36)
+cfg["first_scan"] = "later"  # the weekday task reads nothing until Start the first scan (store.scheduled_skip)
 json.dump(cfg, open(cfg_path, "w", encoding="utf-8"), indent=2)
 PYEOF
 else
@@ -248,6 +249,23 @@ else
 fi
 
 # ---------- 5. Morning refresh ----------
+# --isolated over a copy that has the weekday job (there is one per Mac): take it away, so "no automatic scans" is
+# true. Only a job whose plist runs THIS copy's script; one for another copy is left alone. (refresh.py skips on an
+# isolated copy anyway: this is the second line.)
+PLIST="$HOME/Library/LaunchAgents/com.openloops.refresh.plist"
+if [ "$ISOLATED" -eq 1 ] && [ -f "$PLIST" ] && python3 - "$PLIST" "$DEST" <<'PYEOF'
+import os, plistlib, sys
+try:
+    args = plistlib.load(open(sys.argv[1], "rb")).get("ProgramArguments") or []
+except Exception:
+    sys.exit(1)   # unreadable: not provably ours, left alone
+mine = os.path.realpath(os.path.join(sys.argv[2], "scripts", "run-refresh.sh"))
+sys.exit(0 if any(isinstance(a, str) and os.path.realpath(a) == mine for a in args) else 1)
+PYEOF
+then
+    bash "$DEST/scripts/register-task.sh" --remove >/dev/null
+    ok "Removed this copy's weekday refresh (--isolated: it starts no scan by itself)"
+fi
 if [ "$NO_TASK" -eq 1 ]; then
     ok "Skipped the weekday refresh (--no-task): whatever this Mac already had registered is unchanged"
 else
