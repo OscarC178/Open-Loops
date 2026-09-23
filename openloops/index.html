@@ -480,6 +480,9 @@ function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=doc
  while(box.children.length>=toastMax())box.firstElementChild.remove();
  box.appendChild(t);requestAnimationFrame(()=>requestAnimationFrame(()=>{de.style.overflowAnchor=''}));
  setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
+// A window narrowed while three toasts are up keeps only the newest two, once the resizing settles (review of #59)
+function trimToasts(){const box=$('#toasts');while(box.children.length>toastMax())box.firstElementChild.remove()}
+let toastRT=null;addEventListener('resize',()=>{clearTimeout(toastRT);toastRT=setTimeout(trimToasts,150)});
 // ---------- one dialog for snooze / note / link / vault close ----------
 let dlgOk=null;
 function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textContent=o.sub||'';$('#dlg_err').textContent='';$('#dlg_ok').textContent=o.ok||'OK';$('#dlg_ok').disabled=false;

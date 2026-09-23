@@ -666,6 +666,15 @@ for n, want_ in ((1, "1 line · last"), (2, "2 lines · last")):
           json.dumps(["2026-09-23 10:00:0%d  x" % i for i in range(n)]) + ";\n" + CP + "\nconPaint();console.log($('#con_meta').textContent)")
     r5 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
     check(r5.returncode == 0 and r5.stdout.strip().startswith(want_), f"Console header with {n} line(s): {r5.stdout.strip()!r} {r5.stderr.strip()[-150:]}")
+# review of #59: three toasts up at 1280 px, the window narrowed to 400 px: the resize handler keeps the newest two
+TR = "\n".join([grab("const TOAST_MAX="), grab("const toastMax="), grab("function trimToasts("), grab("let toastRT=null;")])
+js = ("let innerWidth=1280;const L={};function addEventListener(k,f){L[k]=f}const kids=['t0','t1','t2'];"
+      "const box={children:kids,get firstElementChild(){return {remove(){kids.shift()}}}};const $=()=>box;\n" + TR +
+      "\ntrimToasts();const wide=kids.length;innerWidth=400;L.resize();L.resize();"
+      "setTimeout(()=>console.log(JSON.stringify([wide,kids])),300)")
+r7 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+check(r7.returncode == 0 and json.loads(r7.stdout.strip()) == [3, ["t1", "t2"]],
+      f"toasts: three stay at 1280 px; narrowing to 400 px trims to the newest two ({r7.stdout.strip()!r} {r7.stderr.strip()[-150:]})")
 PS = grab("window.addEventListener('pageshow'")
 for ok_, want_ in ((True, "reload"), (False, "loop")):
     js = ("let did=[];const location={reload:()=>did.push('reload')};const loop=()=>did.push('loop');let stopped=false;const H={};"
