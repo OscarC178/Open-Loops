@@ -784,7 +784,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   suDoc=true;doctor(false).catch(()=>{}).finally(()=>{suDoc=false;paintSetup(stage())})}
  const a=aiSwitching||(C&&C.agent)||'claude',stale=suBusy==='agent'||aiPending(),anyRun=suRunning(Object.keys(CONN))||jobRunning();
  // 1. your AI: the choice, then its two rows (installed, signed in); the one button is the row's, else Open Grok / Check again
- setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
+ setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun||stale?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
  const ai=stale?[]:suRows(SU_AI),aiFirst=(ai.find(s=>!s.ok&&s.connect)||{}).connect;
  setHTML($('#su_ai_rows'),stale?`<div class="sub" style="padding:6px 0"><span class="spin"></span>Checking ${esc(aiName(a))} on this computer…</div>`:ai.map(s=>checkRow(s,s.connect===aiFirst)).join(''));
  const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
@@ -810,7 +810,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :'The first scan has started; how far it has got shows below.';
  suPill('#su_sched_state',suState('sched',st));
  $('#su_all_sub').textContent='each check on its own, and Open '+agentLabel()+' for anything a button can\'t do'}
-async function chooseAI(a){if(suBusy||!C||(C.agent||'claude')===a||suRunning(Object.keys(CONN)))return;
+async function chooseAI(a){if(suBusy||aiPending()||!C||(C.agent||'claude')===a||suRunning(Object.keys(CONN)))return;   // aiPending: the last change's check is not in yet (#56)
  if(jobRunning()){toast(`Open Loops is still running a job with ${aiName(C.agent||'claude')}. Change your AI once it has finished.`,{err:true});return}
  suBusy='agent';aiSwitching=a;tick();   // "checking" until the new AI's own check is in: nothing starts meanwhile
  try{await api('/api/config',{agent:a});clog('set-up: your AI is now '+a);

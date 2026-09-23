@@ -865,6 +865,11 @@ if NODE:
  out.pending={pend:aiPending(),v:view(),uslack:$('#uslack').style.display};
  let n=CALLS.length;await startScan();await refresh();await learnVoice();out.pendCalls=CALLS.slice(n);out.pendToasts=TOASTS.slice();
  await p;fs.unlinkSync(BIN+'/slow');out.after={pend:aiPending(),doc:DOC.agent,stage:stage()};
+ // #56: doctor(true) has resolved (suBusy clear) but the answer is still another AI's: the picker stays disabled
+ const dis=()=>($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length;
+ const d0=DOC;DOC=Object.assign({},d0,{agent:'claude'});paintSetup(stage());
+ out.gap={pend:aiPending(),busy:suBusy,disabled:dis()};n=CALLS.length;await chooseAI('grok');out.gap.calls=CALLS.slice(n);out.gap.agent=C.agent;
+ DOC=d0;paintSetup(stage());out.gap.after=dis();
  J.refresh=Object.assign({},J.refresh,{running:true});n=CALLS.length;TOASTS.length=0;await chooseAI('claude');
  out.job={calls:CALLS.slice(n),toasts:TOASTS.slice(),agent:C.agent};J.refresh.running=false;
  FAIL_ONCE.add('/api/doctor');n=CALLS.length;await chooseAI('claude');
@@ -878,6 +883,9 @@ if NODE:
         check(out["pendCalls"] == [] and any("still checking Codex" in t for t in out["pendToasts"]),
               f"...Start, Refresh and Learn my tone start nothing then, and say why ({out['pendCalls']}, {out['pendToasts'][-1:]})")
         check(out["after"] == {"pend": False, "doc": "codex", "stage": "connect"}, f"once the check is in, the page follows Codex's own rows ({out['after']})")
+        g = out["gap"]
+        check(g["pend"] is True and g["busy"] == "" and g["disabled"] == 3 and g["calls"] == [] and g["agent"] == "codex" and g["after"] == 0,
+              f"#56: check resolved but not yet for the new AI: all three choices disabled and a press starts nothing ({g})")
         check(out["job"]["calls"] == [] and out["job"]["agent"] == "codex"
               and out["job"]["toasts"] == ["Open Loops is still running a job with Codex. Change your AI once it has finished."],
               f"changing the AI while a job runs is refused, in a sentence ({out['job']['toasts']})")
