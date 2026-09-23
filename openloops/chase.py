@@ -126,7 +126,7 @@ def main(loop_id):
                     x["last_chase_mode"] = mode
         update_state(mark)
     else:
-        messages.report(p, "chase", agent.display_name())   # state/jobs/chase.failure.json: why the AI failed, if its stderr says (app.py reads only that)
+        messages.report(p, "chase")   # this run's failure file (state/jobs/): why the AI failed, if its stderr says (app.py reads only that)
         sys.exit(1)
 
 

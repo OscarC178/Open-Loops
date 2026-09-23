@@ -18,7 +18,7 @@ import json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-from _helpers import fresh_install, isolate_this_process, isolated_env, start_app, stop  # noqa: E402
+from _helpers import fresh_install, isolate_this_process, isolated_env, start_app, stop, wait_until  # noqa: E402
 isolate_this_process("openloops-messages-parent-")
 from openloops import agent, messages  # noqa: E402
 from openloops.messages import FAILURES, say  # noqa: E402
@@ -197,19 +197,39 @@ check(messages.ai_failure.__code__.co_varnames[:3] == ("rc", "stderr", "refused"
 import contextlib, io  # noqa: E402,E401
 
 
-def reported(p, job="t"):
-    """What report() leaves behind: (the failure file's record or None, what it printed)."""
-    f = messages.failure_file(job)
-    f.unlink(missing_ok=True)
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        messages.report(p, job, "Claude")
-    return (json.loads(f.read_text(encoding="utf-8")) if f.exists() else None), buf.getvalue()
+RID = "0123456789abcdef0123456789abcdef"
 
 
+def reported(p, job="t", run_id=RID, ai="Claude"):
+    """What report() leaves behind for a run started with OPENLOOPS_RUN_ID / OPENLOOPS_AI -> (record or None, printed)."""
+    env = {k: v for k, v in (("OPENLOOPS_RUN_ID", run_id), ("OPENLOOPS_AI", ai)) if v}
+    old = {k: os.environ.pop(k, None) for k in ("OPENLOOPS_RUN_ID", "OPENLOOPS_AI")}
+    os.environ.update(env)
+    try:
+        f = messages.failure_file(job)
+        f.unlink(missing_ok=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            messages.report(p, job)
+        return (json.loads(f.read_text(encoding="utf-8")) if f.exists() else None), buf.getvalue()
+    finally:
+        for k, v in old.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
+check(messages.failure_file("people", RID).name == f"people.{RID}.failure.json"
+      and messages.failure_file("people", "").name == "people.scheduled.failure.json"
+      and messages.failure_file("people", "../../x").name == "people.scheduled.failure.json",
+      "one failure file per run id; no id (the scheduled refresh, a terminal) or a malformed one -> <job>.scheduled")
 rec, out = reported(CompletedProcess([], 1, "", "Invalid API key · Please run /login"))
-check(rec and rec["failure"] == "job_signed_out" and rec["ai"] == "Claude" and rec["at"] and out == "",
-      "report() writes state/jobs/<job>.failure.json {failure, ai, at} and prints nothing")
+check(rec and rec["failure"] == "job_signed_out" and rec["run_id"] == RID and rec["ai"] == "Claude" and rec["at"] and out == "",
+      "report() writes state/jobs/<job>.<run_id>.failure.json {run_id, failure, ai, at} and prints nothing")
+rec, _ = reported(CompletedProcess([], 1, "", "Invalid API key"), ai="Grok")
+check(rec["ai"] == "Grok", "report() names OPENLOOPS_AI, the AI captured when the run started, not the one chosen now")
+rec, _ = reported(CompletedProcess([], 1, "", "Invalid API key"), run_id="")
+check(rec and rec["run_id"] == "scheduled", "a run with no id records itself as scheduled (in <job>.scheduled.failure.json)")
 rec, _ = reported(CompletedProcess([], 1, "Not logged in to the expenses portal, can you help?", ""))
 check(rec is None, "stdout 'Not logged in to the expenses portal, can you help?': NOT classified, no file")
 rec, _ = reported(CompletedProcess([], 1, EMAIL, ""))
@@ -222,8 +242,8 @@ check(rec and rec["failure"] == "codex_timeout" and rec["said"] == line, "a refu
 check(jf("refresh", 3, "whatever", failure=rec) == ("codex_timeout", line), "...which is what the page shows")
 check(jf("refresh", 1, "!! no OPENLOOPS block\nInvalid API key\nOPENLOOPS_FAILURE: job_signed_out")[0] == "job_failed",
       "job_failure: nothing in the job's output decides, only the failure file")
-check(jf("refresh", 1, "x", failure={"failure": "job_signed_out", "ai": "Grok"})[1].startswith("The refresh stopped because Grok"),
-      "the file decides, and names the AI the run used")
+check(jf("refresh", 1, "x", ai="Claude", failure={"failure": "job_signed_out", "ai": "Grok"})[1].startswith("The refresh stopped because Claude"),
+      "the record picks the sentence; the AI named is the one the app captured at start, never the record's")
 check(jf("refresh", 1, "x", failure={"failure": "server_offline"})[0] == "job_failed", "an id that is not a job failure is ignored")
 i, said = jf("voice", 1, "!! no VOICE block. See log.")
 check(i == "job_failed" and said.startswith("Learning your tone didn't finish."), f"anything else: the job, named, didn't finish ({said!r})")
@@ -240,8 +260,44 @@ check(e["failure"] == "job_signed_out" and e["said"].startswith("The refresh sto
 check("said" not in app._ended("refresh", 0, "done") and "said" not in app._ended("chase", 2, "SKIPPED: x"),
       "app: a job that worked, or was SKIPPED (exit 2, it says why itself), carries no failure")
 src = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
-check(src.index("ai = _ai_now()") < src.index("ff.unlink(") < src.index("p = subprocess.Popen(args"),
-      "app: the AI's name is taken, and an old failure file removed, when the job starts")
+run_src = src[src.index("def run_job("):]
+check(run_src.index('jobs[name] = {"running": True') < run_src.index("ai = _ai_now()") < run_src.index("OPENLOOPS_RUN_ID=run_id, OPENLOOPS_AI=ai")
+      < run_src.index("p = subprocess.Popen(args"), "app: the job is claimed, and its AI and run id taken, before the process starts")
+
+# a record that cannot be deleted is not swallowed: the job's log says so (and it is still this run's own file only)
+stuck = messages.failure_file("voice", RID)
+stuck.mkdir(parents=True, exist_ok=True)   # a folder where the file should be: unlink fails
+rec_, note_ = app._run_failure("voice", RID, 1)
+check(rec_ is None and "could not remove" in note_ and stuck.name in note_, f"a failure file that will not go is noted in the job's log ({note_.strip()!r})")
+stuck.rmdir()
+
+# two starts at the same moment: one run (the claim is taken under a lock before the process starts)
+import threading  # noqa: E402
+started, real_popen = [], app.subprocess.Popen
+
+
+class SlowProc:
+    pid, returncode = 999999, 0
+
+    def __init__(self, *a, **kw):
+        started.append(kw.get("env", {}).get("OPENLOOPS_RUN_ID"))
+        time.sleep(0.3)
+
+    def communicate(self):
+        return "", ""
+
+
+app.subprocess.Popen = SlowProc
+try:
+    gate, res = threading.Barrier(8), []
+    ts = [threading.Thread(target=lambda: (gate.wait(), res.append(app.run_job("daylog")))) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    wait_until(lambda: not app.jobs["daylog"]["running"], 5)
+finally:
+    app.subprocess.Popen = real_popen
+check(res.count(True) == 1 and len(started) == 1 and messages.RUN_ID_RE.fullmatch(started[0] or ""),
+      f"eight simultaneous starts: one run, with a run id ({res.count(True)} started, {len(started)} processes)")
 
 # end to end through the app: a real people.py job against a fake claude
 if sys.platform != "win32":
@@ -271,10 +327,23 @@ if sys.platform != "win32":
         j = run_people("print('OPENLOOPS_FAILURE: job_signed_out')\nprint('Not logged in to the expenses portal, can you help?')\n")
         check(j["rc"] == 1 and j.get("failure") == "job_failed",
               "the AI's answer printing 'OPENLOOPS_FAILURE: job_signed_out' / 'Not logged in…' cannot forge a sign-out")
-        (e2e / "state" / "jobs").mkdir(parents=True, exist_ok=True)
-        (e2e / "state" / "jobs" / "people.failure.json").write_text('{"failure": "job_signed_out", "ai": "Claude"}', encoding="utf-8")
+        jd = e2e / "state" / "jobs"
+        jd.mkdir(parents=True, exist_ok=True)
+        other = jd / "people.ffffffffffffffffffffffffffffffff.failure.json"
+        sched = jd / "people.scheduled.failure.json"
+        other.write_text(json.dumps({"run_id": "f" * 32, "failure": "job_signed_out", "ai": "Claude"}), encoding="utf-8")
+        sched.write_text(json.dumps({"run_id": "scheduled", "failure": "job_signed_out", "ai": "Claude"}), encoding="utf-8")
         j = run_people("raise SystemExit(1)\n")
-        check(j.get("failure") == "job_failed", "a failure file left by an earlier run does not speak for this one")
+        check(j.get("failure") == "job_failed" and other.exists() and sched.exists(),
+              "another run's failure file and the scheduled run's are ignored (and left alone)")
+        cfgf = e2e / "config.json"
+        j = run_people("import json, sys\n"
+                       f"p = {str(cfgf)!r}\nc = json.load(open(p)); c['agent'] = 'grok'; json.dump(c, open(p, 'w'))\n"
+                       "sys.stderr.write('Invalid API key\\n'); sys.exit(1)\n")
+        check(j.get("failure") == "job_signed_out" and "because Claude has signed you out" in j.get("said", ""),
+              f"the AI switched to Grok while the run was going: the sentence names Claude, which ran ({j.get('said')!r})")
+        check(not [f for f in jd.glob("people.*.failure.json") if f not in (other, sched)],
+              "the app deletes its own run's failure file once read")
     finally:
         stop(srv2)
         shutil.rmtree(e2e, ignore_errors=True)

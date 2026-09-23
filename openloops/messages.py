@@ -15,6 +15,8 @@ index.html as it serves it, for the platform it runs on), so it can still say "O
 server has gone. Placeholders ({ai}, {vendor}, ...) are filled by whoever shows the sentence.
 """
 import json
+import os
+import re
 import string
 import sys
 from datetime import datetime
@@ -420,11 +422,16 @@ AI_SIGNS = (
 CODEX_JOB_IDS = ("codex_keyring", "codex_signin", "codex_link", "codex_cold", "codex_limit", "codex_expired",
                  "codex_failed", "codex_unlisted", "codex_notools", "codex_stale", "codex_nosources", "codex_timeout",
                  "codex_start")
-FAILURE_DIR = ROOT / "state" / "jobs"   # <job>.failure.json: why a job's AI run failed, written by the job itself
+FAILURE_DIR = ROOT / "state" / "jobs"   # why a job's AI run failed, written by the job itself, one file per run
+RUN_ID_RE = re.compile(r"[0-9a-f]{32}")   # uuid4().hex, as app.run_job makes it
 
 
-def failure_file(job):
-    return FAILURE_DIR / f"{job}.failure.json"
+def failure_file(job, run_id=None):
+    """state/jobs/<job>.<run_id>.failure.json for the run app.py started (run_id: argument, else OPENLOOPS_RUN_ID from
+    the environment app.py gave the job). A run nobody gave an id (the scheduled morning refresh, a terminal) writes
+    <job>.scheduled.failure.json, which the app never reads: no run can take another run's reason (#25 review)."""
+    rid = run_id if run_id is not None else os.environ.get("OPENLOOPS_RUN_ID", "")
+    return FAILURE_DIR / (f"{job}.{rid}.failure.json" if RUN_ID_RE.fullmatch(rid or "") else f"{job}.scheduled.failure.json")
 
 
 def ai_failure(rc, stderr="", refused=""):
@@ -441,35 +448,46 @@ def ai_failure(rc, stderr="", refused=""):
     return ""
 
 
-def report(p, job, ai):
+def report(p, job, ai=None):
     """For a job about to exit 1 after an AI run p (a CompletedProcess): when the run's stderr or Codex's structured
-    reason says why it failed, write state/jobs/<job>.failure.json = {"failure", "ai", "at"} (plus "said": the filled-in
-    sentence Codex's run printed). A file, not a line on stdout: nothing the model writes can forge it (#25 review).
-    app.py deletes the file when the job starts and reads it when the job has exited."""
+    reason says why it failed, write this run's failure_file(job) = {"run_id", "failure", "ai", "at"} (plus "said": the
+    filled-in sentence Codex's run printed). A file, not a line on stdout: nothing the model writes can forge it, and one
+    per run, so no other run's reason is taken for this one (#25 review). "ai" is OPENLOOPS_AI, the AI app.py captured
+    when it started the job; only a run with no such variable (scheduled, terminal) asks for it now."""
     fid = ai_failure(p.returncode, p.stderr, getattr(p, "refused", "") or "")
     if not fid:
         return
-    rec = {"failure": fid, "ai": ai, "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+    if not ai:
+        ai = os.environ.get("OPENLOOPS_AI") or ""
+    if not ai:
+        from . import agent   # here, not at the top: agent imports this module
+        ai = agent.display_name()
+    rid = os.environ.get("OPENLOOPS_RUN_ID", "")
+    rec = {"run_id": rid if RUN_ID_RE.fullmatch(rid) else "scheduled", "failure": fid, "ai": ai,
+           "at": datetime.now().astimezone().isoformat(timespec="seconds")}
     if fid in CODEX_JOB_IDS:  # a refused Codex run's stdout is Open Loops' own sentence (agent.CODEX_REFUSE), not the model's
         lead = FAILURES[fid]["what"].split("{")[0].strip()
         first = ((p.stdout or "").strip().splitlines() or [""])[0].strip()
         rec["said"] = first if lead and first.startswith(lead) else say(fid, limit="the time allowed", store="your system keychain")
-    try:
+    try:  # written whole, then renamed into place: a reader never sees half a record
         FAILURE_DIR.mkdir(parents=True, exist_ok=True)
-        failure_file(job).write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        f = failure_file(job)
+        tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, f)
     except OSError:
         pass  # the page falls back to "didn't finish"
 
 
 def job_failure(name, rc, log, ai="Claude", failure=None):
     """The failure id and sentence for a job that ended with exit code rc (not 0, not 2 = SKIPPED) -> (id, said).
-    failure: the job's own state/jobs/<job>.failure.json (report()), the only thing that picks a specific sentence; its
-    "ai" (the AI the run used) names the party. Without it: the plain "didn't finish". The log is never read for why."""
+    failure: this run's own failure file (report()), the only thing that picks a specific sentence; ai: the AI the app
+    captured when it started the run. Without it: the plain "didn't finish". The log is never read for why."""
     job = JOBS.get(name, "The " + name)
     if rc == -1 and log.startswith("could not start"):
         return "job_start_failed", say("job_start_failed", job=job, job_lower=job[0].lower() + job[1:])
     rec = failure if isinstance(failure, dict) else {}
-    fid, ai = rec.get("failure") or "", rec.get("ai") or ai
+    fid = rec.get("failure") or ""   # ai stays the name the app captured at start: the record never overrides it
     if fid in CODEX_JOB_IDS:
         return fid, rec.get("said") or say(fid, limit="the time allowed", store="your system keychain")
     if fid in ("job_signed_out", "job_usage_limit", "job_network"):

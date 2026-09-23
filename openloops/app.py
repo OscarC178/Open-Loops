@@ -3,7 +3,7 @@
     python3 -m openloops.app            -> http://localhost:8765
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
-import json, re, shlex, shutil, socket, subprocess, sys, threading, time, webbrowser
+import json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -136,33 +136,48 @@ def _ended(name, rc, log, ai="Claude", failure=None):
     return j
 
 
-def run_job(name, extra=None):
-    if jobs[name]["running"]:
-        return False
-    args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
-    ai = _ai_now()  # the AI this run uses, for its sentence if it fails
-    ff = messages.failure_file(name)
+jobs_lock = threading.Lock()  # two requests at once (two tabs, a double click) must still start one run
+
+
+def _run_failure(name, run_id, rc):
+    """This run's own failure record (messages.report), or None: missing, unreadable, or naming another run. The file
+    is deleted once read; a file that will not go is reported in the job's log -> (record or None, note for the log)."""
+    ff, rec, note = messages.failure_file(name, run_id), None, ""
+    if rc not in (0, 2):
+        try:
+            got = json.loads(ff.read_text(encoding="utf-8"))
+            rec = got if isinstance(got, dict) and got.get("run_id") == run_id else None
+        except (OSError, ValueError):
+            rec = None
     try:
-        ff.unlink(missing_ok=True)  # a failure file left by an earlier run must not speak for this one
-    except OSError:
-        pass
+        ff.unlink(missing_ok=True)
+    except OSError as e:
+        note = f"\n(could not remove {ff.name}: {type(e).__name__}: {e})"
+    return rec, note
+
+
+def run_job(name, extra=None):
+    with jobs_lock:  # claimed before the process starts: a second start in the meantime sees "running" and does nothing
+        if jobs[name]["running"]:
+            return False
+        jobs[name] = {"running": True, "log": ""}
+    args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
+    ai = _ai_now()  # the AI this run uses, for its sentence if it fails; the job gets the same name (OPENLOOPS_AI)
     try:  # started here, not in the thread: a job the page sees as running always has a process /api/quit can stop
-        p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        run_id = uuid.uuid4().hex  # the job writes its failure record under this id, and only that file is read back
+        env = dict(os.environ, OPENLOOPS_RUN_ID=run_id, OPENLOOPS_AI=ai)
+        p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
                              encoding="utf-8", errors="replace", start_new_session=sys.platform != "win32")
     except Exception as e:  # no interpreter, no permission: say so in the job log rather than hang as "running"
         jobs[name] = _ended(name, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
         return False
     procs[name] = p
-    jobs[name] = {"running": True, "log": ""}
 
     def go():
         try:
             out, err = p.communicate()
-            try:  # why the AI failed, as the job itself recorded it (messages.report); never read from its output
-                failure = json.loads(ff.read_text(encoding="utf-8")) if p.returncode not in (0, 2) else None
-            except (OSError, ValueError):
-                failure = None
-            jobs[name] = _ended(name, p.returncode, (out + err)[-4000:], ai, failure)
+            failure, note = _run_failure(name, run_id, p.returncode)  # never read from the job's output
+            jobs[name] = _ended(name, p.returncode, ((out + err)[-4000:] + note), ai, failure)
         except Exception as e:
             jobs[name] = _ended(name, -1, f"{name} broke off: {type(e).__name__}: {e}", ai)
         finally:
