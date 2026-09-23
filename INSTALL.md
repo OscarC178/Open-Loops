@@ -105,13 +105,23 @@ to create a draft could not find a draft tool. So with both *Send* boxes off, `g
 with a *Send* box ticked, the chase gets the send tool and replies in the thread. The switches are made from one copy of
 Codex's connector list taken into the run's own folder, and the run uses that same copy. If the copy lacks a tool the job
 lists, the job does not run: one warm-up refreshes the list, and if it is still missing the job stops with "Codex is
-still getting ready". A list older than 24 hours is refreshed by a warm-up before the next job, so a tool OpenAI adds
-later is off the switch list for at most a day. In that window a call to it is not prevented, only caught: the run fails
-and saves nothing ("Codex used a tool this job did not allow, so nothing was saved"). A warm-up that fails (sign-in run
-out, allowance used up, too slow) stops the job with that reason, within the job's own time limit.
+still getting ready". **A tool OpenAI adds after the list was fetched cannot be switched off in advance: it is only
+refused after it has run** (the run then fails and saves nothing: "Codex used a tool this job did not allow, so nothing
+was saved"; a draft or message it made is not undone). To bound that window, a list older than 24 hours (or dated in the
+future) is refreshed by a warm-up before the next job, and if the warm-up does not refresh it the job does not run
+("more than a day old"). So the window is at most a day. A warm-up that fails (sign-in run out, allowance used up, too
+slow) stops the job with that reason, within the job's own time limit.
+
+**A source that isn't connected is skipped, not fatal.** If the list has no Gmail tools at all (Gmail not connected in
+that ChatGPT account), a job runs without them and is told "Gmail is not connected in this ChatGPT account; skip email";
+the same for Slack. A refresh then keeps that source's cursor (`gmail_cursor` / `slack_cursor` in `state.json`) where it
+was, so nothing is skipped once it is connected. With neither connected, the job does not run and says so.
 Now and then a Codex session starts without one connector's tools (seen in real runs). A run that called no tool of a
-connector its job lists is therefore retried once; if it happens again the job fails and saves nothing ("Codex couldn't
-reach its Gmail or Slack tools this time"), so a refresh never moves past mail or messages it did not read. Two things
+connector its job lists fails and saves nothing ("Codex couldn't reach its Gmail or Slack tools this time"), so a
+refresh never moves past mail or messages it did not read. It is retried once first, but only when the job can only
+read (refresh, people, tone, day log, the checklist), and never after the first attempt called anything but a read tool,
+reported a draft or send, or failed on sign-in, allowance or time. Anything the first attempt called still counts: a
+tool off the list in attempt 1 fails the run even if attempt 2 was clean. Two things
 did **not** work and are not used: `default_tools_approval_mode` / `approval_mode = "approve"` (ignored by `codex exec`:
 drafts were still created) and the app name `gmail` in place of the connector id.
 
