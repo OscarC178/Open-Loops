@@ -23,6 +23,5 @@ Design sketch:
 - Per-profile Gmail accounts via multiple `gmail_auth.py` token stores (the store already lives in
   `state/`, so this mostly falls out of profiles).
 - More agents behind `agent.py` (Gemini CLI is the obvious next: same logical-tool mapping pattern).
-- Inbound asks from Slack too (the refresh currently finds unanswered asks *of you* in Gmail only).
 - `reply`/send tool in `gmail_mcp.py` behind the send switches, for full email-send parity with Claude.
 - Windows support for the bundled Gmail MCP server (`python3` vs `python` in `.grok/config.toml`).
