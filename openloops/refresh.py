@@ -20,7 +20,7 @@ was running (a note, a snooze, a done click) is kept.
 import json, re, sys
 from datetime import datetime, timedelta
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
 from .store import load_cfg, load_state, update_state
 LOG = ROOT / "state" / "logs"
@@ -134,7 +134,7 @@ def sent_before_close(ts, iso):
 
 def link(l, key="link"):
     """A permalink for comparison: no query string, fragment or trailing slash (the path keeps the p<ts>)."""
-    return re.split(r"[?#]", str(l.get(key) or "").strip(), 1)[0].rstrip("/")
+    return re.split(r"[?#]", str(l.get(key) or "").strip(), maxsplit=1)[0].rstrip("/")
 
 
 # Principle: a missing ts or permalink is never proof that two messages are the same. With no evidence
@@ -382,6 +382,7 @@ def main():
     if not m:
         print("!! no OPENLOOPS block in output (rc %s). See log." % p.returncode)
         print(p.stdout[-1500:])
+        messages.report(p, "refresh")   # this run's failure file (state/jobs/): why the AI failed, if its stderr says (app.py reads only that)
         sys.exit(1)
     out = json.loads(m.group(1))
     counts = {}

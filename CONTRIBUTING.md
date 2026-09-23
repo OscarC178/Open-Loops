@@ -78,6 +78,7 @@ you would be reading old code while thinking you were on new.
 | `openloops/refresh.py`, `chase.py`, `daylog.py`, `roadmap.py`, `people.py`, `voice.py` | the jobs; each runs as `python -m openloops.<name>` |
 | `openloops/store.py` | JSON helpers; `update_state()` so a long job never overwrites clicks made meanwhile |
 | `openloops/doctor.py` | the connection checklist |
+| `openloops/messages.py` | every failure a person can fix, in plain words, with the fix: what the checklist, toasts and banners say |
 | `openloops/standing.py` | the optional to-do file |
 | `tests/` | one file per area; `run_all.py` runs them all |
 | `config.template.json` | every setting with its default; `config.json` is the personal copy and is gitignored |
@@ -89,5 +90,8 @@ you would be reading old code while thinking you were on new.
   chases are drafts unless the user has ticked *Send* in Settings.
 - Jobs write state through `store.update_state()`, never a plain write of a stale copy.
 - Anything that exits early prints `SKIPPED: <reason>` and exits 2, so the page can say why.
+- A failure the person can fix is worded once, in `messages.py` (what happened, then what to do, naming who: Google, Slack,
+  Claude, your Mac's privacy settings), and looked up with `say(id)`. No exit codes, paths or tool names in the sentence;
+  that detail goes to the Console and `/api/diag`. `tests/test_messages.py` checks the rules.
 - UI changes follow the 20 UX laws summary in the spec's "UX pass" section: one primary action per section,
   36 px targets, instant feedback with Undo where cheap, one dialog for every "type something" moment.

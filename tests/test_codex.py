@@ -15,7 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 t0 = time.time()
 sys.path.insert(0, str(REPO))
-from openloops import agent, doctor  # noqa: E402
+from openloops import agent, doctor, messages  # noqa: E402
 
 
 def say(msg):
@@ -260,7 +260,7 @@ HARNESS = r'''
 import io, contextlib, json, os, shutil, subprocess, sys, time
 from pathlib import Path
 sys.path.insert(0, os.getcwd())
-from openloops import agent, doctor
+from openloops import agent, doctor, messages
 from openloops.paths import ROOT
 BIN, HOME = Path(sys.argv[1]), Path(os.environ["HOME"])
 JOBS = ROOT / "state" / "codex-home"
@@ -449,7 +449,7 @@ shutil.rmtree(fresh_); shutil.rmtree(live_); shutil.rmtree(ancient_); shutil.rmt
 flag("rogue_send")
 p = agent.run("Draft a chase.", ["gmail.search_threads", "gmail.get_thread", "gmail.create_draft"])
 flag("rogue_send", False)
-check(p.returncode != 0 and p.stdout.strip() == "Codex used a tool this job did not allow, so nothing was saved."
+check(p.returncode != 0 and p.stdout.strip() == messages.say("codex_unlisted")
       and "DRAFT_CREATED" not in p.stdout and "REFUSED: used a tool the job did not list: codex_apps/gmail.send_email" in p.stderr,
       "a send the job did not list fails the run: non-zero, plain sentence, no DRAFT_CREATED for chase.py to trust")
 flag("rogue")
@@ -685,7 +685,7 @@ r, out = rows()
 check(r["claude"]["ok"] and r["claude"]["title"] == "Codex is installed", "Codex is installed (the fake answers --version)")
 check(not r["login"]["ok"] and r["login"].get("connect") == "login" and "codex login --device-auth" in r["login"]["fix"],
       "signed out: Sign in button, device sign-in as the fallback")
-check(r["gmail"]["fix"] == "Sign in to ChatGPT first (the row above)." and len(execs()) == n, "sources wait for sign-in, no run")
+check(r["gmail"]["fix"] == messages.say("needs_signin", ai="ChatGPT") and len(execs()) == n, "sources wait for sign-in, no run")
 auth("apikey")
 r, _ = rows()
 check(not r["login"]["ok"] and r["login"].get("connect") == "login" and r["login"]["fix"].startswith(

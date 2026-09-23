@@ -249,6 +249,10 @@ bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "T
   the test copy would take it over.
 - `--port N` saves the port in the test copy's `config.json`, so it never competes with the installed copy on 8765.
   `app.py` takes `--port`, then `OPENLOOPS_PORT`, then `config.json` `port`, then 8765.
+- `--dest` together with `--no-app` and `--no-task` marks the copy as a test copy: `"test_copy": true` in its
+  `config.json` (Windows: `setup.ps1 -Dest … -NoApp -NoTask`). A test copy's morning-refresh row is grey and does not
+  tell you to download the installer, because the installer would update your everyday copy, not this one. Running
+  the installer on that folder again without those flags removes the mark.
 - `--no-launch` also skips starting it at the end.
 
 Start it again later with `cd ~/OpenLoops-test && python3 -m openloops.app`; delete the folder when you are done.

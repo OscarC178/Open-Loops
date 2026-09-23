@@ -3,11 +3,12 @@
     python3 -m openloops.app            -> http://localhost:8765
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
-import json, re, shlex, shutil, socket, subprocess, sys, threading, time, webbrowser
+import json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import messages
 from .paths import PKG, ROOT
 from .store import load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
@@ -115,25 +116,83 @@ def kill_tree(p):
         pass  # already gone, or never ours: nothing left to stop
 
 
+def _ai_now():
+    """The AI chosen now, by name for a sentence ("Claude"); read when a job STARTS, so a switch in Settings while it
+    runs never blames the other AI (#25 review)."""
+    from . import agent
+    try:
+        return agent.display_name()
+    except Exception:  # an unreadable config.json must not lose the job's result
+        return "Claude"
+
+
+def _ended(name, rc, log, ai="Claude", failure=None):
+    """A finished job's entry in `jobs`. A failure (not 0, not 2 = SKIPPED) also carries "failure" (a messages.py id)
+    and "said", the plain sentence the page shows (#25), from the job's own state/jobs/<job>.failure.json only; the log
+    itself stays for the Console and Settings."""
+    j = {"running": False, "log": log, "rc": rc}
+    if rc not in (0, 2):
+        j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai, failure=failure)
+    return j
+
+
+jobs_lock = threading.Lock()  # two requests at once (two tabs, a double click) must still start one run
+# Jobs claimed but whose process is not registered in procs yet. The reaper never shuts the server down while one is
+# here, and a "Quit now" that lands in that gap sets cut_jobs, which run_job checks when it registers the process: the
+# process is stopped then, so a job cannot outlive the server that started it.
+starting = set()
+cut_jobs = False
+
+
+def _run_failure(name, run_id, rc):
+    """This run's own failure record (messages.report), or None: missing, unreadable, or naming another run. The file
+    is deleted once read; a file that will not go is reported in the job's log -> (record or None, note for the log)."""
+    ff, rec, note = messages.failure_file(name, run_id), None, ""
+    if rc not in (0, 2):
+        try:
+            got = json.loads(ff.read_text(encoding="utf-8"))
+            rec = got if isinstance(got, dict) and got.get("run_id") == run_id else None
+        except (OSError, ValueError):
+            rec = None
+    try:
+        ff.unlink(missing_ok=True)
+    except OSError as e:
+        note = f"\n(could not remove {ff.name}: {type(e).__name__}: {e})"
+    return rec, note
+
+
 def run_job(name, extra=None):
-    if jobs[name]["running"]:
-        return False
+    with jobs_lock:  # claimed before the process starts: a second start in the meantime sees "running" and does nothing
+        if jobs[name]["running"] or quit_requested:  # nothing new starts once Open Loops is closing
+            return False
+        jobs[name] = {"running": True, "log": ""}
+        starting.add(name)
     args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
+    ai = _ai_now()  # the AI this run uses, for its sentence if it fails; the job gets the same name (OPENLOOPS_AI)
     try:  # started here, not in the thread: a job the page sees as running always has a process /api/quit can stop
-        p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        run_id = uuid.uuid4().hex  # the job writes its failure record under this id, and only that file is read back
+        env = dict(os.environ, OPENLOOPS_RUN_ID=run_id, OPENLOOPS_AI=ai)
+        p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
                              encoding="utf-8", errors="replace", start_new_session=sys.platform != "win32")
     except Exception as e:  # no interpreter, no permission: say so in the job log rather than hang as "running"
-        jobs[name] = {"running": False, "log": f"could not start {name}: {type(e).__name__}: {e}", "rc": -1}
+        with jobs_lock:
+            starting.discard(name)
+            jobs[name] = _ended(name, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
         return False
-    procs[name] = p
-    jobs[name] = {"running": True, "log": ""}
+    with jobs_lock:  # registered under the lock the quit takes: a "Quit now" is either before this (cut_jobs) or sees p
+        procs[name] = p
+        starting.discard(name)
+        late = cut_jobs
+    if late:  # "Quit now" arrived while this process was starting: stop it too
+        kill_tree(p)
 
     def go():
         try:
             out, err = p.communicate()
-            jobs[name] = {"running": False, "log": (out + err)[-4000:], "rc": p.returncode}
+            failure, note = _run_failure(name, run_id, p.returncode)  # never read from the job's output
+            jobs[name] = _ended(name, p.returncode, ((out + err)[-4000:] + note), ai, failure)
         except Exception as e:
-            jobs[name] = {"running": False, "log": f"{name} broke off: {type(e).__name__}: {e}", "rc": -1}
+            jobs[name] = _ended(name, -1, f"{name} broke off: {type(e).__name__}: {e}", ai)
         finally:
             procs.pop(name, None)
 
@@ -342,15 +401,18 @@ def run_install(body):
     step, ic = agent.INSTALL_STEP, agent.install_cmd()
     if not ic:
         return False, "no installer known for " + agent.display_name(), 400
-    if body.get("agent") != ic["agent"] or body.get("command_id") != ic["id"]:
+    if body.get("agent") != ic["agent"]:  # another tab chose a different AI in Settings since this row was shown
         return False, "changed", 409
+    if body.get("command_id") != ic["id"]:  # same AI, other command: Open Loops was updated or moved since the page loaded
+        return False, "updated", 409
     with connect_lock:  # check and claim in one go
         if quit_requested:
             return False, "Open Loops is closing", 400
         if (connects.get(step) or {}).get("running"):
             return False, "already running", 200
         connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
-                          "why": "", "agent": ic["agent"], "command": ic["command"], "command_id": ic["id"]}
+                          "why": "", "agent": ic["agent"], "command": ic["command"], "command_id": ic["id"],
+                          "vendor": ic.get("vendor", "")}
     log = connect_log(step)
 
     def go():
@@ -361,14 +423,14 @@ def run_install(body):
             script.unlink(missing_ok=True)  # never run a script left over from an earlier try
             for kind, argv in ic["steps"]:
                 if kind == "install" and not (script.is_file() and script.stat().st_size):  # Windows has no test -s step
-                    rc, why = 1, "download"
+                    rc, why = 1, "vendor"  # the vendor's server sent an empty file
                     break
                 if kind == "check":  # the installer exited 0: find the new CLI in its folders, PATH untouched for now
                     look = os.pathsep.join([os.environ.get("PATH", "")] + [str(d) for d in agent.install_dirs()])
                     argv = [shutil.which(argv[0], path=look) or argv[0]] + argv[1:]
                 rc, late = _install_one(step, argv, log, deadline)
                 if rc != 0:
-                    why = "timeout" if late else kind
+                    why = "timeout" if late else download_why(argv, rc, log) if kind == "download" else kind
                     break
             else:  # every step worked, the CLI answered --version: only now its folder goes on this process's PATH
                 add_install_dirs()
@@ -395,6 +457,38 @@ def run_install(body):
     return True, "", 200
 
 
+# curl's exit codes (curl -f): 22 = the server answered with an HTTP error (a vendor 404 / 500, not the user's
+# internet); these = could not reach it at all (DNS, refused, timed out, TLS handshake, nothing received).
+CURL_NETWORK = {5, 6, 7, 28, 35, 52, 56}
+# Windows: Invoke-WebRequest's messages, as they land in the install log
+PS_VENDOR = re.compile(r"\((?:4|5)\d\d\)|returned an error|The download was empty", re.I)
+PS_NETWORK = re.compile(r"remote name could not be resolved|No such host is known|Unable to connect|actively refused|"
+                        r"timed out|could not be established", re.I)
+
+
+def download_why(argv, rc, log):
+    """Why a download step failed -> "vendor" (their site answered with an error or an empty file), "network" (this
+    computer could not reach it) or "download" (can't tell). The page's sentence depends on it (#25): a vendor 404 must
+    not be blamed on the user's internet."""
+    name = Path(argv[0]).name.lower() if argv else ""
+    if name.startswith("curl"):
+        return "vendor" if rc == 22 else "network" if rc in CURL_NETWORK else "download"
+    if name == "test":  # test -s: the file arrived empty
+        return "vendor"
+    if name.startswith("powershell"):
+        try:
+            tail = log.read_text(encoding="utf-8", errors="replace")[-2000:]
+        except OSError:
+            tail = ""
+        return "vendor" if PS_VENDOR.search(tail) else "network" if PS_NETWORK.search(tail) else "download"
+    return "download"
+
+
+# how an install ended (connects["install"]["why"]) -> the messages.py sentence the page shows
+INSTALL_WHY = {"download": "install_download", "network": "install_network", "vendor": "install_vendor",
+               "check": "install_check", "install": "install_error", "timeout": "install_timeout", "start": "install_start"}
+
+
 def connect_status(step):
     c = dict(connects.get(step) or {"running": False, "rc": None, "url": "", "started": None})
     log = connect_log(step)
@@ -413,9 +507,15 @@ def connect_status(step):
         if c.get("why"):  # the page shows this sentence, never the installer's raw last line ("last", for the Console)
             n = INSTALL_TIMEOUT_S  # the limit actually in force, in the unit a person would say it
             limit = f"{n // 60} minutes" if n >= 120 and n % 60 == 0 else "1 minute" if n == 60 else f"{n} seconds"
-            c["said"] = agent.INSTALL_SAID.get(c["why"], agent.INSTALL_SAID["install"]).format(
-                ai=agent.display_name(ran or c["agent"]), limit=limit)
+            vendor = c.get("vendor") or (agent.install_cmd(ran or c.get("agent")) or {}).get("vendor", "")
+            c["said"] = messages.say(INSTALL_WHY.get(c["why"], "install_error"), ai=agent.display_name(ran or c["agent"]),
+                                     limit=limit, vendor=vendor or "the download site")
     return c
+
+
+def index_bytes(table=None):
+    """index.html with the page's copy of messages.py filled in, for this platform (escaped for an inline <script>)."""
+    return INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table).encode("utf-8"), 1)
 
 
 class H(BaseHTTPRequestHandler):
@@ -439,9 +539,11 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.split("?")[0] in ("/", "/index.html"):
-            b = INDEX.read_bytes()
+            # the page's copy of messages.py, for this platform: it can still say "not running" once the server is gone
+            b = index_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")  # a restored or cached page would keep an older copy of the wording
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             self.wfile.write(b)
@@ -530,14 +632,18 @@ class H(BaseHTTPRequestHandler):
             bye_at = time.time()
             return self._json({"ok": True, "pages": len(pages)})
         if self.path == "/api/quit":  # Settings button or `python -m openloops.app --stop [--now]`
-            global quit_requested, quit_now
-            quit_requested = True
+            global quit_requested, quit_now, cut_jobs
+            with jobs_lock:  # the same lock run_job registers its process under: no job slips between the two
+                quit_requested = True
+                busy = [k for k, j in jobs.items() if j["running"]]
+                cut = bool(body.get("now") and busy)
+                if cut:
+                    cut_jobs = True  # a job still starting stops itself as soon as its process is registered
+                to_stop = [procs[k] for k in busy if k in procs] if cut else []
             stop_connects()  # a sign-in still waiting in the browser is not worth holding a quit for
-            busy = [k for k, j in jobs.items() if j["running"]]
-            if body.get("now") and busy:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
-                for k in busy:
-                    if k in procs:
-                        kill_tree(procs[k])
+            if cut:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
+                for p in to_stop:
+                    kill_tree(p)
                 self._json({"ok": True, "after_jobs": [], "cut_short": busy})
                 quit_now = True  # only once the answer is out: the reaper stops the server the moment it sees this
                 return
@@ -568,11 +674,11 @@ class H(BaseHTTPRequestHandler):
             try:
                 p = standing.create_starter(body.get("path") or None)
             except FileExistsError as e:
-                return self._json({"ok": False, "error": f"there is already a file at {e}"}, 400)
-            except ValueError as e:  # no path set: standing.py's own sentence says what to do
+                return self._json({"ok": False, "error": messages.say("standing_exists"), "detail": str(e)}, 400)
+            except ValueError as e:  # no path set: standing.py's own sentence (messages "standing_no_path")
                 return self._json({"ok": False, "error": str(e)}, 400)
-            except OSError as e:
-                return self._json({"ok": False, "error": f"could not write there: {e}"}, 400)
+            except OSError as e:  # the OS's reason is developer detail
+                return self._json({"ok": False, "error": messages.say("standing_write"), "detail": str(e)}, 400)
             return self._json({"ok": True, "path": str(p)})
         if self.path == "/api/doctor":
             import time as _t
@@ -611,12 +717,15 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/connect/install":  # the Install button: {"agent", "command_id"} as the row showed them
             from . import agent
             started, why, code = run_install(body)
-            said = agent.INSTALL_SAID["changed"] if why == "changed" else ""
+            busy = (connects.get(agent.INSTALL_STEP) or {}).get("agent") or agent.name()
+            said = (messages.say("ai_changed") if why == "changed" else messages.say("app_updated") if why == "updated"
+                    else messages.say("install_busy", ai=agent.display_name(busy)) if why == "already running" else "")
             return self._json({"started": started, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
-            return self._json({"started": started, **({"error": why} if why else {})},
+            said = messages.say("connect_busy") if why == "already running" else ""
+            return self._json({"started": started, **({"error": why} if why else {}), **({"said": said} if said else {})},
                               200 if started or why == "already running" else 400)
         if self.path == "/api/open-claude":  # the fallback: a terminal running the agent, for anything the buttons can't do
             # opens a terminal running the configured agent so the user can sign in / connect
@@ -661,14 +770,16 @@ class H(BaseHTTPRequestHandler):
                 body["pinned_links"] = clean
             # applied to config.json as it is now, under the lock doctor.py takes too (its own process)
             if update_json(CONFIG, lambda c: c.update({k: v for k, v in body.items() if k in EDITABLE})) is False:
-                return self._json({"ok": False, "error": "config.json could not be read; nothing saved (fix or delete it)"}, 500)
+                return self._json({"ok": False, "error": messages.say("config_unreadable"),
+                                   "detail": "config.json could not be read; nothing saved (fix or delete it)"}, 500)
             return self._json({"ok": True})
         if self.path == "/api/reset":
             # "Start over": back to the state a brand-new user sees, keeping only name/domains/tone settings.
             # Config first: if it cannot be read, refuse before deleting anything, so an unreadable
             # config.json never leaves the user with no list AND stale people/Slack id (Codex review, #21).
             if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="")) is False:
-                return self._json({"ok": False, "error": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
+                return self._json({"ok": False, "error": messages.say("config_unreadable"),
+                                   "detail": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
             for f in (STATE, VOICEF, PEOPLEF):
                 if f.exists():
                     f.unlink()
@@ -794,7 +905,7 @@ def pick_port(start=None):
             return p, False
         if already_running(p):
             return p, True
-    raise SystemExit(f"Open Loops: no free port between {start} and {stop - 1}; set OPENLOOPS_PORT")
+    raise SystemExit(messages.say("no_free_port") + f"\n(detail: no free port between {start} and {stop - 1}; set OPENLOOPS_PORT)")
 
 
 def stop_running(now=False):
@@ -856,7 +967,8 @@ if __name__ == "__main__":
     except Exception:
         pass
     if PORT != PREFERRED:
-        print(f"(port {PREFERRED} was taken by another program; use --port or OPENLOOPS_PORT to choose)")
+        print(messages.say("port_moved", port=PORT))
+        print(f"(detail: port {PREFERRED} was taken by another program; use --port or OPENLOOPS_PORT to choose)")
     if "--no-browser" not in sys.argv:
         threading.Timer(1.0, open_browser).start()
 
@@ -867,6 +979,8 @@ if __name__ == "__main__":
             for pid, seen in list(pages.items()):
                 if now - seen > PAGE_STALE_S:
                     pages.pop(pid, None)
+            if starting:
+                continue  # a job's process is being started: never shut down before it is registered (and stoppable)
             if any(j["running"] for j in jobs.values()) and not quit_now:
                 continue  # never pull the rug from under a refresh/chase; check again once it is done
             if any(c.get("running") for c in connects.values()) and not quit_requested:
@@ -883,3 +997,8 @@ if __name__ == "__main__":
         pass
     finally:
         stop_connects()
+        if quit_now:  # "Quit now": whatever job process is still registered (one registered late included) goes too
+            with jobs_lock:
+                late_procs = list(procs.values())
+            for p in late_procs:
+                kill_tree(p)

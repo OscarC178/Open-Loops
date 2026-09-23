@@ -17,6 +17,7 @@ account (state/codex-home/<hash>) so the user's plugins, skills, memories and AG
 import hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
+from .messages import say
 from .paths import ROOT
 WIN = sys.platform == "win32"
 _GROK_JOB_HOME = ROOT / "state" / "grok-home"
@@ -156,27 +157,12 @@ def grok_job_env():
 # were refused by Codex itself. As a second line, a run that calls any tool off the job's list fails and saves nothing.
 # The allow-list must sit in config.toml itself: layered from a -p profile, Codex took [apps._default] but not the
 # per-app tables (measured), so each run gets a short-lived home of its own (see codex_job_env).
-CODEX_REFUSE = {  # the plain sentence a job prints (and the checklist shows) when Open Loops will not run Codex
-    "keyring": ("Codex keeps your sign-in in {store}, which Open Loops can't share with its own settings yet. "
-                "Run codex logout, then codex login again with file storage (see INSTALL.md, Codex (ChatGPT))."),
-    "signin": "Codex isn't signed in with a ChatGPT account. Press Sign in on the connection checklist.",
-    "link": ("Open Loops couldn't link Codex's sign-in into its own settings folder, so it didn't run Codex. "
-             "Check that the Open Loops folder isn't read-only, then press Check again."),
-    "cold": ("Codex is still getting ready (loading your ChatGPT connections), so Open Loops didn't run it. "
-             "Press Check again on the connection checklist in a minute."),
-    "limit": ("Your ChatGPT plan's Codex allowance is used up for now, so Open Loops couldn't run Codex. "
-              "It comes back by itself, usually within a few hours."),
-    "expired": "Your ChatGPT sign-in has run out, so Open Loops couldn't run Codex. Press Sign in on the connection checklist.",
-    "failed": "Codex stopped with an error before it could start this job, so nothing was saved. Try again in a minute.",
-    "unlisted": "Codex used a tool this job did not allow, so nothing was saved.",
-    "notools": "Codex couldn't reach its Gmail or Slack tools this time, so nothing was saved. Try again in a minute.",
-    "stale": ("Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old), so Open Loops "
-              "didn't run it. Press Check again on the connection checklist in a minute."),
-    "nosources": ("Neither Gmail nor Slack is connected in this ChatGPT account, so there was nothing to read. "
-                  "Connect one on chatgpt.com/apps, then press Check again."),
-    "timeout": "Codex took longer than {limit}, so Open Loops stopped it and saved nothing.",
-    "start": "Open Loops couldn't start Codex. Press Check again on the connection checklist; it offers Install Codex if it's missing.",
-}
+# the plain sentence a job prints (and the checklist shows) when Open Loops will not run Codex: worded in messages.py
+CODEX_REFUSE = {"keyring": say("codex_keyring"), "signin": say("codex_signin"), "link": say("codex_link"),
+                "cold": say("codex_cold"), "limit": say("codex_limit"), "expired": say("codex_expired"),
+                "failed": say("codex_failed"), "unlisted": say("codex_unlisted"), "notools": say("codex_notools"),
+                "stale": say("codex_stale"), "nosources": say("codex_nosources"), "timeout": say("codex_timeout"),
+                "start": say("codex_start")}  # {store} and {limit} are left for the caller's .format()
 _CODEX_SAFE_BUILTINS = {"list_mcp_resources", "list_mcp_resource_templates"}  # Codex's own listing tools: harmless
 # Connector tools that only read. A run is retried (see codex_run) only when its job lists nothing else, and never
 # after a call to anything outside this set, so a retry can never repeat a draft, a send or any other change.
@@ -1042,19 +1028,8 @@ def install_cmd(agent=None, win=None):
             "id": hashlib.sha256((who + "\0" + command).encode("utf-8")).hexdigest()[:16]}
 
 
-# What the checklist says when an install ends badly, by what went wrong (app.py records which). Plain words as
-# #25 asks: what happened, then what to do; no exit codes or file paths. The installer's own output stays in
-# state/connect-install.log and the page's Console.
-INSTALL_SAID = {
-    "download": "{ai}'s installer couldn't download. Check your internet connection and press Install {ai} again.",
-    "check":   "{ai} was installed but won't start. Press Install {ai} to try again, or ask IT to install {ai}.",
-    "install": "{ai}'s installer stopped with an error. Press Install {ai} to try again. If it fails again, paste the "
-               "commands below into Terminal (Windows: PowerShell) and press Enter.",
-    "timeout": "The install took longer than {limit}, so Open Loops stopped it. Press Install {ai} to try again.",
-    "start":   "Open Loops couldn't start {ai}'s installer. Press Install {ai} to try again.",
-    "changed": "The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. "
-               "Press Check again.",
-}
+# What the checklist says when an install ends badly lives in messages.py (install_*), with every other failure
+# the page can show (#25); app.py picks the sentence by what went wrong.
 
 
 def install_dirs():

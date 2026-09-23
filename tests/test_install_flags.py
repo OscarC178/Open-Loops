@@ -171,6 +171,7 @@ try:
     check((dest / "openloops" / "app.py").exists() and (dest / "scripts" / "run-refresh.sh").exists(), "code copied to --dest")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
     check(cfg.get("owner_name") == "Test" and cfg.get("port") == PORT, f"fresh config.json has the name and port {PORT}")
+    check(cfg.get("test_copy") is True, "--dest with --no-app and --no-task records the copy as a test copy (#25 review)")
     check(not (home / "Applications" / "Open Loops.app").exists() and not (home / "Desktop" / "Open Loops.app").exists(),
           "--no-app: no Open Loops.app in ~/Applications or on the Desktop")
     check(not (home / "Library" / "LaunchAgents" / f"{LABEL}.plist").exists() and not launchctl_log.exists(),
@@ -195,6 +196,14 @@ try:
         check(r.returncode != 0 and "--port must be a number from 1024 to 65535" in r.stderr
               and (dest / "config.json").read_bytes() == before, f"--port {bad} refused before anything is written")
     r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT))
+    r = install(home, "--dest", str(dest), "--no-app", "--no-launch", "--port", str(PORT))   # --no-task dropped: now a real install
+    check(r.returncode == 0 and "test_copy" not in json.loads((dest / "config.json").read_text(encoding="utf-8")),
+          "re-run on that folder without --no-task: no longer marked as a test copy")
+    for f in (home / "Library" / "LaunchAgents" / f"{LABEL}.plist",):
+        f.unlink(missing_ok=True)   # that run registered the (fake) job; the steps below expect none
+    launchctl_log.unlink(missing_ok=True)
+    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--port", str(PORT))
+    check(json.loads((dest / "config.json").read_text(encoding="utf-8")).get("test_copy") is True, "...and marked again with the flags")
 
     say("2. OPENLOOPS_DEST instead of --dest")
     dest2 = tmp / "via env"
@@ -321,6 +330,7 @@ try:
     check(r.returncode == 1 and [c.split()[0] for c in calls] == ["print", "bootout", "bootstrap"]
           and calls[-1].endswith(str(plist)), "paused, then lsof failed: the old job's own plist bootstrapped again")
     check("while copying" in r.stdout and "set up again" not in r.stdout, "... and no promise that it is set up again")
+    check("put back as it was" in r.stdout, "... but it does say the paused job was put back (#25)")
 
     say("4f. servers: quit only the old copy's (identity AND root); an older one without the identity stops the copy")
     home = tmp / "home4"
@@ -505,8 +515,10 @@ try:
     finally:
         holder.kill()
         holder.wait()
-    check(r.returncode == 1 and "still working in the old Open Loops folder" in r.stderr and str(holder.pid) in r.stderr,
-          "refused, naming the process")
+    ilog = home / "Library" / "Logs" / "OpenLoops" / "install.log"
+    check(r.returncode == 1 and "still working in the old Open Loops folder" in r.stderr and str(holder.pid) not in r.stderr
+          and "process" not in r.stderr and str(holder.pid) in ilog.read_text(encoding="utf-8"),
+          "refused in plain words; the process number is in the install log, not on screen (#25)")
     check(not (home / "Library" / "Application Support" / "OpenLoops" / "state.json").exists(), "... nothing copied")
     r = install(home, "--no-app", "--no-launch", "--no-task")
     check(r.returncode == 0 and snapshot(home / "Library" / "Application Support" / "OpenLoops") == before and old.exists(),

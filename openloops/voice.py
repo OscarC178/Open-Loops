@@ -10,7 +10,7 @@ import json, re, sys
 from datetime import datetime
 from pathlib import Path
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
 from .store import load_cfg
 CFG = load_cfg()
@@ -73,7 +73,7 @@ def main():
     # some agents drop the markers and emit bare JSON - accept that too
     m = re.search(r"<<<VOICE>>>(.*?)<<<END>>>", p.stdout, re.S) or re.search(r'(\{\s*"general"\s*:.*\})', p.stdout, re.S)
     if not m:
-        print("!! no VOICE block. See log."); print(p.stdout[-1000:]); sys.exit(1)
+        print("!! no VOICE block. See log."); print(p.stdout[-1000:]); messages.report(p, "voice"); sys.exit(1)
     v = json.loads(m.group(1))
     v["learned_at"] = datetime.now().isoformat(timespec="minutes")
     OUT.write_text(json.dumps(v, indent=2, ensure_ascii=False), encoding="utf-8")

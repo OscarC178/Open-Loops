@@ -15,6 +15,7 @@ import hashlib, json, re
 from datetime import date, datetime
 from pathlib import Path
 
+from .messages import say
 from .paths import ROOT
 CONFIG = ROOT / "config.json"
 ITEM_RE = re.compile(
@@ -73,7 +74,7 @@ def create_starter(path=None):
     ValueError when no path is given and none is set (the message is shown to the person as it is)."""
     p = Path(path).expanduser() if path else standing_path()
     if p is None:
-        raise ValueError("No to-do file is selected. Choose a file in Settings → Connections.")
+        raise ValueError(say("standing_no_path"))
     if p.exists():
         raise FileExistsError(str(p))
     p.parent.mkdir(parents=True, exist_ok=True)

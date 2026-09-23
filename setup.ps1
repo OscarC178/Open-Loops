@@ -73,9 +73,13 @@ $Src  = $PSScriptRoot
 # Install into the user's local app-data folder - no admin rights needed, and it works wherever the
 # download was unzipped (Downloads, Desktop, a USB stick). The Desktop icon points here, so the
 # downloaded folder can be deleted afterwards.
+$DefaultDest = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "OpenLoops"))
 if (-not $Dest) { $Dest = $env:OPENLOOPS_DEST }
-if (-not $Dest) { $Dest = Join-Path $env:LOCALAPPDATA "OpenLoops" }
+if (-not $Dest) { $Dest = $DefaultDest }
 $Dest = [IO.Path]::GetFullPath($Dest)
+# A test copy (-Dest with -NoApp and -NoTask, INSTALL.md "Testing a fresh install") is recorded as "test_copy": true
+# in its config.json, so the app never tells it to fix the other copy's morning refresh (doctor.is_test_copy).
+$TestCopy = ($Dest -ne $DefaultDest) -and $NoApp -and $NoTask
 if ((Resolve-Path $Src).Path -eq $Dest) { Say "Already installed here - updating." }
 Say "Installing Open Loops to $Dest ..."
 New-Item -ItemType Directory -Force $Dest | Out-Null
@@ -106,6 +110,11 @@ if (Test-Path $CfgFile) {
         $cfg | Add-Member -NotePropertyName port -NotePropertyValue $Port -Force
         $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
     }
+    if ($TestCopy -ne ($cfg.test_copy -eq $true)) {   # this run says what the copy is
+        if ($TestCopy) { $cfg | Add-Member -NotePropertyName test_copy -NotePropertyValue $true -Force }
+        else { $cfg.PSObject.Properties.Remove('test_copy') }
+        $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
+    }
     if ($PSBoundParameters.ContainsKey('At')) {
         $cfg.refresh_time = $At   # keep config.json and the scheduled task in step (as Settings does)
         $cfg | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
@@ -119,6 +128,7 @@ if (-not (Test-Path $CfgFile)) {
     $tpl.owner_name   = $Name
     $tpl.refresh_time = $At
     if ($Port) { $tpl | Add-Member -NotePropertyName port -NotePropertyValue $Port -Force }   # app.py: --port, OPENLOOPS_PORT, then this
+    if ($TestCopy) { $tpl | Add-Member -NotePropertyName test_copy -NotePropertyValue $true -Force }   # doctor.is_test_copy
     $tpl | ConvertTo-Json -Depth 6 | ForEach-Object { [IO.File]::WriteAllText($CfgFile, $_, (New-Object Text.UTF8Encoding $false)) }
 }
 Ok "Files in place"

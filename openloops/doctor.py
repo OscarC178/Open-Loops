@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import agent
+from .messages import FAILURES as _F, say
 from .paths import ROOT
 CONFIG = ROOT / "config.json"
 LOGS = ROOT / "state" / "logs"
@@ -81,15 +82,12 @@ def install_row(label, have, found=None):
     ic = agent.install_cmd()
     missing = [t for t in (ic or {}).get("needs", []) if not agent.prereq().get(t)]
     if not ic:
-        r["fix"] = f"Open Loops couldn't find {label} on this computer. Ask IT to install it, then press Check again."
+        r["fix"] = say("ai_no_installer", ai=label)
     elif missing:
-        r["fix"] = (f"Open Loops couldn't find {label} on this computer, and the installer can't run here because a tool "
-                    f"it needs is missing ({', '.join(missing)}). Ask IT to install {label}, then press Check again.")
+        r["fix"] = say("ai_installer_blocked", ai=label, tools=", ".join(missing))
     else:
-        said = (f"{label} is on this computer but won't start. Press Install {label} to install it again: " if broken else
-                f"Open Loops couldn't find {label} on this computer. Press Install {label}: ")
-        r.update(fix=said + f"it downloads {label} from {ic['vendor']} and takes a minute or two.", connect="install", command=ic["command"],
-                 agent=ic["agent"], command_id=ic["id"])  # sent back with the press: app.py runs nothing else
+        r.update(fix=say("ai_broken" if broken else "ai_missing", ai=label, vendor=ic["vendor"]), connect="install",
+                 command=ic["command"], agent=ic["agent"], command_id=ic["id"])  # sent back with the press: app.py runs nothing else
     return r
 
 
@@ -113,9 +111,10 @@ def claude_steps(steps):
                 email = cj.get("oauthAccount", {}).get("emailAddress", "")
             except Exception:
                 pass
-    login = {"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email else ''}",
-             "fix": "" if logged else "Install Claude first (the row above)." if not have else
-                    "Press Sign in: your browser opens the Claude sign-in page. Use your work Google account."}
+    # Not signed in, but Claude still remembers an account: the sign-in ran out or was signed out (#25), not "never".
+    login = {"id": "login", "ok": logged, "title": f"Signed in to Claude{(' as ' + email) if email and logged else ''}",
+             "fix": "" if logged else say("needs_install", ai="Claude") if not have else
+                    say("signin_expired", email=email) if email else say("signin_needed")}
     if have and not logged:
         login["connect"] = "login"
     steps.append(login)
@@ -128,39 +127,36 @@ def claude_steps(steps):
         servers = parse_mcp_list(txt)
         if rc != 0:  # the listing failed (timeout, CLI error), perhaps part-way: a service it did not print may
             # still be set up, so it is "unknown", not "missing". Services it did print keep what it said about them.
-            unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]
+            unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]  # Console / diag only
     (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (route(k, servers) for k in ("slack", "gmail", "miro"))
     names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
     slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
-    first = "Sign in to Claude first (the row above)."
+    # the step that blocks every source row: installing Claude, else signing in (#25: not "Sign in" before it exists)
+    first = say("needs_install", ai="Claude") if not have else say("needs_signin", ai="Claude")
 
-    def row(id_, ok, title, state, connect, fix_missing, fix_auth):
+    def row(id_, ok, title, state, connect, fix_missing, fix_auth, service):
         r = {"id": id_, "ok": ok, "optional": True, "title": title, "fix": ""}
         if not ok:
             if not logged:
                 r["fix"] = first
             elif unlisted and not state:  # no button: installing would not fix a listing that did not finish
-                r["fix"] = f"Couldn't ask Claude which connections it has just now ({unlisted}). Press Check again."
+                r["fix"], r["detail"] = say("listing_failed"), unlisted  # what the CLI said: Console / diag, not the sentence
             elif not state:
                 r["fix"], r["connect"] = fix_missing
             else:
                 r["fix"], r["connect"] = fix_auth, connect
                 if state == "failed":
-                    r["fix"] = "It is set up but did not answer just now. " + fix_auth
+                    r["fix"] = say("source_not_answering", service=service)
             if not r.get("connect"):
                 r.pop("connect", None)
         return r
 
     steps.append(row("slack", slack, "Slack connected (optional)", s_st, "slack",
-                     ("Press Install Slack plugin (it takes about half a minute), then Connect Slack.", "slack_install"),
-                     "Press Connect Slack: your browser opens Slack's sign-in page; click Allow."))
+                     (say("slack_missing"), "slack_install"), say("slack_signin"), "Slack"))
     steps.append(row("gmail", gmail, "Gmail connected (optional)", g_st, "gmail",
-                     ("Gmail is added on claude.ai, not here: claude.ai → Settings → Connectors → Gmail. Then press Check again.", None),
-                     "Press Connect Gmail: your browser opens Google's sign-in page; click Allow."))
+                     (say("gmail_missing"), None), say("gmail_signin"), "Gmail"))
     steps.append(row("miro", miro, "Miro connected (optional, for the Roadmap card)", m_st, "miro",
-                     ("Add Miro first: claude.ai → Settings → Connectors → Miro, or in a terminal: "
-                      "claude plugin install miro@claude-plugins-official. Then press Check again and Connect Miro.", None),
-                     "Press Connect Miro: your browser opens Miro's sign-in page; pick the team and click Allow."))
+                     (say("miro_missing"), None), say("miro_signin"), "Miro"))
     return email, slack, gmail, slack_source, miro, miro_source, names
 
 
@@ -260,16 +256,8 @@ def probe_prompt(srcs):
             "fails, or asks to connect or sign in.")
 PROBE_PROOF = {"gmail": ("gmail.get_profile",), "slack": ("slack.slack_read_user_profile", "slack.slack_list_user_channels")}
 # What the Gmail / Slack / Miro rows say when the probe itself could not answer (#25: what happened, what to do)
-CODEX_SAID = {
-    "timeout": "Codex took too long to answer, so Open Loops couldn't check your connections just now. Press Check again.",
-    "limit": ("Your ChatGPT plan's Codex allowance is used up for now, so Open Loops couldn't check your connections. "
-              "It comes back by itself, usually within a few hours. Press Check again then."),
-    "expired": "Your ChatGPT sign-in has run out. Press Sign in to sign in again.",
-    "failed": "Couldn't ask Codex about your connections just now. Press Check again.",
-    "warming": "Codex is still getting ready (loading your ChatGPT connections). Press Check again in a minute.",
-    "stale": ("Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old). "
-              "Press Check again in a minute."),
-}
+CODEX_SAID = {"timeout": say("codex_check_timeout"), "limit": say("codex_check_limit"), "expired": say("codex_check_expired"),
+              "failed": say("codex_check_failed"), "warming": say("codex_check_warming"), "stale": say("codex_check_stale")}
 _codex_found = {}  # what the probe learnt that main() uses: the Slack user id, and which account it was
 
 
@@ -398,26 +386,22 @@ def codex_steps(steps, recheck=False):
     ok = chatgpt and pwhy not in ("expired", "keyring", "signin", "link")
     login = {"id": "login", "ok": ok, "title": f"Signed in to ChatGPT{(' as ' + auth['email']) if ok and auth['email'] else ''}"}
     if not have:
-        login["fix"] = "Install Codex first (the row above)."
+        login["fix"] = say("needs_install", ai="Codex")
     elif logged and mode == "keyring" or pwhy == "keyring":
         login["fix"] = agent.CODEX_REFUSE["keyring"].format(store=agent.codex_keyring_store())  # no button: a terminal step
     elif pwhy == "link":
         login["fix"] = agent.CODEX_REFUSE["link"]
     elif logged and mode == "apikey":
-        login.update(fix="Codex is signed in with an API key, which can't use Gmail or Slack. Sign in with your ChatGPT "
-                         "account instead: press Sign in.", connect="login")
+        login.update(fix=say("codex_apikey"), connect="login")
     elif pwhy == "expired":
         login.update(fix=CODEX_SAID["expired"], connect="login")
     elif not ok:
-        login.update(fix="Press Sign in: your browser opens the ChatGPT sign-in page. Use the ChatGPT account whose Gmail "
-                         "and Slack you want Open Loops to read. If the browser never comes back to Open Loops, open "
-                         "Terminal, type codex login --device-auth, press Enter and follow what it says, then press Check again.",
-                     connect="login")
+        login.update(fix=say("codex_signin_needed"), connect="login")
     else:
         login["fix"] = ""
     steps.append(login)
 
-    first = "Sign in to ChatGPT first (the row above)."
+    first = say("needs_signin", ai="ChatGPT")
     why = CODEX_SAID.get(pwhy, "")
 
     def row(id_, title, name):
@@ -430,8 +414,7 @@ def codex_steps(steps, recheck=False):
         elif state is None and why:
             r["fix"] = why
         else:
-            r["fix"] = (f"{name} is connected in your ChatGPT account, not in Open Loops. Press Connect {name}: ChatGPT's "
-                        f"apps page opens in your browser. Connect {name} there, come back and press Check again.")
+            r["fix"] = say("codex_source_missing", service=name)
             r["connect"] = id_
         return r
 
@@ -440,10 +423,7 @@ def codex_steps(steps, recheck=False):
     miro = {"id": "miro", "ok": bool(ok and want_miro and probe.get("miro")), "optional": True,
             "title": "Miro connected (optional, for the Roadmap card)", "fix": ""}
     if not miro["ok"]:
-        miro["fix"] = ("Miro isn't available with Codex, so the Roadmap card stays off. To use it, choose Claude "
-                       "under Settings, Your AI." if not want_miro else first if not ok else why or
-                       "Codex has a Miro server but it didn't answer. Open a terminal, type codex mcp login miro, "
-                       "press Enter and follow what it says, then press Check again.")
+        miro["fix"] = (say("codex_no_miro") if not want_miro else first if not ok else why or say("codex_miro_failed"))
     steps.append(miro)
     _codex_found.clear()
     if ok and not pwhy:  # a real answer: its Slack id (or none) is the truth for this account
@@ -468,12 +448,11 @@ def _save(updates, names=None):
 
 
 # What the page says about the Mac's weekday morning refresh (launchd, scripts/run-refresh.sh).
-# Plain words (issue #25): what happened in one sentence, one thing to do, no jargon, no paths.
+# Plain words (issue #25): what happened in one sentence, one thing to do, no jargon, no paths. The failures are
+# worded in messages.py with every other failure; "started" is not a failure, so it lives here.
 SCHEDULE_MSG = {
-    "blocked": {"title": "Your Mac's privacy settings stopped the automatic morning refresh, so your list only updates when you press Refresh.",
-                "fix": "Download and run the latest Open Loops installer."},
-    "failed": {"title": "The automatic morning refresh could not start, so your list only updates when you press Refresh.",
-               "fix": "Download and run the latest Open Loops installer."},
+    "blocked": {"title": _F["schedule_blocked"]["what"], "fix": _F["schedule_blocked"]["fix"]},
+    "failed": {"title": _F["schedule_failed"]["what"], "fix": _F["schedule_failed"]["fix"]},
     "started": {"title": "The automatic morning refresh last started by itself on {when}.", "fix": ""},
 }
 # where "the latest installer" is: the page shows it as a button under the red row (the installer moves old installs)
@@ -483,6 +462,16 @@ RUN_REFRESH_RE = re.compile(r":\s(/[^:]*/scripts/run-refresh\.sh)")
 
 STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written by scripts/run-refresh.sh
 TAIL_BYTES = 256 * 1024   # the latest lines are what matter; a years-old log is not read whole every minute
+
+
+def is_test_copy(root=None):
+    """Whether this copy is a test copy: install.sh --dest with --no-app and --no-task (setup.ps1 -Dest -NoApp -NoTask)
+    writes "test_copy": true into its config.json. Only that record counts, never the folder it is in: a real install
+    in a folder of its own still needs the installer's advice (#25 review)."""
+    try:
+        return json.loads((Path(root or ROOT) / "config.json").read_text(encoding="utf-8-sig")).get("test_copy") is True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def schedule_step(logs=None, root=None):
@@ -495,7 +484,9 @@ def schedule_step(logs=None, root=None):
     by its position in the file - never the file's modified time, which a line about another install can move.
     - last is a failure -> red ("blocked" for Operation not permitted, else "failed")
     - last is a start   -> green "started" with its own time. It proves the script ran, not that the refresh
-      inside it succeeded, and says only that."""
+      inside it succeeded, and says only that.
+    On a test copy (is_test_copy) a failure is a grey, not-alerting row that says the installer won't fix it, with no
+    download link: the installer would update the copy in the usual place, not this one."""
     logs, root = Path(logs or LOGS), Path(root or ROOT)
     mine = os.path.realpath(root / "scripts" / "run-refresh.sh")  # the plist may name it via a symlink (/var -> /private/var)
     home = os.path.realpath(root)
@@ -523,9 +514,13 @@ def schedule_step(logs=None, root=None):
         return {"id": "schedule", "ok": True, "optional": True, "kind": "started",
                 "title": SCHEDULE_MSG["started"]["title"].format(when=when), "fix": ""}
     kind = "blocked" if "operation not permitted" in ln.lower() else "failed"
-    return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
-            "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
-            "detail": ln[-300:]}  # developer detail for the Console / diag, never shown in the sentence
+    r = {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
+         "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
+         "detail": ln[-300:]}  # developer detail for the Console / diag, never shown in the sentence
+    if is_test_copy(root):
+        r.update(fix=say("schedule_test_copy"), test_copy=True, alert=False)  # grey: nothing for the person to do here
+        r.pop("link")
+    return r
 
 
 def main(detect=False, recheck=False):
@@ -545,7 +540,7 @@ def main(detect=False, recheck=False):
 
     # Sources are pluggable: any ONE of them is enough to be useful
     out["steps"].append({"id": "channel", "ok": slack or gmail, "title": "At least one source connected (Slack or Gmail)",
-                         "fix": "Connect whichever you actually use, above - one is enough. You can add the other any time." if not (slack or gmail) else ""})
+                         "fix": say("no_source") if not (slack or gmail) else ""})
 
     # Who am I on Slack (needed to find your own messages - Slack only)
     sid = cfg.get("slack_self_id") or ""
@@ -568,8 +563,8 @@ def main(detect=False, recheck=False):
             _save({"slack_self_id": sid})
     out["steps"].append({"id": "self", "ok": bool(sid), "optional": not slack,
                          "title": f"Knows who you are on Slack{(' (' + sid + ')') if sid else ''}",
-                         "fix": ("This fills in by itself once Slack is connected - nothing to do."
-                                 if slack else "Only needed if you connect Slack.") if not sid else ""})
+                         # Slack ticked but no id: the lookup ran (the page always asks with --detect) and failed
+                         "fix": (say("slack_id_unknown") if slack else "Only needed if you connect Slack.") if not sid else ""})
 
     # Mac only: the weekday morning refresh runs from launchd, and a failure there is otherwise silent (#24).
     # Optional, so a broken schedule never sends a set-up user back to the connection steps.
