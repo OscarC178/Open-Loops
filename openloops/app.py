@@ -17,15 +17,22 @@ VOICEF = ROOT / "voice.json"
 EDITABLE = ("agent", "model", "effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
 import os
 def _port_arg():
-    """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats 8765. `npm run dev` uses 8766 so a checkout never
-    collides with, or is mistaken for, the installed copy on 8765."""
+    """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
+    so a checkout never collides with, or is mistaken for, the installed copy on 8765; a test install
+    (`install.sh --dest … --port 8790`) keeps its port in its own config.json so every launch uses it."""
     a = sys.argv
     for i, x in enumerate(a):
         if x.startswith("--port="):
             return int(x.split("=", 1)[1])
         if x == "--port" and i + 1 < len(a):
             return int(a[i + 1])
-    return int(os.environ.get("OPENLOOPS_PORT", "8765"))
+    if os.environ.get("OPENLOOPS_PORT"):
+        return int(os.environ["OPENLOOPS_PORT"])
+    try:
+        p = int(load_cfg().get("port") or 8765)
+    except (TypeError, ValueError):  # a hand-edited "port": "abc" falls back to the default rather than not starting
+        return 8765
+    return p if 1024 <= p <= 65535 else 8765  # so does one the app could never listen on
 
 
 PREFERRED = _port_arg()
@@ -333,11 +340,17 @@ class H(BaseHTTPRequestHandler):
             c = cfg()
             stamp = ROOT / "INSTALLED.txt"
             dl = ROOT / "state" / "logs" / "doctor-last.log"
-            self._json({"python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
+            le = ROOT / "state" / "logs" / "launchd.err.log"  # Mac: why the weekday morning refresh did not start (#24)
+            self._json({"app": "openloops",   # identity: install.sh only asks a server to quit if this is here and root matches
+                        "python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
                         "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
-                        "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else ""})
+                        "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
+                        "launchd_err_log": le.read_text(encoding="utf-8", errors="replace")[-2000:] if le.exists() else ""})
+        elif self.path == "/api/schedule/status":  # the morning refresh's last start, from its logs only (#24)
+            from . import doctor
+            self._json({"step": doctor.schedule_step() if MAC else None})
         elif self.path.split("?")[0] == "/api/daylog":
             from . import daylog
             q = self._query()
@@ -644,12 +657,13 @@ def pick_port(start=None):
     running=False -> the port is free, start there.
     Ports held by other programs are skipped, so the app is never confused with a stray server."""
     start = start or PORT
-    for p in range(start, start + 20):
+    stop = min(start + 20, 65536)  # never past the last port: 65535 + 1 would crash the scan
+    for p in range(start, stop):
         if not port_busy(p):
             return p, False
         if already_running(p):
             return p, True
-    raise SystemExit(f"Open Loops: no free port between {start} and {start + 19}; set OPENLOOPS_PORT")
+    raise SystemExit(f"Open Loops: no free port between {start} and {stop - 1}; set OPENLOOPS_PORT")
 
 
 def stop_running(now=False):
@@ -658,7 +672,8 @@ def stop_running(now=False):
     import urllib.request
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(20) as ex:  # probe the whole range at once: closed ports take the full timeout each
-        busy = [p for p, b in zip(range(PORT, PORT + 20), ex.map(port_busy, range(PORT, PORT + 20))) if b]
+        span = range(PORT, min(PORT + 20, 65536))
+        busy = [p for p, b in zip(span, ex.map(port_busy, span)) if b]
     for p in busy:
         if already_running(p):
             req = urllib.request.Request(f"http://127.0.0.1:{p}/api/quit", data=json.dumps({"now": now}).encode(),

@@ -4,6 +4,9 @@
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# One line on stderr - under launchd that is state/logs/launchd.err.log, the same file launchd's own start errors
+# go to - so doctor.py can tell by position which came last for THIS install: a failure or a start (#24).
+echo "openloops-refresh started $(date +%Y-%m-%dT%H:%M:%S%z) $ROOT" >&2
 LOG_DIR="$ROOT/state/logs"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/runner-$(date +%Y-%m-%d).log"

@@ -5,12 +5,14 @@ Which AI it checks comes from config.json "agent" (claude by default - see agent
     python doctor.py            -> JSON
     python doctor.py --detect   -> also asks the agent for the user's Slack id and saves it to config.json
 """
-import json, re, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
+from datetime import datetime
 from pathlib import Path
 
 from . import agent
 from .paths import ROOT
 CONFIG = ROOT / "config.json"
+LOGS = ROOT / "state" / "logs"
 WIN = sys.platform == "win32"
 
 
@@ -208,6 +210,67 @@ def _save(updates, names=None):
     update_json(CONFIG, mutate)
 
 
+# What the page says about the Mac's weekday morning refresh (launchd, scripts/run-refresh.sh).
+# Plain words (issue #25): what happened in one sentence, one thing to do, no jargon, no paths.
+SCHEDULE_MSG = {
+    "blocked": {"title": "Your Mac's privacy settings stopped the automatic morning refresh, so your list only updates when you press Refresh.",
+                "fix": "Download and run the latest Open Loops installer."},
+    "failed": {"title": "The automatic morning refresh could not start, so your list only updates when you press Refresh.",
+               "fix": "Download and run the latest Open Loops installer."},
+    "started": {"title": "The automatic morning refresh last started by itself on {when}.", "fix": ""},
+}
+# where "the latest installer" is: the page shows it as a button under the red row (the installer moves old installs)
+DOWNLOAD_URL = "https://github.com/OscarC178/Open-Loops/releases/latest"
+RUN_REFRESH_RE = re.compile(r":\s(/[^:]*/scripts/run-refresh\.sh)")
+
+
+STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written by scripts/run-refresh.sh
+TAIL_BYTES = 256 * 1024   # the latest lines are what matter; a years-old log is not read whole every minute
+
+
+def schedule_step(logs=None, root=None):
+    """The weekday morning refresh, as far as launchd.err.log shows. Returns a checklist step or None (no evidence).
+
+    That log gets two kinds of line about an install: launchd's own start failures, e.g. #24's
+    `/bin/bash: .../scripts/run-refresh.sh: Operation not permitted` (a background job may not read ~/Documents),
+    and "openloops-refresh started <time> <root>", which run-refresh.sh writes to stderr as soon as it runs.
+    Only lines about THIS install count (script path or root, symlinks resolved), and the LAST of them decides,
+    by its position in the file - never the file's modified time, which a line about another install can move.
+    - last is a failure -> red ("blocked" for Operation not permitted, else "failed")
+    - last is a start   -> green "started" with its own time. It proves the script ran, not that the refresh
+      inside it succeeded, and says only that."""
+    logs, root = Path(logs or LOGS), Path(root or ROOT)
+    mine = os.path.realpath(root / "scripts" / "run-refresh.sh")  # the plist may name it via a symlink (/var -> /private/var)
+    home = os.path.realpath(root)
+    err = logs / "launchd.err.log"
+    try:
+        with open(err, "rb") as f:
+            f.seek(max(0, err.stat().st_size - TAIL_BYTES))
+            text = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    last = None
+    for ln in text.splitlines():
+        if (m := STARTED_RE.match(ln.strip())) and os.path.realpath(m.group(2)) == home:
+            last = ("started", m.group(1), ln)
+        elif (m := RUN_REFRESH_RE.search(ln)) and os.path.realpath(m.group(1)) == mine:
+            last = ("failed", None, ln)
+    if last is None:
+        return None
+    kind, when, ln = last
+    if kind == "started":
+        try:
+            when = datetime.strptime(when, "%Y-%m-%dT%H:%M:%S%z").strftime("%a %-d %b at %H:%M")
+        except ValueError:
+            pass  # keep the raw text rather than hide the row
+        return {"id": "schedule", "ok": True, "optional": True, "kind": "started",
+                "title": SCHEDULE_MSG["started"]["title"].format(when=when), "fix": ""}
+    kind = "blocked" if "operation not permitted" in ln.lower() else "failed"
+    return {"id": "schedule", "ok": False, "optional": True, "alert": True, "kind": kind,
+            "title": SCHEDULE_MSG[kind]["title"], "fix": SCHEDULE_MSG[kind]["fix"], "link": DOWNLOAD_URL,
+            "detail": ln[-300:]}  # developer detail for the Console / diag, never shown in the sentence
+
+
 def main(detect=False):
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig")) if CONFIG.exists() else {}
     out = {"steps": [], "agent": agent.name()}
@@ -241,6 +304,12 @@ def main(detect=False):
                          "title": f"Knows who you are on Slack{(' (' + sid + ')') if sid else ''}",
                          "fix": ("This fills in by itself once Slack is connected - nothing to do."
                                  if slack else "Only needed if you connect Slack.") if not sid else ""})
+
+    # Mac only: the weekday morning refresh runs from launchd, and a failure there is otherwise silent (#24).
+    # Optional, so a broken schedule never sends a set-up user back to the connection steps.
+    sched = schedule_step() if sys.platform == "darwin" else None
+    if sched:
+        out["steps"].append(sched)
 
     out["all_ok"] = all(s["ok"] for s in out["steps"] if not s.get("optional"))
     out["email"] = email

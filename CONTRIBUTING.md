@@ -31,7 +31,8 @@ No Node? `python -m openloops.app --port 8766`, `python -m openloops.app --stop 
 
 ## Two copies, two ports
 
-- **Installed copy**: `%LOCALAPPDATA%\OpenLoops` (Mac `~/Documents/OpenLoops`), port **8765**, started by the Desktop
+- **Installed copy**: `%LOCALAPPDATA%\OpenLoops` (Mac `~/Library/Application Support/OpenLoops`, not `~/Documents`: the
+  morning job may not read files there, see INSTALL.md gotcha 8), port **8765**, started by the Desktop
   icon and the morning task. This is what you use day to day.
 - **Your checkout**: port **8766**, started by `npm run dev`. It has its own gitignored `config.json`, `state.json`,
   `voice.json` and `state/`, so it never touches the installed copy's data. On first run the page walks you through

@@ -9,7 +9,8 @@
 //   npm test          every tests/test_*.py, one after the other
 //   npm run doctor    the connection checklist, with route detection
 //   npm run refresh   one refresh job, in the foreground, from this checkout's state.json
-//   npm run setup     install/refresh %LOCALAPPDATA%\OpenLoops (Windows) or ~/Documents/OpenLoops (Mac) from this checkout
+//   npm run setup     install/refresh %LOCALAPPDATA%\OpenLoops (Windows) or ~/Library/Application Support/OpenLoops (Mac)
+//                     from this checkout (install.sh moves an older ~/Documents/OpenLoops there first)
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -20,7 +21,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEV_PORT = process.env.OPENLOOPS_PORT || "8766";
 const win = process.platform === "win32";
-const INSTALLED = win ? join(process.env.LOCALAPPDATA || "", "OpenLoops") : join(homedir(), "Documents", "OpenLoops");
+// Mac: not ~/Documents - a launchd job may not read files there (#24)
+const INSTALLED = win ? join(process.env.LOCALAPPDATA || "", "OpenLoops") : join(homedir(), "Library", "Application Support", "OpenLoops");
 
 function python() {
   // no shell: the exe resolves on PATH directly, and nothing gets re-quoted by cmd.exe
