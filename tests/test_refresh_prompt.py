@@ -56,6 +56,10 @@ check('channel "slack"' in ib and "<DM channel id>" in ib, "Slack inbound loops 
 check(ib.count('"status": "needs_me" and "inbound": true') == 1 and "same exclusions" in ib, "one shared needs_me/inbound sentence (the JSON and apply() stay the same)")
 check("Zed" in p and "payroll" in p, "exclude_people / exclude_topics still reach the prompt")
 check("SLACK-ONLY" not in p, "a full run has no slack-only note")
+p, _ = refresh.build_prompt({**state, "loops": state["loops"] + [
+    {"id": "jo-budget", "owner": "Jo", "ask": "sign off", "channel": "slack", "thread": "DM Jo D0JODM0001", "status": "needs_me", "inbound": True}]},
+    slack_only=False, slack_on=True)
+check('"inbound": true' in p.split("## Task", 1)[0], "existing loops reach the model with their inbound mark (the reply-to-close rule needs it)")
 
 # --- slack-only: Slack inbound present, Gmail absent, mode note no longer says 'nothing inbound'
 p, n = refresh.build_prompt(state, slack_only=True, slack_on=True)

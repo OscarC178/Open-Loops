@@ -175,6 +175,16 @@ check(refresh.slack_key({"thread": "#ops C0OPSCH001", "owner": "Kit Smith", "ask
 check(refresh.slack_key({"thread": ""}) is None and refresh.slack_key({"thread": "#General  chat", "ask": "x"}) == ("#general chat", "x"),
       "slack_key: no thread -> None; no id -> the thread text")
 
+# --- closing: a done update stamps closed_at (re-check window + day log); reopening clears it
+s = base()
+s["loops"].append({"id": "old-done", "owner": "Uma", "ask": "x", "channel": "slack", "status": "done", "closed_at": "2026-09-14T09:00"})
+refresh.apply(s, {"updates": [{"id": "sam-deck", "status": "done"}, {"id": "old-done", "status": "done"}]}, slack_only=True, now=NOW)
+sam = next(l for l in s["loops"] if l["id"] == "sam-deck"); od = next(l for l in s["loops"] if l["id"] == "old-done")
+check(sam["closed_at"] == NOW and refresh.in_scope(sam, True, "2026-09-12T00:00"), "a loop the refresh closes gets closed_at and stays in the re-check window")
+check(od["closed_at"] == "2026-09-14T09:00", "a loop already done keeps its original closed_at")
+refresh.apply(s, {"updates": [{"id": "sam-deck", "status": "needs_me"}]}, slack_only=True, now=NOW)
+check("closed_at" not in sam and sam["status"] == "needs_me", "reopening (needs_me) clears closed_at")
+
 # --- in_scope: slack-only ignores email + typed loops; recent done loops stay in scope
 recent = "2026-09-12T00:00"
 check(refresh.in_scope({"channel": "slack", "status": "waiting"}, True, recent), "slack waiting loop in scope for slack-only")

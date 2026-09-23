@@ -178,7 +178,7 @@ def build_prompt(s, slack_only, slack_on):
         thread_howto=("Slack: read the DM/channel with the id in `thread`" if slack_only else
                       "Slack: read the DM/channel with the id in `thread`; Gmail: search the subject in `thread`"),
         today=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        loops=json.dumps([{k: l[k] for k in ("id", "owner", "ask", "channel", "thread", "asked_at", "status", "closed_at", "priority", "priority_by", "theme") if k in l} for l in open_loops], indent=1, ensure_ascii=False),
+        loops=json.dumps([{k: l[k] for k in ("id", "owner", "ask", "channel", "thread", "asked_at", "status", "closed_at", "inbound", "priority", "priority_by", "theme") if k in l} for l in open_loops], indent=1, ensure_ascii=False),
         # headline cursor: the older of the two in a full run, or email asks made since the last
         # slack-only pass would look "too old" to the model
         since=slack_since if slack_only else s["cursor"],
@@ -241,6 +241,7 @@ def apply(s, out, slack_only, now):
         l = by_id.get(u.get("id"))
         if not l:
             continue
+        was = l.get("status")
         for k in ("status", "last_reply_at", "reply_snippet", "asked_at"):
             if u.get(k):
                 l[k] = u[k]
@@ -252,6 +253,8 @@ def apply(s, out, slack_only, now):
         if l["status"] == "needs_me":
             l["snooze_until"] = None
             l.pop("closed_at", None)
+        elif l["status"] == "done" and was != "done":
+            l["closed_at"] = now
         n_upd += 1
     if slack_only:
         s["slack_cursor"] = now
