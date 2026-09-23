@@ -3,7 +3,7 @@
     python3 -m openloops.app            -> http://localhost:8765
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
-import json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
+import itertools, json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -126,11 +126,17 @@ def _ai_now():
         return "Claude"
 
 
+finished_seq = itertools.count(1)   # every job end, of any job, takes the next number: see _ended
+
+
 def _ended(name, rc, log, ai="Claude", failure=None):
     """A finished job's entry in `jobs`. A failure (not 0, not 2 = SKIPPED) also carries "failure" (a messages.py id)
     and "said", the plain sentence the page shows (#25), from the job's own state/jobs/<job>.failure.json only; the log
-    itself stays for the Console and Settings."""
-    j = {"running": False, "log": log, "rc": rc}
+    itself stays for the Console and Settings.
+    "seq" goes up by one with every job that ends, in this server's life, and "finished_at" says when (#49): the page
+    notices an end by a seq it has not seen, so a job that starts and fails between two of its polls is not missed."""
+    j = {"running": False, "log": log, "rc": rc, "seq": next(finished_seq),
+         "finished_at": datetime.now().isoformat(timespec="seconds")}
     if rc not in (0, 2):
         j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai, failure=failure)
     return j
