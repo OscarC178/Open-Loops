@@ -418,6 +418,9 @@ AI_SIGNS = (
     ("job_network", ("api error: connection error", "api error: request timed out", "api error: unable to connect",
                      "error: getaddrinfo", "error: connect econnrefused", "error: connect etimedout")),
 )
+# Claude's structured reason (agent.claude_result's p.refused, read from a result the CLI marked is_error, #46) -> the
+# job sentence. Same vocabulary as Codex's, but Claude's own sentences: "failed" has none, so it falls through to stderr.
+CLAUDE_REFUSED = {"expired": "job_signed_out", "limit": "job_usage_limit", "network": "job_network"}
 # the Codex refusals a job can end with (agent.CODEX_REFUSE keys, prefixed): its run printed the filled-in sentence
 CODEX_JOB_IDS = ("codex_keyring", "codex_signin", "codex_link", "codex_cold", "codex_limit", "codex_expired",
                  "codex_failed", "codex_unlisted", "codex_notools", "codex_stale", "codex_nosources", "codex_timeout",
@@ -435,8 +438,11 @@ def failure_file(job, run_id=None):
 
 
 def ai_failure(rc, stderr="", refused=""):
-    """Why one AI run failed -> a FAILURES id, or "" (it did not, or nothing says why). From Codex's own structured
-    reason (agent.codex_run's p.refused), which wins, else the run's stderr; never its stdout."""
+    """Why one AI run failed -> a FAILURES id, or "" (it did not, or nothing says why). From the AI's own structured
+    reason, which wins: Codex's p.refused (a CODEX_REFUSE key), or Claude's as report() passes it (a CLAUDE_REFUSED
+    id, from the JSON result's is_error flag); else the run's stderr; never its stdout."""
+    if refused in CLAUDE_REFUSED.values():
+        return refused
     if refused and "codex_" + refused in FAILURES:
         return "codex_" + refused
     if rc == 0:
@@ -449,12 +455,15 @@ def ai_failure(rc, stderr="", refused=""):
 
 
 def report(p, job, ai=None):
-    """For a job about to exit 1 after an AI run p (a CompletedProcess): when the run's stderr or Codex's structured
-    reason says why it failed, write this run's failure_file(job) = {"run_id", "failure", "ai", "at"} (plus "said": the
+    """For a job about to exit 1 after an AI run p (a CompletedProcess): when the run's stderr or the AI's structured
+    reason (Codex's refusal, Claude's is_error result) says why it failed, write this run's failure_file(job) = {"run_id", "failure", "ai", "at"} (plus "said": the
     filled-in sentence Codex's run printed). A file, not a line on stdout: nothing the model writes can forge it, and one
     per run, so no other run's reason is taken for this one (#25 review). "ai" is OPENLOOPS_AI, the AI app.py captured
     when it started the job; only a run with no such variable (scheduled, terminal) asks for it now."""
-    fid = ai_failure(p.returncode, p.stderr, getattr(p, "refused", "") or "")
+    refused = getattr(p, "refused", "") or ""
+    if getattr(p, "agent", "") == "claude":   # Claude's reasons share Codex's names, not its sentences
+        refused = CLAUDE_REFUSED.get(refused, "")
+    fid = ai_failure(p.returncode, p.stderr, refused)
     if not fid:
         return
     if not ai:
