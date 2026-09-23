@@ -143,7 +143,19 @@ FAILURES = {
     # prints this and records it (report_refusal), so the page's toast says it.
     "cursor_unreadable": {
         "what": "Open Loops can't read when it last checked.",
-        "fix": "Press Start over in Settings, or fix state.json.",
+        # the light fix first (#56): "Forget where I was" on the toast (app.py /api/cursor/forget) keeps the list,
+        # people and tone; Start over wipes them, so it is named last
+        "fix": "Press Forget where I was on the message and the next refresh picks up from your last refresh; Start over in Settings is only the last resort.",
+        "button": None},
+
+    # after Forget where I was: from the last refresh, or (none readable) Settings > History back, the first scan's window
+    "cursor_forgotten": {
+        "what": "Done: the next refresh picks up from your last refresh, and nothing else changed.",
+        "fix": "Run it again when you're ready.",
+        "button": None},
+    "cursor_forgotten_window": {
+        "what": "Done: with no earlier refresh to go by, the next one reads back as far as Settings → History says.",
+        "fix": "Run it again when you're ready.",
         "button": None},
 
     # ---- the Mac's weekday morning refresh (doctor.schedule_step, #24 / #31)

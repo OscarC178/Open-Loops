@@ -789,6 +789,38 @@ class H(BaseHTTPRequestHandler):
                 s["setup_done"] = True
                 save(s)
             return self._json({"ok": True})
+        if self.path == "/api/cursor/forget":
+            # "Forget where I was" (#56), offered on the cursor_unreadable toast: a cursor in state.json that is not a
+            # date stops every refresh (refresh.parse_when). Only the unreadable cursors change. Each takes the last
+            # refresh's time when that is readable, so nothing closed before it is found again (#52 review: a guessed
+            # window re-found old loops); with none, it goes, and the next refresh reads Settings > History back.
+            # The list, people picks and learned tone are kept: that is what Start over would wipe.
+            def readable(v):
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    return True   # missing is not unreadable: refresh.parse_when gives it the History window
+                try:
+                    datetime.fromisoformat(str(v).strip())
+                    return True
+                except (TypeError, ValueError):
+                    return False
+            done = {}
+
+            def forget(s):
+                bad = [k for k in ("cursor", "slack_cursor", "gmail_cursor") if k in s and not readable(s[k])]
+                if not bad:
+                    return False   # nothing unreadable: nothing is written
+                last = s.get("last_refresh") if s.get("last_refresh") and readable(s.get("last_refresh")) else None
+                for k in bad:
+                    if last:
+                        s[k] = last
+                    elif k == "cursor":
+                        s[k] = None   # as a fresh state.json has it
+                    else:
+                        s.pop(k)      # slack_cursor / gmail_cursor fall back to the shared cursor
+                done.update(keys=bad, since="last_refresh" if last else "history")
+            if update_json(STATE, forget) is False:
+                return self._json({"ok": False, "error": messages.say("server_error")}, 500)
+            return self._json({"ok": True, "forgot": done.get("keys", []), "since": done.get("since", "")})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":

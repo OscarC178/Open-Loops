@@ -358,8 +358,9 @@ for junk in ("yesterday", 12345, "2026-13-45"):
     except refresh.CursorUnreadable:
         raised = True
     check(raised, f"parse_when({junk!r}): a stored cursor that is not a date refuses (CursorUnreadable), never guesses a window")
-check(refresh.messages.say("cursor_unreadable") == "Open Loops can't read when it last checked. Press Start over in Settings, or fix state.json.",
-      "...with this plain sentence (messages.py)")
+check(refresh.messages.say("cursor_unreadable") == "Open Loops can't read when it last checked. Press Forget where I was on the message and the next "
+      "refresh picks up from your last refresh; Start over in Settings is only the last resort.",
+      "...with this plain sentence (messages.py): the light fix first, Start over last, no state.json (#56)")
 check(refresh.messages.job_failure("refresh", 1, "x", failure={"failure": "cursor_unreadable"})
       == ("cursor_unreadable", refresh.messages.say("cursor_unreadable")), "the page's toast shows that sentence, not 'didn't finish'")
 mixed = {"cursor": "2026-09-01T09:00", "slack_cursor": "2026-09-10T12:00+01:00", "gmail_cursor": "2026-08-20T09:00", "loops": []}
