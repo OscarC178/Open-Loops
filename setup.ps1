@@ -39,6 +39,12 @@ if ($At -notmatch '^(?:[01]\d|2[0-3]):[0-5]\d$') {
     exit 1
 }
 
+# Same for -Port: a port saved in config.json that the app cannot use would stop it from starting.
+if ($Port -and ($Port -lt 1024 -or $Port -gt 65535)) {
+    Write-Host "  -Port must be a number from 1024 to 65535, for example 8790." -ForegroundColor Yellow
+    exit 1
+}
+
 # ---------- 1. Python ----------
 Say "Checking Python..."
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
@@ -155,7 +161,9 @@ if ($NoLaunch) {
     Ok "Installed. Open Loops will guide you through connecting Slack and email when you first open it."
 } else {
     Say "Opening Open Loops - it will guide you through connecting Slack and email."
-    Start-Process -FilePath $pyw -ArgumentList "-m openloops.app" -WorkingDirectory $Dest
+    $launchArgs = "-m openloops.app"
+    if ($Port) { $launchArgs += " --port $Port" }   # an explicit -Port beats a leftover OPENLOOPS_PORT, as on the Mac
+    Start-Process -FilePath $pyw -ArgumentList $launchArgs -WorkingDirectory $Dest
 }
 Write-Host ""
 Write-Host "  Done. You can close this window." -ForegroundColor Green

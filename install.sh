@@ -43,10 +43,12 @@ while [[ $# -gt 0 ]]; do
         *) shift ;;
     esac
 done
-if [ -n "$PORT" ] && ! [[ "$PORT" =~ ^[0-9]{2,5}$ ]]; then
-    echo "  --port must be a number, for example 8790." >&2
+# checked before anything is written: a bad port saved in config.json would stop the app from starting
+if [ -n "$PORT" ] && { ! [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || [ "$((10#$PORT))" -lt 1024 ] || [ "$((10#$PORT))" -gt 65535 ]; }; then
+    echo "  --port must be a number from 1024 to 65535, for example 8790." >&2
     exit 1
 fi
+[ -n "$PORT" ] && PORT="$((10#$PORT))"   # "08790" -> 8790
 
 say() { echo ""; echo "  $1"; }
 ok()  { echo "  [ok] $1"; }

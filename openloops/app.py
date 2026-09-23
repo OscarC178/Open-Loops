@@ -29,9 +29,10 @@ def _port_arg():
     if os.environ.get("OPENLOOPS_PORT"):
         return int(os.environ["OPENLOOPS_PORT"])
     try:
-        return int(load_cfg().get("port") or 8765)
+        p = int(load_cfg().get("port") or 8765)
     except (TypeError, ValueError):  # a hand-edited "port": "abc" falls back to the default rather than not starting
         return 8765
+    return p if 1024 <= p <= 65535 else 8765  # so does one the app could never listen on
 
 
 PREFERRED = _port_arg()
