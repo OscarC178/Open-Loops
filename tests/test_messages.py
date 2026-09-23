@@ -44,10 +44,10 @@ US = ("color", "authoriz", "cancele", "recogniz", "organiz", "behavior", "center
 BUTTONS = set(agent.CONNECT_STEPS) | {agent.INSTALL_STEP}
 check(len(FAILURES) >= 40, f"the inventory is there ({len(FAILURES)} entries)")
 for fid, m in FAILURES.items():
-    check(set(m) <= {"what", "fix", "fix_win", "fix_test", "fix_test_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
+    check(set(m) <= {"what", "fix", "fix_win", "fix_follow", "fix_test", "fix_test_win", "button"} and m.get("what", "").strip() and m.get("fix", "").strip(),
           f"{fid}: has a non-empty what and fix")
     check(m.get("button") is None or m["button"] in BUTTONS, f"{fid}: button is a real checklist step or none")
-    for part in ("what", "fix", "fix_win", "fix_test", "fix_test_win"):
+    for part in ("what", "fix", "fix_win", "fix_follow", "fix_test", "fix_test_win"):
         text = m.get(part)
         if not text:
             continue
@@ -111,7 +111,9 @@ from openloops import app  # noqa: E402  (importing app writes config/state into
 TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entries below say what these are filled with
           **{i: {"ai", "limit", "vendor"} for i in app.INSTALL_WHY.values()},
           **{i: {"job", "ai"} for i, _ in messages.AI_SIGNS}, "job_failed": {"job"}, "job_start_failed": {"job", "job_lower"},
-          **{i: {"store", "limit"} for i in messages.CODEX_JOB_IDS}}   # agent.py .format(store=, limit=)
+          **{i: {"store", "limit"} for i in messages.CODEX_JOB_IDS},   # agent.py .format(store=, limit=)
+          # index.html paintSetupDone() picks one of these by the row that needs attention, with {ai, button, row}
+          **{i: {"ai", "button", "row"} for i in ("setup_done_signin", "setup_done_install", "setup_done_other")}}
 for i, keys in TABLES.items():
     asked.add(i)
     calls.append(({i}, keys, f"table:{i}"))
@@ -125,13 +127,14 @@ check(not unused, f"every FAILURES entry is used somewhere (unused: {unused})")
 # Render every entry as its callers do, with realistic values, and scan what a person would actually read
 SAMPLE = {"ai": "Claude", "vendor": "Anthropic", "tools": "curl", "email": "sam@example.com", "service": "Slack",
           "party": "Google", "limit": "10 minutes", "job": "The refresh", "job_lower": "the refresh", "port": "8791",
-          "store": "the Mac keychain", "days": "30", "sources": "Slack and Gmail"}
+          "store": "the Mac keychain", "days": "30", "sources": "Slack and Gmail",
+          "button": "Sign in", "row": "Signed in to Grok"}
 import string as _string  # noqa: E402
 
 
 def holes_of(fid):
     m = FAILURES[fid]
-    return {f for part_ in ("what", "fix", "fix_win", "fix_test", "fix_test_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
+    return {f for part_ in ("what", "fix", "fix_win", "fix_follow", "fix_test", "fix_test_win") for _, f, _, _ in _string.Formatter().parse(m.get(part_) or "") if f}
 
 
 def short_calls(cs):
@@ -178,11 +181,12 @@ tp = messages.for_page(win=False, test=True)
 check(tp["server_offline"]["fix"].startswith("Start it again by typing python3") and "icon" not in tp["server_offline"]["fix"]
       and {k: v for k, v in tp.items() if k != "server_offline"} == {k: v for k, v in messages.for_page(win=False).items() if k != "server_offline"},
       "for_page(test=True): only the 'not running' fix changes")
-check(say("setup_done_signin", ai="Claude") == "Setup is done; Claude just needs signing in again. Press Sign in below.",
+check(say("setup_done_signin", ai="Claude", button="Sign in") == "Setup is done; Claude just needs signing in again. Press Sign in below.",
       "after setup, a sign-out says setup is done and what to press (#50)")
 page = messages.for_page(win=True)
 check(page["server_offline"]["fix"].endswith("Start menu.") and set(page) == set(FAILURES)
-      and all(set(v) == {"what", "fix", "button", "recheck"} for v in page.values()), "for_page(): the whole table, fix chosen for the platform")
+      and all({"what", "fix", "button", "recheck"} <= set(v) <= {"what", "fix", "button", "recheck", "fix_follow"} for v in page.values())
+      and page["setup_done_signin"]["fix_follow"] == "Follow the ‘{row}’ row below.", "for_page(): the whole table, fix chosen for the platform")
 needs_list = sorted(k for k, v in FAILURES.items() if (k.startswith("job_") or k in messages.CODEX_JOB_IDS)
                     and ("connection checklist" in v["fix"] or v.get("button") == "login" or k in ("codex_keyring", "codex_link")))
 check(needs_list == sorted(messages.RECHECK_AFTER_JOB) and all(page[k]["recheck"] for k in needs_list),
@@ -530,6 +534,36 @@ r4 = subprocess.run([node, "-e", JS.replace(grab("const MSG="), tc_line)], captu
 tc_out = json.loads(r4.stdout.strip().splitlines()[-1])
 check(tc_out["offline"] == {"display": "block", "text": "Open Loops isn't running on this computer. Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder."},
       f"on a test copy the banner says how to start it again, in its folder (#50) ({tc_out['offline']})")
+# #50 review: after setup, the heading's instruction comes from the row itself, never a button the row does not have
+SD = "\n".join([grab("const MSG="), grab("const fill="), grab("function msg("), grab("function msgFollow("), grab("const agentLabel="),
+                grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("), grab("const setupDone="),
+                html[html.index("function paintSetupDone("):html.index("\nasync function tick(){")]])
+SD_CASES = {
+    "claude signed out": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Claude", "connect": "login"}],
+                          "Setup is done; Claude just needs signing in again. Press Sign in below."),
+    "grok signed out": ("grok", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Grok", "connect": "login"}],
+                        "Setup is done; Grok just needs signing in again. Follow the ‘Signed in to Grok’ row below."),
+    "codex keyring": ("codex", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to ChatGPT"}],
+                      "Setup is done; ChatGPT just needs signing in again. Follow the ‘Signed in to ChatGPT’ row below."),
+    "codex api key": ("codex", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to ChatGPT", "connect": "login"}],
+                      "Setup is done; ChatGPT just needs signing in again. Press Sign in below."),
+    "no installer": ("claude", [{"id": "claude", "ok": False, "title": "Claude is installed"}, {"id": "login", "ok": False, "title": "Signed in to Claude"}],
+                     "Setup is done; Claude just needs installing again. Follow the ‘Claude is installed’ row below."),
+    "install button": ("claude", [{"id": "claude", "ok": False, "title": "Claude is installed", "connect": "install", "agent": "claude"}],
+                       "Setup is done; Claude just needs installing again. Press Install Claude below."),
+    "slack stopped": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": False, "optional": True, "title": "Slack connected (optional)", "connect": "slack"}],
+                      "Setup is done; one connection just needs attention. Press Connect Slack below."),
+}
+for name_, (ai_, steps_, want_) in SD_CASES.items():
+    js = ("const els={};const $=s=>els[s]||(els[s]={style:{},textContent:\"1 · Let's get you connected\",dataset:{}});"
+          f"let S={{setup_done:true}},C={{agent:{json.dumps(ai_)}}},DOC={{steps:{json.dumps(steps_)}}};\n" + SD +
+          "\npaintSetupDone();const a=$('#st_connect_h').textContent,i=$('#st_connect_intro').style.display;S.setup_done=false;paintSetupDone();"
+          "console.log(JSON.stringify([a,i,$('#st_connect_h').textContent,$('#st_connect_intro').style.display]))")
+    r6 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    got = json.loads(r6.stdout.strip().splitlines()[-1]) if r6.returncode == 0 else [r6.stderr.strip()[-300:]]
+    check(got == [want_, "none", "1 · Let's get you connected", ""], f"after setup, {name_}: {got[0]!r}")
+check("$('#st_connect_h')" in html and "$('#st_connect_intro')" in html and "#st_connect h3" not in html
+      and 'id="st_connect_h"' in html and 'id="st_connect_intro"' in html, "the heading and intro are found by id, not by markup position")
 CP = "\n".join([grab("function conPaint("), next(lines[i + 1] for i, l in enumerate(lines) if l.startswith("function conPaint("))])
 for n, want_ in ((1, "1 line · last"), (2, "2 lines · last")):
     js = ("const els={};const $=s=>els[s]||(els[s]={textContent:'',scrollTop:0,scrollHeight:0});let CON=" +

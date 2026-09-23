@@ -138,8 +138,8 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 
  <!-- stage: connect -->
  <div id="st_connect" class="box" style="display:none">
-  <h3>1 · Let's get you connected</h3>
-  <div class="sub" style="margin-bottom:10px">Open Loops reads the messages <i>you</i> send on Slack and email, and reminds you when someone hasn't replied. It needs to see those accounts — a one-off. The ticks below update by themselves; you don't need to press anything to refresh them.</div>
+  <h3 id="st_connect_h">1 · Let's get you connected</h3>
+  <div class="sub" style="margin-bottom:10px" id="st_connect_intro">Open Loops reads the messages <i>you</i> send on Slack and email, and reminds you when someone hasn't replied. It needs to see those accounts — a one-off. The ticks below update by themselves; you don't need to press anything to refresh them.</div>
   <div id="setup_steps"></div>
   <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
    <button class="primary" id="agent_btn" onclick="openClaude()">Open Claude</button>
@@ -432,6 +432,7 @@ const PAGE=Math.random().toString(36).slice(2)+Date.now().toString(36);let stopp
 const MSG=/*OL_MESSAGES*/{};
 const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
 function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
+function msgFollow(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_follow&&f&&f.row?' '+fill(m.fix_follow,f):''):''}   // "what" + "follow the <row> row": for a row with no button
 // A fetch that throws never reached the app (it is not running); an HTTP error did, and carries its status and body.
 const api=async(u,b,signal)=>{let r;try{r=await fetch(u,Object.assign(b?{method:'POST',headers:{'Content-Type':'application/json','X-OL-Page':PAGE},body:JSON.stringify(b)}:{headers:{'X-OL-Page':PAGE}},signal?{signal}:{}))}catch(e){clog('no answer from '+u+': '+e.message);e.offline=true;throw e}
  if(!r.ok){const t=await r.text(),m=u+' -> '+r.status+' '+t.slice(0,300);clog(m);const e=new Error(m);e.status=r.status;try{e.body=JSON.parse(t)}catch(x){}throw e}return r.json()};
@@ -579,11 +580,15 @@ const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone']
 // Setup finished once (setup_done) and the checklist is back (a sign-out, a source that stopped answering): not setup
 // starting over, so no "1 · Connect, 2 · Who's who…" bar, and one line on top of the checklist says so (#50).
 const setupDone=()=>!!(S&&S.setup_done);
-function paintSetupDone(){const h=$('#st_connect h3');if(!h)return;if(h.dataset.first===undefined)h.dataset.first=h.textContent;
- const intro=h.nextElementSibling,done=setupDone(),row=id=>(DOC&&DOC.steps||[]).find(x=>x.id===id);
- const inst=row('claude'),login=row('login'),ai=(C&&C.agent)==='codex'?'ChatGPT':agentLabel();
- h.textContent=!done?h.dataset.first:inst&&!inst.ok?msg('setup_done_install',{ai:agentLabel()}):login&&!login.ok?msg('setup_done_signin',{ai}):msg('setup_done_other');
- if(intro&&intro.id!=='setup_steps')intro.style.display=done?'none':''}
+// The instruction comes from the row that needs it: its own button's label when it has one (setupBtn, as connectBtn
+// draws it), otherwise "follow the <row> row" (Grok's Open Grok, a Codex keyring sign-in, no installer here).
+function paintSetupDone(){const h=$('#st_connect_h'),intro=$('#st_connect_intro');if(!h)return;if(h.dataset.first===undefined)h.dataset.first=h.textContent;
+ const done=setupDone(),steps=(DOC&&DOC.steps)||[],row=id=>steps.find(x=>x.id===id),inst=row('claude'),login=row('login');
+ const bad=inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.connect||x.alert))||{};
+ const id=bad===inst?'setup_done_install':bad===login?'setup_done_signin':'setup_done_other';
+ const f={ai:bad===login&&(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),button:setupBtn(bad),row:bad.title||''};
+ h.textContent=!done?h.dataset.first:f.button?msg(id,f):msgFollow(id,f);
+ if(intro)intro.style.display=done?'none':''}
 async function tick(){
  const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step
  $('#steps').innerHTML=st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
@@ -618,6 +623,7 @@ const pageStep=step=>(C&&C.agent)==='codex'&&!!SRC_NAME[step];   // Codex: Gmail
 const CONN={};   // step -> {busy, url, msg, agent, command}: kept here because the rows are repainted on every tick
 const AI_NAME={claude:'Claude',grok:'Grok',codex:'Codex'},aiName=a=>AI_NAME[a]||String(a||'the AI');   // the install names its AI from the row, never from cached settings
 const repaint=()=>{if(DOC&&stage()==='connect')paintConnect();if(DOC)paintSetup(stage())};   // never bring the checklist back once the page has moved on
+function setupBtn(s){return !s||!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect]?'':s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect]}   // the label connectBtn gives a row's button, '' when it draws none
 function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
  const shown=c.busy&&c.command?c.command:s.command;   // while it runs: the command the app captured for this run, not what the row says now
  // shown before the press (nothing runs unseen), folded away: a non-technical user needs the button, not the shell (#25)
@@ -720,7 +726,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  $('#lists').style.display='none';$('#gmail_later').style.display='none';   // while Set-up is up, it is the page
  if(!aiPending())paintConnect();   // Every check: the whole checklist, from this check, at every stage the view is up (not only while connecting)
  // Setup was done once and something needs fixing again: the checklist heading's one line (#52 writes it) goes on top
- const hh=$('#st_connect h3'),fix=S&&S.setup_done&&hh&&hh.dataset&&hh.dataset.first!==undefined&&hh.textContent!==hh.dataset.first?hh.textContent:'';
+ const hh=$('#st_connect_h'),fix=S&&S.setup_done&&hh&&hh.dataset&&hh.dataset.first!==undefined&&hh.textContent!==hh.dataset.first?hh.textContent:'';
  $('#su_repair').textContent=fix;$('#su_repair').style.display=fix?'':'none';$('#su_intro').style.display=fix?'none':'';
  $('#setup_back').style.display=SETUP_OPEN&&!setupFirstRun(st)?'':'none';
  if(SETUP_OPEN&&!['connect','checking','checkfail'].includes(st)&&Date.now()-docAt>60000&&!suDoc){   // past setup nothing else re-checks

@@ -5,6 +5,7 @@ Each entry has:
   "fix"     what to do about it, in one sentence (a button's name where the page has one)
   "button"  the checklist step whose button fixes it (doctor.py's "connect" value), or None
   "fix_win" optional: the fix as Windows says it, where the Mac wording names Mac places
+  "fix_follow" optional: the fix when the row has no button to press, pointing at the row itself ({row}, its title)
   "fix_test", "fix_test_win" optional: the fix on a test copy (config.json "test_copy" or "isolated", #50), which has
             no Desktop or Applications icon; part() / for_page() take test=True for it
 
@@ -354,17 +355,22 @@ FAILURES = {
 
     # ---- setup finished once, then a connection needs attention again (a sign-out, #50): the page shows only the
     # checklist under this one line, not the whole setup stepper again. {ai} is the one to sign in to (Codex: ChatGPT).
+    # The page picks the fix from the row itself: "fix" names the row's button ({button}, as the page labels it), and
+    # "fix_follow" points at the row when it has none (Grok's Open Grok, a Codex keyring sign-in, no installer here).
     "setup_done_signin": {
         "what": "Setup is done; {ai} just needs signing in again.",
-        "fix": "Press Sign in below.",
+        "fix": "Press {button} below.",
+        "fix_follow": "Follow the ‘{row}’ row below.",
         "button": None},
     "setup_done_install": {
         "what": "Setup is done; {ai} just needs installing again.",
-        "fix": "Press Install {ai} below.",
+        "fix": "Press {button} below.",
+        "fix_follow": "Follow the ‘{row}’ row below.",
         "button": None},
     "setup_done_other": {
         "what": "Setup is done; one connection just needs attention.",
-        "fix": "The row with a red mark below says what to do.",
+        "fix": "Press {button} below.",
+        "fix_follow": "Follow the ‘{row}’ row below.",
         "button": None},
 
     # ---- the first scan (index.html's setup, #38): not a failure, but said once, here, like the rest.
@@ -450,11 +456,12 @@ RECHECK_AFTER_JOB = ("job_signed_out", "codex_signin", "codex_expired", "codex_k
 
 
 def for_page(win=None, test=False):
-    """The table as the page gets it: {id: {"what", "fix", "button", "recheck"}}, fix already chosen for this platform
+    """The table as the page gets it: {id: {"what", "fix", "button", "recheck"[, "fix_follow"]}}, fix already chosen for this platform
     (and, test=True, for a test copy: app.py passes it per install), placeholders left for the page to fill.
     "recheck": a failed job with this id re-runs the connection check."""
     return {k: {"what": part(k, "what", win), "fix": part(k, "fix", win, test), "button": v.get("button"),
-                "recheck": k in RECHECK_AFTER_JOB} for k, v in FAILURES.items()}
+                "recheck": k in RECHECK_AFTER_JOB, **({"fix_follow": v["fix_follow"]} if v.get("fix_follow") else {})}
+            for k, v in FAILURES.items()}
 
 
 def page_json(win=None, table=None, test=False):

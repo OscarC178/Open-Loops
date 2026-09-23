@@ -141,7 +141,8 @@ def page_js(port, session, scenario, tmp):
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
-        cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="),
+        cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="), grab("function msgFollow("),
+        grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("),
         grab("const running="), grab("const havePeople="), grab("const haveVoice="),
         cut("function stage(){", "\nasync function tick(){"), cut("async function tick(){", "\nfunction paintConnect("),
         cut("let peopleRendered=''", "async function findPeople("),
@@ -368,7 +369,7 @@ else:
      out.toasts=TOASTS.slice();out.said=J.refresh.said;out.con=CON.filter(l=>/refresh/.test(l));
      await until(()=>DOC&&DOC.steps.some(x=>x.id==='login'&&!x.ok),10000);await until(()=>S&&S.setup_done,5000);await tick();
      out.after={stage:stage(),rows:Object.fromEntries(DOC.steps.map(x=>[x.id,{ok:x.ok,fix:x.fix,connect:x.connect||''}]))};
-     const h=$('#st_connect h3');h.dataset={};h.textContent="1 · Let's get you connected";
+     const h=$('#st_connect_h');h.dataset={};h.textContent="1 · Let's get you connected";
      out.bar=$('#steps').innerHTML;paintSetupDone();out.head=h.textContent;
      S.setup_done=false;paintSetupDone();out.headFresh=h.textContent;await tick();out.barFresh=$('#steps').innerHTML;S.setup_done=true;
      out.watch=Object.keys(WATCH);""", tmp)
@@ -382,7 +383,7 @@ else:
                   "page: the re-check brings the checklist back with its Sign in button")
             check(not rows["self"]["ok"] and rows["self"]["fix"] == signin, f"'Knows who you are on Slack' is not ticked while signed out ({rows['self']})")
             check(not rows["channel"]["ok"] and rows["channel"]["fix"] == signin, f"'At least one source' says sign in first ({rows['channel']['fix']!r})")
-            check(out["bar"] == "" and out["head"] == messages.say("setup_done_signin", ai="Claude"),
+            check(out["bar"] == "" and out["head"] == messages.say("setup_done_signin", ai="Claude", button="Sign in"),
                   f"#50: set up once, a sign-out shows the checklist under one line, not the numbered setup again ({out['head']!r}, {out['bar'][:60]!r})")
             check(out["head"] == "Setup is done; Claude just needs signing in again. Press Sign in below."
                   and out["headFresh"] == "1 · Let's get you connected" and "1 · Connect" in out["barFresh"],
@@ -695,7 +696,7 @@ if NODE:
  DOC={agent:'grok',all_ok:false,steps:[row('claude',true),row('login',false,{fix:"Click 'Open Grok' below and follow the sign-in link it shows."}),
   row('gmail',false,{fix:gfix}),row('channel',false),row('self',false)]};await tick();out.d=view();C.agent='claude';
  // #52: setup was done once and the sign-in went; its checklist heading says so, and Set-up puts that line on top
- S.setup_done=true;const hh=$('#st_connect h3');hh.dataset={first:"1 · Let's get you connected"};hh.textContent='Setup is done; Claude just needs signing in again. Press Sign in below.';
+ S.setup_done=true;const hh=$('#st_connect_h');hh.dataset={first:"1 · Let's get you connected"};hh.textContent='Setup is done; Claude just needs signing in again. Press Sign in below.';
  DOC={agent:'claude',all_ok:false,steps:[row('claude',true),row('login',false,{connect:'login',title:'Signed in to <i>Claude</i>'}),row('slack',false),row('gmail',false),row('channel',false)]};
  await tick();out.e={repair:$('#su_repair').textContent,shown:$('#su_repair').style.display,intro:$('#su_intro').style.display,rows:$('#su_ai_rows').innerHTML};
  S.setup_done=false;paintSetup(stage());out.e.after=$('#su_repair').style.display;
