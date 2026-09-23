@@ -201,8 +201,7 @@ def _connect_one(step, argv, log, deadline):
         while True:
             if time.time() > deadline:
                 kill_tree(p)
-                tail = ("\nstopped: the install did not finish within 10 minutes\n" if step == "install"
-                        else "\nstopped: no answer from the browser within 5 minutes\n")
+                tail = "\nstopped: no answer from the browser within 5 minutes\n"
                 break
             if select.select([m], [], [], 0.5)[0]:
                 try:
@@ -215,7 +214,7 @@ def _connect_one(step, argv, log, deadline):
                 # the whole buffer each time: an escape code or the link can straddle two reads
                 text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
                 log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
-                u = URL_RE.search(text) if step != "install" else None  # an installer's links are not sign-in pages
+                u = URL_RE.search(text)
                 if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
                     connects[step]["url"] = u.group(0)
                     if "--no-browser" in argv:
@@ -267,6 +266,29 @@ def run_connect(step):
     return True, ""
 
 
+def _install_one(step, argv, log, deadline):
+    """Run one command of an install -> exit code, its output appended to the log as it comes. No terminal: stdin is
+    empty, so an installer that stops to ask a question reads end-of-input and fails at once instead of waiting for an
+    answer nobody can type, and in a session of its own it has no terminal to open either. Stopped at the deadline,
+    and says so in the log."""
+    if WIN:  # for now Windows keeps the sign-ins' console window (its output stays there)
+        return _connect_one(step, argv, log, deadline)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("$ " + shlex.join(argv) + "\n")
+        f.flush()
+        p = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+        connect_procs[step] = p
+        try:
+            return p.wait(max(1, deadline - time.time()))
+        except subprocess.TimeoutExpired:
+            kill_tree(p)
+            f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S // 60} minutes\n")
+            return -1
+        finally:
+            connect_procs.pop(step, None)
+
+
 def run_install(body):
     """Start the selected AI's installer in the background -> (started, error, HTTP code). Works for any AI; shares the
     sign-in steps' one-run-at-a-time claim, process tracking and log. Runs only what the page showed: the press sends the
@@ -288,17 +310,30 @@ def run_install(body):
     log.write_text("", encoding="utf-8")
 
     def go():
-        rc, deadline, why = -1, time.time() + INSTALL_TIMEOUT_S, ""
+        rc, deadline, why, kind = -1, time.time() + INSTALL_TIMEOUT_S, "", "download"
+        script = Path(ic["script"])
         try:
-            rc = _connect_one(step, ic["argv"], log, deadline)
-            if rc != 0:
-                why = "timeout" if time.time() >= deadline else "install"
-        except Exception as e:  # bash or PowerShell missing, pty refused: say so in the log rather than hang as "running"
-            why = "start"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.unlink(missing_ok=True)  # never run a script left over from an earlier try
+            for kind, argv in ic["steps"]:
+                if kind == "install" and not (script.is_file() and script.stat().st_size):  # Windows has no test -s step
+                    rc, why = 1, "download"
+                    break
+                if kind == "check":  # the installer exited 0: now its folder goes on PATH, and the CLI must answer
+                    add_install_dirs()
+                rc = _install_one(step, argv, log, deadline)
+                if rc != 0:
+                    why = "timeout" if time.time() >= deadline else kind
+                    break
+        except Exception as e:  # bash or PowerShell missing, say: in the log and as "start", rather than hang as "running"
+            rc, why = -1, why or ("check" if kind == "check" else "start")  # no CLI to run after the install: "check"
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\ncould not run the installer: {type(e).__name__}: {e}\n")
         finally:
-            add_install_dirs()  # before the page's re-check, which runs with this process's PATH
+            try:
+                script.unlink(missing_ok=True)
+            except OSError:
+                pass
             doctor_gen["n"] += 1  # a check already running started before this install: do not cache what it says
             doctor_cache["at"] = 0
             connects[step].update(running=False, rc=rc, why=why)

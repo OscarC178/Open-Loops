@@ -193,17 +193,20 @@ def _route_of(server, svc):
 #                %LOCALAPPDATA%\Programs\OpenAI\Codex\bin). npm i -g @openai/codex and brew install --cask codex
 #                also work but need Node or Homebrew first, so they are the manual fallback in INSTALL.md.
 #   Grok         https://docs.x.ai/build/overview        (install script; lands in ~/.grok/bin)
-# The page shows the complete invocation that runs, shell-quoted, so pasting it by hand behaves the same.
+# Download first, run second: the script is saved whole to state/install/ and checked non-empty before anything runs,
+# so a download cut off half-way never executes (piping curl into bash would run what had arrived so far). Then the
+# new CLI must answer `<cli> --version` before the step counts as done. The page shows every command, one per line,
+# exactly as they run, so pasting them by hand does the same.
 INSTALL_STEP = "install"
-_INSTALL = {  # agent -> (Mac/Linux line, Windows PowerShell line, where it is documented, who makes it)
-    "claude": ("curl -fsSL https://claude.ai/install.sh | bash", "irm https://claude.ai/install.ps1 | iex",
+_INSTALL = {  # agent -> (Mac/Linux script, what runs it, Windows script, the CLI, where it is documented, who makes it)
+    "claude": ("https://claude.ai/install.sh", "bash", "https://claude.ai/install.ps1", "claude",
                "https://code.claude.com/docs/en/setup", "Anthropic"),
-    "codex":  ("curl -fsSL https://chatgpt.com/codex/install.sh | sh", "irm https://chatgpt.com/codex/install.ps1 | iex",
+    "codex":  ("https://chatgpt.com/codex/install.sh", "sh", "https://chatgpt.com/codex/install.ps1", "codex",
                "https://github.com/openai/codex", "OpenAI"),
-    "grok":   ("curl -fsSL https://x.ai/cli/install.sh | bash", "irm https://x.ai/cli/install.ps1 | iex",
+    "grok":   ("https://x.ai/cli/install.sh", "bash", "https://x.ai/cli/install.ps1", "grok",
                "https://docs.x.ai/build/overview", "xAI"),
 }
-_PS = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+_PS = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
 
 
 def prereq(win=None):
@@ -215,34 +218,48 @@ def prereq(win=None):
 
 
 def install_cmd(agent=None, win=None):
-    """How to install an agent's CLI (default: the selected one) -> {"argv", "command", "needs", "source", "vendor",
-    "agent", "id"}, or None
-    for an agent with no known installer. "command" is what the page shows before the button is pressed; "needs"
-    the tools "argv" cannot run without (doctor.py says so, and offers no button, when one is missing)."""
+    """How to install an agent's CLI (default: the selected one) -> dict, or None for an agent with no known installer:
+      "steps"    [(kind, argv), ...] run in order, each only if the one before exited 0. kind is "download", "install"
+                 or "check"; app.py names a failure by it. "download" saves the script to "script".
+      "command"  every step, one per line, as the page shows it before the button is pressed (Mac: joined by &&)
+      "needs"    the tools the steps cannot run without (doctor.py says so, and offers no button, when one is missing)
+      "agent", "id"  name exactly what the page showed; app.py refuses a press whose pair no longer matches
+      "cli", "script", "source", "vendor"."""
     win = WIN if win is None else win
-    got = _INSTALL.get((agent or name()).strip().lower())
+    who = (agent or name()).strip().lower()
+    got = _INSTALL.get(who)
     if not got:
         return None
-    unix, ps, src, vendor = got
+    url, shell, ps_url, cli_, src, vendor = got
+    folder = ROOT / "state" / "install"
     if win:
-        argv = _PS + [ps]
-        out = {"argv": argv, "command": subprocess.list2cmdline(argv), "needs": ["powershell"], "source": src, "vendor": vendor}
+        script = str(folder / f"{who}-install.ps1")
+        q = script.replace("'", "''")  # a quote in the user's folder name, doubled as PowerShell's '...' wants
+        steps = [("download", _PS + ["-Command", f"Invoke-WebRequest -UseBasicParsing -Uri '{ps_url}' -OutFile '{q}'"]),
+                 ("install", _PS + ["-File", script]),
+                 ("check", [cli_, "--version"])]
+        show, needs, join = subprocess.list2cmdline, ["powershell"], "\n"  # PowerShell 5 has no &&: one per line
     else:
-        # pipefail: a download that fails would otherwise hand bash an empty script, which "succeeds" with exit 0
-        argv = ["bash", "-o", "pipefail", "-c", unix]
-        out = {"argv": argv, "command": shlex.join(argv), "needs": ["curl", "bash"], "source": src, "vendor": vendor}
-    # "agent" + "id" name exactly what the page showed; app.py refuses a press whose pair no longer matches
-    out["agent"] = (agent or name()).strip().lower()
-    out["id"] = hashlib.sha256((out["agent"] + "\0" + out["command"]).encode("utf-8")).hexdigest()[:16]
-    return out
+        script = str(folder / f"{who}-install.sh")
+        steps = [("download", ["curl", "-fsSL", "-o", script, url]),
+                 ("download", ["test", "-s", script]),  # an empty 200 is a failed download too
+                 ("install", [shell, script]),
+                 ("check", [cli_, "--version"])]
+        show, needs, join = shlex.join, ["curl", "bash"], " &&\n"  # pasted as is, each runs only if the last worked
+    command = join.join(show(a) for _, a in steps)
+    return {"steps": steps, "command": command, "needs": needs, "agent": who, "cli": cli_, "script": script,
+            "source": src, "vendor": vendor,
+            "id": hashlib.sha256((who + "\0" + command).encode("utf-8")).hexdigest()[:16]}
 
 
 # What the checklist says when an install ends badly, by what went wrong (app.py records which). Plain words as
 # #25 asks: what happened, then what to do; no exit codes or file paths. The installer's own output stays in
 # state/connect-install.log and the page's Console.
 INSTALL_SAID = {
+    "download": "{ai}'s installer couldn't download. Check your internet connection and press Install {ai} again.",
+    "check":   "{ai} was installed but won't start. Press Install {ai} to try again, or ask IT to install {ai}.",
     "install": "{ai}'s installer stopped with an error. Press Install {ai} to try again. If it fails again, paste the "
-               "command below into Terminal (Windows: PowerShell) and press Enter.",
+               "commands below into Terminal (Windows: PowerShell) and press Enter.",
     "timeout": "The install took longer than 10 minutes, so Open Loops stopped it. Press Install {ai} to try again.",
     "start":   "Open Loops couldn't start {ai}'s installer. Press Install {ai} to try again.",
     "changed": "The AI chosen in Settings changed since this page showed the Install button, so nothing was installed. "
