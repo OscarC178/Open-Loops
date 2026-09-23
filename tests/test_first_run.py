@@ -511,6 +511,16 @@ if a[:2] == ["login", "status"]:
     print("Not logged in"); sys.exit(1)
 print("fake codex: unexpected " + " ".join(a)); sys.exit(9)
 '''.replace("PYTHON", sys.executable)
+# A fake Grok: installed, not signed in (no ~/.grok/auth.json in the test HOME). Calls go to calls-grok.txt.
+FAKE7_GROK = r'''#!PYTHON
+import os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "calls-grok.txt"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["--version"]:
+    print("grok 1.0.30"); sys.exit(0)
+print("fake grok: unexpected " + " ".join(sys.argv[1:])); sys.exit(9)
+'''.replace("PYTHON", sys.executable)
 # Only the system folders on PATH: no real claude, codex or grok of the developer's is ever run (the fake is added in front)
 BARE = os.pathsep.join(d for d in ("/usr/bin", "/bin", "/usr/sbin", "/sbin") if os.path.isdir(d))
 
@@ -521,6 +531,7 @@ def setup_install(prefix, fake=True, config=None):
     if fake:
         (tmp / "bin" / "claude").write_text(FAKE7, encoding="utf-8")
         (tmp / "bin" / "codex").write_text(FAKE7_CODEX, encoding="utf-8")
+        (tmp / "bin" / "grok").write_text(FAKE7_GROK, encoding="utf-8")
     # the browser: only writes down what it was asked to open. It never fails: Python's webbrowser would then go on to
     # the real default browser, so a failed browser step is faked on the page side instead (FAKE in setup_js).
     (tmp / "bin" / "browser").write_text(f"#!/bin/sh\necho \"$1\" >> '{tmp / 'opened.txt'}'\n", encoding="utf-8")
@@ -530,7 +541,25 @@ def setup_install(prefix, fake=True, config=None):
 
 
 def setup_env(tmp):
-    return isolated_env(tmp, PATH=str(tmp / "bin") + os.pathsep + BARE, BROWSER=str(tmp / "bin" / "browser"))
+    """PATH = the fakes, then system folders only; every AI's own folder in the temp install; and agent.py told not to look
+    in the fixed places a real Codex lives (/opt/homebrew/bin, /Applications/Codex.app), so only the fakes can run."""
+    homes = {k: str(tmp / "ai-homes" / k.lower()) for k in ("CODEX_HOME", "GROK_HOME", "CLAUDE_CONFIG_DIR")}
+    for h in homes.values():
+        os.makedirs(h, exist_ok=True)
+    return isolated_env(tmp, PATH=str(tmp / "bin") + os.pathsep + BARE, BROWSER=str(tmp / "bin" / "browser"),
+                        OPENLOOPS_NO_FALLBACK_PATHS="1", **homes)
+
+
+def real_clis_ran(tmp):
+    """Which AI CLIs, by the path they were found at, the app would run with this env: each must be a fake in bin/.
+    -> a list of the ones that are not (empty when isolated)."""
+    code = ("import json, shutil, sys; sys.path.insert(0, '.'); from openloops import agent; import openloops.agent as A\n"
+            "out = {n: shutil.which(n) for n in ('claude', 'codex', 'grok')}\n"
+            "A.name = lambda: 'codex'; out['codex-cli'] = shutil.which(A.cli()) or A.cli()\n"
+            "print(json.dumps(out))")
+    r = subprocess.run([sys.executable, "-c", code], cwd=tmp, env=setup_env(tmp), capture_output=True, text=True, timeout=60)
+    found = json.loads(r.stdout.strip().splitlines()[-1])
+    return [f"{k}={v}" for k, v in found.items() if not (v and str(v).startswith(str(tmp / "bin")))]
 
 
 def setup_js(port, scenario, tmp):
@@ -683,6 +712,13 @@ if NODE:
  await p;for(let i=0;i<3;i++){await tick();await sleep(50)}
  out.end=view();out.seen=seen();setupEmbed();out.embed={start:els['#st_start'].parent.id,connect:els['#st_connect'].parent.id};""", tmp)
         check(out["before"]["agent"] == "claude" and out["before"]["doc"] == "claude", "starts on Claude")
+        check(real_clis_ran(tmp) == [], f"isolated: claude, codex and grok all resolve to the fakes, Codex's fixed paths included ({real_clis_ran(tmp)})")
+        cc = (tmp / "bin" / "calls-codex.txt").read_text().splitlines() if (tmp / "bin" / "calls-codex.txt").exists() else []
+        check("--version" in cc and "login status" in cc, f"...and choosing Codex ran the fake codex, not a real one ({cc})")
+        env0 = dict(setup_env(tmp), PATH=BARE)   # no fake at all: the override must still keep the fixed paths out
+        r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, '.'); import openloops.agent as A; A.name = lambda: 'codex'; print(A.cli())"],
+                           cwd=tmp, env=env0, capture_output=True, text=True, timeout=60)
+        check(r.stdout.strip() == "codex", f"OPENLOOPS_NO_FALLBACK_PATHS=1: with no codex on PATH, agent.cli() is plain 'codex', never a fixed path ({r.stdout.strip()!r})")
         cz = out["codex"]
         check(cz["calls"][:2] == ['/api/config {"agent":"codex"}', '/api/doctor {"force":true,"detect":true}'],
               f"choosing ChatGPT (Codex) POSTs agent to /api/config, then re-checks ({cz['calls']})")
