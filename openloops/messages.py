@@ -340,6 +340,33 @@ FAILURES = {
         "fix": "Open Terminal, type codex mcp login miro, press Enter and follow what it says, then press Check again.",
         "button": None},
 
+    # ---- the first scan (index.html's setup, #38): not a failure, but said once, here, like the rest.
+    # {days} is Settings > History (history_days), {sources} "Slack and Gmail", "Slack" or "Gmail": what is connected.
+    "first_scan": {
+        "what": "Looking back {days} days across {sources}.",
+        "fix": "The first pass can take ten minutes.",
+        "button": None},
+    "first_scan_ask": {
+        "what": "Open Loops is ready to read your own messages, read-only, to see who you talk to, how you write and what is still open.",
+        "fix": "Press Start the first scan when you have a few minutes; nothing runs until you do.",
+        "button": None},
+    "scheduled_isolated": {
+        "what": "This copy is an isolated test copy, so the scheduled refresh did not read anything.",
+        "fix": "Open its page and press Refresh when you want a scan.",
+        "button": None},
+    "scheduled_later": {
+        "what": "The first scan hasn't been started yet, so the scheduled refresh did not read anything.",
+        "fix": "Open Open Loops and press Start the first scan.",
+        "button": None},
+    "first_scan_not_saved": {
+        "what": "Open Loops couldn't save your choice, so nothing has changed.",
+        "fix": "Press Retry.",
+        "button": None},
+    "first_scan_later": {
+        "what": "Not started.",
+        "fix": "Press Start the first scan when you're ready.",
+        "button": None},
+
     # ---- your own to-do file (standing.py, #37)
     "standing_no_path": {
         "what": "No to-do file is selected.",

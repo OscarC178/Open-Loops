@@ -225,9 +225,18 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
    installed and signed in and at least one of Slack or Gmail is connected. With no AI on the computer the first row is
    **Install Claude** (or the AI chosen in ⚙ Settings), with the commands it will run shown underneath. The Slack
    user id is detected automatically.
-3. When green it shows **Who's who?** (`people.py`): the 12–15 people the user messages most, each with a sample
-   line and a guessed *senior / peer / junior / external* to correct with radio buttons. Saving writes
-   `config.people`, then runs *Learn my tone* (`voice.py`) and the first refresh automatically.
+3. When green it says what the first scan will read and roughly how long it takes ("Looking back 30 days across Slack
+   and Gmail. The first pass can take ten minutes.", from ⚙ Settings → History and what is connected) and waits for
+   **Start the first scan** (or **Not now**). Nothing reads your accounts before that press; the page remembers the
+   answer until this tab is closed (another tab asks again). Then it shows **Who's who?** (`people.py`): the 12–15 people the user messages
+   most, each with a sample line and a guessed *senior / peer / junior / external* to correct with radio buttons.
+   Saving writes `config.people`, then runs *Learn my tone* (`voice.py`) and the first scan automatically. With Gmail
+   not connected, the first scan is the Slack-only pass (**Update Slack**), and setup finishes when it has run.
+   Setup stays finished (`setup_done` in state.json): connecting Gmail later only offers **Run a full scan**.
+   The choice is also saved as `first_scan` (`"go"` / `"later"`) in config.json; a new install starts with `"later"`,
+   and the weekday refresh (and auto-chase) skips with one `SKIPPED:` line in the runner log until it is `"go"`. A run
+   the app starts (a button) always runs. An install from before this setting has no key, which counts as `"go"`.
+   `npm run refresh` / `python -m openloops.refresh` from a terminal counts as scheduled.
 4. Everything else (name, refresh time, domains, sending, timer) is in ⚙ Settings — no file editing needed.
 
 Manual equivalents, for support: `python -m openloops.doctor`, `python -m openloops.people`, `python -m openloops.voice`, `python -m openloops.refresh`,
@@ -239,8 +248,44 @@ Manual equivalents, for support: `python -m openloops.doctor`, `python -m openlo
 To try the installer as a new user would, next to the copy you use every day and without touching it:
 
 ```bash
-bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "Test"
+bash install.sh --dest ~/OpenLoops-test --isolated --port 8790 --name "Test"
 ```
+
+**A test copy is not a sandbox.** It uses the AI CLI you are signed in to on this computer, and so your real Slack,
+Gmail and Miro accounts: the checklist asks that CLI what is connected (and, with Slack connected, asks Claude once
+for your Slack id), and every scan it runs reads your real messages. Scans only read: nothing is sent or drafted
+unless you press *draft chase* (or turn on sending in Settings). Without `--isolated`, one press of **Start the first
+scan** is remembered until that tab is closed and the page then carries on with the setup scans by itself, reloads
+included (they fill the copy's own `people_suggested.json` and use your AI plan's allowance), and a to-do file named in
+its Settings is read, and written back when you press *done*.
+`--isolated` is recommended for every test copy:
+
+- it implies `--no-app` and `--no-task`, and writes `"isolated": true` (and `"test_copy": true`) into the copy's
+  `config.json`;
+- no to-do file is read or written back, whatever `standing_file` / `vault_path` say;
+- the page never starts *Who's who*, *Learn my tone* or the first scan by itself, not even after a reload: each
+  page load waits for **Start the first scan** (the button still works, and so do **Refresh** / **Update Slack**);
+- the header shows a grey **Test copy: no automatic scans** pill;
+- the weekday refresh and auto-chase skip on it even if a scheduled job points at it, and `--isolated` removes that
+  copy's own weekday job if it has one (a job for another copy is left alone);
+- the old-install port probe (8765–8784) is skipped, so nothing is sent to the copy you use every day. Instead,
+  when it copies from an old `~/Documents/OpenLoops`, it refuses while any process has a file or its working folder
+  there, or names that folder on its command line. Not detectable: a copy started from another folder with the old
+  package on `PYTHONPATH`; quit it first.
+
+`OPENLOOPS_ISOLATED=1` in the environment does the same for any copy at run time
+(`OPENLOOPS_ISOLATED=1 python3 -m openloops.app --port 8790`). Running the installer on that folder again without
+`--isolated` takes the mark off. The whole fresh-install check needs no stubs this way:
+
+```bash
+bash install.sh --dest ~/OpenLoops-test --isolated --no-launch --port 8790 --name "Test"
+cd ~/OpenLoops-test && python3 -m openloops.app --no-browser &   # answers on 8790
+```
+
+Opening its page then runs only the connection checklist; nothing is scanned until you press **Start the first
+scan**, **Refresh** or **Update Slack**. Stop it with `python3 -m openloops.app --stop --port 8790`.
+
+The other flags:
 
 - `--dest DIR` installs there instead of `~/Library/Application Support/OpenLoops` (or set `OPENLOOPS_DEST`). It never
   reads an older `~/Documents/OpenLoops`; only a default install copies from it.
@@ -254,10 +299,12 @@ bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "T
   tell you to download the installer, because the installer would update your everyday copy, not this one. Running
   the installer on that folder again without those flags removes the mark.
 - `--no-launch` also skips starting it at the end.
+- `--isolated`, above.
 
 Start it again later with `cd ~/OpenLoops-test && python3 -m openloops.app`; delete the folder when you are done.
-Windows: `powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoops-test -NoApp -NoTask -Port 8790 -Name Test`
-(`-NoLaunch` as before).
+Windows: `powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoops-test -Isolated -Port 8790 -Name Test`
+(`-Isolated` implies `-NoApp -NoTask`; `-NoLaunch` as before; `$env:OPENLOOPS_ISOLATED = "1"` for the run-time
+switch).
 
 ## 3. Daily use
 
@@ -296,7 +343,7 @@ Windows: `powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoo
   tone*, who's who, exclusions), **Chasing** (external on/off, draft or send, timer, tone per seniority), **Preferences** (AI,
   model, refresh time), **History** (how far back it reads, what it writes to disk), **Connections** (to-do file, Miro board),
   **App** (quit, start over). The browser remembers which sections you left open. *Save settings* stays pinned at the bottom.
-- **Update Slack** (next to Refresh, shown once Slack is connected) is a quick Slack-only pass: no email, about a
+- **Update Slack** (shown whenever Slack is connected, during setup too) is a quick Slack-only pass: no email, about a
   third of the time. It keeps its own cursor, so the next full Refresh still picks up every email ask made in between.
 - **+ link** on a card attaches a document URL (Drive, Miro, Notion, Figma); the refresh also captures any document
   link it sees in the thread. Links show as chips; bare URLs typed into a note become clickable too.

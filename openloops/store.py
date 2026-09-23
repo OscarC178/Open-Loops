@@ -12,6 +12,7 @@ load_state / update_state
     applies the change to that fresh copy, so anything the page wrote meanwhile - a note,
     a snooze, a vault save, a done click - survives.
 norm_date               zero-pads YYYY-M-D; snooze checks are string comparisons everywhere.
+isolated                whether this copy is an isolated test copy (#36): no to-do file, no automatic scans.
 """
 import json, os, sys, tempfile
 from contextlib import contextmanager
@@ -118,6 +119,33 @@ def load_cfg():
         else:
             out[k] = v
     return out
+
+
+def isolated(cfg=None):
+    """An isolated test copy (#36): `install.sh --isolated` / `setup.ps1 -Isolated` writes "isolated": true into its
+    config.json, and OPENLOOPS_ISOLATED=1 in the environment does the same at run time (the jobs inherit it). Such a
+    copy reads no to-do file, and the page starts no scan by itself: only a press of Start the first scan does."""
+    if str(os.environ.get("OPENLOOPS_ISOLATED") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return (cfg if cfg is not None else read_json(CONFIG, {}) or {}).get("isolated") is True
+    except AttributeError:  # a config.json that is not a JSON object is not a record of anything
+        return False
+
+
+def scheduled_skip(cfg=None):
+    """Why a job NOT started by the app (the weekday task, a terminal) must not read anyone's accounts, or "" (#38/#36
+    review). The app starts every job with OPENLOOPS_RUN_ID set; without it the run is treated as scheduled.
+    -> "isolated": an isolated test copy starts no scan by itself;
+       "later":    config.json "first_scan" is "later": the first scan was not started on the page yet (a new install
+                   is written with "later"; Start the first scan writes "go"). No key at all = "go": installs from
+                   before this setting keep their morning refresh."""
+    if os.environ.get("OPENLOOPS_RUN_ID"):
+        return ""
+    cfg = cfg if cfg is not None else read_json(CONFIG, {}) or {}
+    if isolated(cfg if isinstance(cfg, dict) else {}):
+        return "isolated"
+    return "later" if isinstance(cfg, dict) and cfg.get("first_scan") == "later" else ""
 
 
 def load_state():

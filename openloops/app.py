@@ -3,19 +3,19 @@
     python3 -m openloops.app            -> http://localhost:8765
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
-import json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
+import itertools, json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import messages
 from .paths import PKG, ROOT
-from .store import load_cfg, norm_date, read_json, update_json, write_json
+from .store import isolated, load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
 VOICEF = ROOT / "voice.json"
-EDITABLE = ("agent", "model", "effort", "codex_model", "codex_effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
+EDITABLE = ("first_scan", "agent", "model", "effort", "codex_model", "codex_effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
 import os
 def _port_arg():
     """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
@@ -50,6 +50,9 @@ last_seen = time.time()
 pages = {}
 bye_at = 0.0
 STARTED = datetime.now().isoformat(timespec="seconds")
+# This server's identity, new at every start: job "seq" numbers count from 1 again after a restart, so the page
+# names a job end by (INSTANCE, seq) and forgets what it had seen when this changes (#49 review)
+INSTANCE = uuid.uuid4().hex
 quit_requested = False
 quit_now = False  # `--stop --now`: do not wait for a running job, cut it short
 PAGE_GRACE_S = 4
@@ -126,11 +129,17 @@ def _ai_now():
         return "Claude"
 
 
+finished_seq = itertools.count(1)   # every job end, of any job, takes the next number: see _ended
+
+
 def _ended(name, rc, log, ai="Claude", failure=None):
     """A finished job's entry in `jobs`. A failure (not 0, not 2 = SKIPPED) also carries "failure" (a messages.py id)
     and "said", the plain sentence the page shows (#25), from the job's own state/jobs/<job>.failure.json only; the log
-    itself stays for the Console and Settings."""
-    j = {"running": False, "log": log, "rc": rc}
+    itself stays for the Console and Settings.
+    "seq" goes up by one with every job that ends, in this server's life, and "finished_at" says when (#49): the page
+    notices an end by a seq it has not seen, so a job that starts and fails between two of its polls is not missed."""
+    j = {"running": False, "log": log, "rc": rc, "seq": next(finished_seq),
+         "finished_at": datetime.now().isoformat(timespec="seconds")}
     if rc not in (0, 2):
         j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai, failure=failure)
     return j
@@ -556,7 +565,9 @@ class H(BaseHTTPRequestHandler):
                 save(s)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
-                        "pages": len(pages), "quitting": quit_requested})  # who is holding the server up
+                        "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
+                        "isolated": isolated(),   # a test copy (#36): the page starts no scan by itself, and says so
+                        "instance": INSTANCE})   # which server's seq numbers these are
         elif self.path == "/api/config":
             self._json({"config": cfg(), "voice": read_json(VOICEF), "people_suggested": read_json(PEOPLEF)})
         elif self.path == "/api/diag":  # what the Console's "Copy all" pastes: enough to debug from a screenshot-free report
@@ -568,6 +579,7 @@ class H(BaseHTTPRequestHandler):
                         "python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
                         "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
+                        "isolated": isolated(),   # #36: a test copy that reads no to-do file and starts no scan by itself
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
                         "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
                         "launchd_err_log": le.read_text(encoding="utf-8", errors="replace")[-2000:] if le.exists() else ""})
@@ -754,6 +766,12 @@ class H(BaseHTTPRequestHandler):
             if r.returncode == 0 and update_json(CONFIG, lambda c: c.update(refresh_time=t)) is False:
                 return self._json({"ok": False, "error": "config.json could not be read, so the new time was not saved there"}, 500)
             return self._json({"ok": r.returncode == 0, "out": (r.stdout + r.stderr)[-500:]})
+        if self.path == "/api/setup-done":  # the page reached "ready" (#38 review): setup stays done, whatever is connected later
+            s = load()
+            if not s.get("setup_done"):
+                s["setup_done"] = True
+                save(s)
+            return self._json({"ok": True})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":
@@ -777,7 +795,8 @@ class H(BaseHTTPRequestHandler):
             # "Start over": back to the state a brand-new user sees, keeping only name/domains/tone settings.
             # Config first: if it cannot be read, refuse before deleting anything, so an unreadable
             # config.json never leaves the user with no list AND stale people/Slack id (Codex review, #21).
-            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="")) is False:
+            # first_scan "later": a brand-new user again, so the weekday task reads nothing until Start the first scan
+            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="", first_scan="later")) is False:
                 return self._json({"ok": False, "error": messages.say("config_unreadable"),
                                    "detail": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
             for f in (STATE, VOICEF, PEOPLEF):

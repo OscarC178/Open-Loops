@@ -1,6 +1,6 @@
 """Bring the list and settings of an older Mac install (in ~/Documents) into the new one (#24). Copy only.
 
-    python3 scripts/migrate_install.py --old ~/Documents/OpenLoops --dest ~/Library/Application\\ Support/OpenLoops [--no-task]
+    python3 scripts/migrate_install.py --old ~/Documents/OpenLoops --dest ~/Library/Application\\ Support/OpenLoops [--no-task] [--isolated]
 
 Why: macOS will not let the launchd weekday refresh read ~/Documents, so the install now lives elsewhere.
 Called by install.sh before it copies the program files. It NEVER moves, renames, deletes or writes anything
@@ -21,7 +21,12 @@ under the old folder, and never suggests deleting it: the old copy stays exactly
        register the job for the new place) the old job is put back afterwards, and it says so.
      - a server on 8765-8784 whose /api/diag root is the old folder is asked to quit only if it also says
        "app": "openloops"; an older version without that field stops the copy (quit it first), and so does a
-       port that does not answer clearly.
+       port that does not answer clearly. With --isolated (install.sh --isolated, #36) no port is probed at all:
+       nothing is sent to an Open Loops that may be running. In its place, any process whose command line names
+       the old folder stops the copy (commands_in), on top of the lsof check below (a server running from the old
+       folder has its working folder there). Residual: a server started from ANOTHER folder with the old package
+       on PYTHONPATH (`python -m openloops.app`) holds no file there and does not name it, so neither check sees it;
+       only the port probe would. Quit such a copy first, or install without --isolated.
      - lsof must show no process with any file (or its working folder) inside the old folder; missing or
        failing lsof stops it.
   4. Copy only the named personal files and folders. Each file goes to "<name>.part" (shutil.copy2), is compared
@@ -218,6 +223,29 @@ def stop_servers(old):
         raise cant
 
 
+def commands_in(old):
+    """--isolated's stand-in for the port probe: PIDs (other than this script and install.sh) whose command line
+    names the old install (`python /old/openloops/app.py`, a shell cd'd there by path, ...). `ps` failing stops it."""
+    cant = Stop("Open Loops can't check whether the old copy is still in use.", "Quit Open Loops and try again.")
+    try:
+        r = subprocess.run(["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        log(f"ps: {e!r}")
+        raise cant
+    if r.returncode != 0:
+        log(f"ps -> {r.returncode}: {r.stderr[-500:]}")
+        raise cant
+    names = {os.path.realpath(old), str(old)}
+    pids = []
+    for ln in r.stdout.splitlines():
+        pid, _, cmd = ln.strip().partition(" ")
+        if not pid.isdigit() or int(pid) in (os.getpid(), os.getppid()) or "migrate_install.py" in cmd:
+            continue
+        if any(n + "/" in cmd or cmd.endswith(n) for n in names):
+            pids.append(int(pid))
+    return sorted(pids)
+
+
 def users_of(old):
     """PIDs (other than this script and install.sh) with ANY open file, or their working folder, inside the old
     install - so a writer using absolute paths counts too."""
@@ -344,6 +372,7 @@ def main():
     ap.add_argument("--old", required=True)
     ap.add_argument("--dest", required=True)
     ap.add_argument("--no-task", action="store_true", help="install.sh will not register the job: put the old one back")
+    ap.add_argument("--isolated", action="store_true", help="a test copy (#36): probe no port, lsof alone decides")
     a = ap.parse_args()
     old, dest = Path(a.old), Path(a.dest)
     if not (old / "openloops" / "app.py").is_file():
@@ -362,7 +391,15 @@ def main():
     say("Copying your list and settings from the old Open Loops in Documents ...")
     os.chdir(Path.home())   # this script's own working folder must not count as a user of the old one
     unload_job(old)
-    stop_servers(old)
+    if a.isolated:
+        log("--isolated: no port probed")
+        pids = commands_in(old)   # no port probe: a process that names the old folder counts as using it
+        if pids:
+            log(f"command line names the old folder: process {', '.join(map(str, pids[:20]))}")
+            raise Stop("Something is still working in the old Open Loops folder.",
+                       "Quit Open Loops and close any Terminal window opened in that folder, then run the installer again.")
+    else:
+        stop_servers(old)
     pids = users_of(old)
     if pids:
         log(f"still in use by process {', '.join(map(str, pids[:20]))}")   # the numbers are for the log, not the screen (#25)

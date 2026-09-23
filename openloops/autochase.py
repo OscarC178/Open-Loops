@@ -9,7 +9,7 @@ import subprocess, sys
 from datetime import date, datetime
 
 from .paths import ROOT
-from .store import load_cfg, load_state
+from .store import load_cfg, load_state, scheduled_skip
 CFG = load_cfg()
 
 
@@ -24,6 +24,8 @@ def workdays_since(iso):
 
 def main():
     ac = CFG.get("auto_chase", {})
+    if scheduled_skip():   # the same rule as refresh.py: no chase from an isolated copy or before the first scan
+        print("SKIPPED: auto-chase (" + scheduled_skip() + ")"); return
     if not ac.get("enabled"):
         print("auto-chase off"); return
     if date.today().weekday() >= 5:

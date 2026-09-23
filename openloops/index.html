@@ -81,6 +81,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 <button class="primary" id="refresh" onclick="refresh()" title="" style="display:none">Refresh</button>
 <button id="uslack" onclick="refresh(true)" title="quick pass: Slack only, skips email" style="display:none">Update Slack</button>
 <span class="pill" id="gmail" style="display:none"></span>
+<span class="pill" id="isolated_pill" style="display:none" title="An isolated test copy: it reads no to-do file and starts no scan by itself">Test copy: no automatic scans</span>
 <span class="meta" id="meta"></span></header>
 <main>
 <div id="banner"></div>
@@ -122,8 +123,24 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   </div>
  </div>
 
+ <!-- before the first automatic job (who's who, tone, first scan): say what it reads and wait for a press (#38) -->
+ <div id="st_start" class="box" style="display:none">
+  <h3>Start the first scan?</h3>
+  <div class="sub" id="start_said" style="margin-bottom:4px"></div>
+  <div class="sub" id="start_ask"></div>
+  <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+   <button class="primary" id="start_go" onclick="startScan()">Start the first scan</button>
+   <button id="start_later" onclick="notNow()">Not now</button>
+   <button id="start_retry" onclick="retryChoice()" style="display:none">Retry</button>
+   <span class="sub" id="start_msg"></span>
+  </div>
+ </div>
+
  <!-- stage: voice / scan (automatic) -->
  <div id="st_auto" class="box" style="display:none"><h3 id="auto_title"></h3><div class="sub" id="auto_sub"></div><div style="margin-top:10px"><button id="auto_retry" onclick="retryStage()" style="display:none">Try again</button></div></div>
+
+ <!-- Gmail connected after a Slack-only setup: offered, never forced; setup stays done (#38 review) -->
+ <div id="gmail_later" class="box" style="display:none"><span class="sub">Gmail is connected now. Run a full scan?</span> <button class="primary" id="gmail_later_btn" onclick="refresh()">Run a full scan</button></div>
 
  <div id="lists" style="display:none">
   <!-- Pinned: the boards and docs you open every day, yours rather than a loop's. Miro boards can open in a view-only embed here. -->
@@ -417,7 +434,7 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
  if(t==='settings'&&!formPainted)paintForm();if(t==='settings'&&sec){const d=cfgShow(sec);if(d)d.scrollIntoView({behavior:'smooth',block:'start'})}}
 
 // ---------- data ----------
-async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today}
+async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||''}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;
@@ -453,14 +470,49 @@ const havePeople=()=>!!(C&&C.people&&Object.keys(C.people).length);
 const haveVoice=()=>!!(V&&V.people&&Object.keys(V.people).length);
 
 // ---------- the stage machine: derived from facts on disk every tick, never from what fired earlier ----------
-function stage(){if(!DOC)return 'checking';if(DOC.error)return 'checkfail';if(!DOC.all_ok)return 'connect';if(!havePeople())return 'people';if(!haveVoice())return 'voice';if(!S.last_refresh)return 'scan';return 'ready'}
+function stage(){if(!DOC)return 'checking';if(DOC.error)return 'checkfail';if(!DOC.all_ok)return 'connect';if(!havePeople())return 'people';if(!haveVoice())return 'voice';if(!scanned())return 'scan';return 'ready'}
+// Which sources the checklist has ticked. The first scan is done once a full refresh ran (last_refresh), or, on an
+// install without Gmail, once the Slack-only pass ran (last_slack_refresh): that pass is then the first scan (#38).
+const srcOk=id=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id===id&&x.ok));
+// Once setup has finished (setup_done, saved the first time the page reaches "ready"), it stays finished: Gmail
+// connected later is offered a full scan (#gmail_later), it does not reopen setup (#38 review).
+const scanned=()=>!!(S&&(S.setup_done||S.last_refresh||(S.last_slack_refresh&&!srcOk('gmail'))));
+let setupSaving=false;
+function keepSetupDone(st){if(st!=='ready'||!S||S.setup_done||setupSaving)return;setupSaving=true;
+ api('/api/setup-done',{}).then(()=>{S.setup_done=true;clog('setup done: saved')},()=>{}).finally(()=>{setupSaving=false})}
+function paintGmailLater(st){const show=st==='ready'&&!!S&&!!S.setup_done&&!S.last_refresh&&srcOk('gmail');
+ $('#gmail_later').style.display=show?'':'none';$('#gmail_later_btn').disabled=running('refresh')}
+const slackOnlyScan=()=>slackOk()&&!srcOk('gmail');
+const scanSources=()=>srcOk('slack')&&srcOk('gmail')?'Slack and Gmail':srcOk('slack')?'Slack':srcOk('gmail')?'Gmail':'Slack and Gmail';
+const histDays=()=>Math.min(+(C&&C.history_days)||30,365);   // app.py history_days(): how far back the first scan reads
+// Nothing reads your accounts by itself: the first automatic job (who's who, tone, first scan) waits for Start the first
+// scan, remembered for this tab (sessionStorage: another tab asks again) (#38). An isolated test copy (#36) never goes on by itself, not even after a
+// reload: only a press on this page load starts it.
+const GO_KEY='ol.firstscan';let GO=null,ISO=false,pressed=false;try{GO=sessionStorage.getItem(GO_KEY)}catch(e){}
+const scanAllowed=()=>pressed||(!ISO&&GO==='go');
+const JOB_OF={people:'people',voice:'voice',scan:'refresh'};
+function waitsForGo(st){return !scanAllowed()&&!!JOB_OF[st]&&!kicked[st]&&!running(JOB_OF[st])&&!(st==='people'&&P)}
+function goRemember(v){GO=v;try{v?sessionStorage.setItem(GO_KEY,v):sessionStorage.removeItem(GO_KEY)}catch(e){}}
+// The choice goes to config.json "first_scan" first, which the weekday task obeys (store.scheduled_skip); only once
+// that is saved does the page act on it. A failed save changes nothing: the box stays, says so, and offers Retry.
+let choiceFailed='',choiceBusy=false;
+async function saveChoice(v){choiceBusy=true;try{await api('/api/config',{first_scan:v});choiceFailed='';return true}
+ catch(e){choiceFailed=v;clog('first scan choice not saved: '+errSaid(e));return false}finally{choiceBusy=false}}
+async function startScan(){if(choiceBusy)return;if(!await saveChoice('go')){paintStart();return}
+ pressed=true;goRemember('go');clog('first scan: started by the button');tick()}
+async function notNow(){if(choiceBusy)return;if(!await saveChoice('later')){paintStart();return}
+ goRemember('later');clog('first scan: not now');tick()}
+function retryChoice(){return choiceFailed==='later'?notNow():startScan()}
+function paintStart(){$('#st_start').style.display='';$('#start_said').textContent=msg('first_scan',{days:histDays(),sources:scanSources()});
+ $('#start_ask').textContent=msg('first_scan_ask');$('#start_retry').style.display=choiceFailed?'':'none';
+ $('#start_msg').textContent=choiceFailed?msg('first_scan_not_saved'):GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
 const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone'],['scan','First scan'],['ready','Ready']];
 async function tick(){
  const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step
  $('#steps').innerHTML=st==='ready'?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
- for(const k of ['connect','checkfail','people','auto'])$('#st_'+k).style.display='none';
+ for(const k of ['connect','checkfail','people','auto','start'])$('#st_'+k).style.display='none';
  if(st!==lastStage)clog('stage: '+st);
  // Hick / Prägnanz: while setting up, the page is the setup - the lists, Day log and Roadmap wait until "ready"
  $('#lists').style.display=st==='ready'?'':'none';
@@ -468,9 +520,10 @@ async function tick(){
  lastStage=st;
  if(st==='connect')paintConnect();
  else if(st==='checkfail'){$('#st_checkfail').style.display='';$('#checkfail_said').textContent=msg('check_failed');$('#checkfail_msg').textContent=docFails>1?`tried ${docFails} times`:''}
+ else if(waitsForGo(st))paintStart();   // nothing starts until Start the first scan is pressed
  else if(st==='people'){$('#st_people').style.display='';await stagePeople()}
  else if(st==='voice'||st==='scan'){$('#st_auto').style.display='';await stageAuto(st)}
- renderLists();paintVoice();paintButtons(st);paintSchedule(st)}
+ keepSetupDone(st);paintGmailLater(st);renderLists();paintVoice();paintButtons(st);paintSchedule(st)}
 
 function paintConnect(){$('#st_connect').style.display='';
  const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
@@ -550,7 +603,7 @@ paintConnect=function(){paintConnectBase();const rows=$('#setup_steps').children
 
 let peopleRendered='';
 async function stagePeople(){
- if(!P&&!running('people')&&!kicked.people){kicked.people=true;await api('/api/people',{});J.people={running:true}}
+ if(!P&&!running('people')&&!kicked.people){kicked.people=true;await api('/api/people',{});jobStarted('people')}
  if(running('people')){$('#people_list').innerHTML='<span class="sub"><span class="spin"></span>Looking at who you talk to on Slack and email… about a minute.</span>';peopleRendered='';$('#people_save').disabled=true;$('#people_again').disabled=true;return}
  $('#people_again').disabled=false;
  if(!P||!P.people||!P.people.length){$('#people_list').innerHTML='<span class="sub">'+(J.people&&J.people.said?jobSaid('people'):'Couldn\'t find anyone. Press <b>Look again</b>.')+'</span>';$('#people_save').disabled=true;peopleRendered='';return}
@@ -561,7 +614,7 @@ async function stagePeople(){
   <div><b>${p.name}</b><div class="sub">${p.email||p.channel||''}</div></div>
   <div class="sub"><i>“${(p.example||'').slice(0,110)}”</i></div>
   <div style="white-space:nowrap">${L.map(l=>`<label style="margin-left:6px;font-size:12px"><input type="radio" name="lv${i}" value="${l}" ${p.guess===l?'checked':''}> ${l}</label>`).join('')}</div></div>`).join('')}
-async function findPeople(force){if(running('people'))return;kicked.people=true;P=null;peopleRendered='';await api('/api/people',{});J.people={running:true};tick()}
+async function findPeople(force){if(running('people'))return;kicked.people=true;P=null;peopleRendered='';await api('/api/people',{});jobStarted('people');tick()}
 async function savePeople(){const people={},sample=[];P.people.forEach((p,i)=>{const v=document.querySelector(`input[name="lv${i}"]:checked`);if(!v)return;people[p.name]={level:v.value,aliases:[p.name.split(' ')[0]],email:p.email||null};if(sample.length<6&&v.value!=='external')sample.push(p.name)});
  if(!Object.keys(people).length){$('#people_msg').textContent='pick a level for at least one person';return}
  await api('/api/config',{people,voice_sample_people:sample});await loadCfg();formPainted=false;kicked.voice=false;stage=stage0;tick()}
@@ -572,12 +625,12 @@ const stage0=stage;
 
 async function stageAuto(st){const t=$('#auto_title'),s=$('#auto_sub'),r=$('#auto_retry');r.style.display='none';
  if(st==='voice'){
-  if(!running('voice')&&!kicked.voice){kicked.voice=true;await api('/api/voice',{});J.voice={running:true}}
+  if(!running('voice')&&!kicked.voice){kicked.voice=true;await api('/api/voice',{});jobStarted('voice')}
   if(running('voice')){t.innerHTML='<span class="spin"></span>3 · Learning how you write…';s.textContent='Reading your own messages to the people you just picked, so chases sound like you. About a minute.'}
   else{t.textContent='3 · Learning your tone didn\'t finish';s.innerHTML=jobSaid('voice','Learning your tone');r.style.display=''}}
  else{
-  if(!running('refresh')&&!kicked.scan){kicked.scan=true;await api('/api/refresh',{});J.refresh={running:true}}
-  if(running('refresh')){t.innerHTML='<span class="spin"></span>4 · First scan of your Slack and email…';s.textContent=`Reading the last ${(C&&C.history_days)||30} days of your Slack and email for things you've asked people for and things they've asked you. The first pass can take ten minutes.`}
+  if(!running('refresh')&&!kicked.scan){kicked.scan=true;await api('/api/refresh',slackOnlyScan()?{slack_only:true}:{});jobStarted('refresh')}
+  if(running('refresh')){t.innerHTML='<span class="spin"></span>4 · First scan of your '+esc(scanSources())+'…';s.textContent=msg('first_scan',{days:histDays(),sources:scanSources()})}
   else{t.textContent='4 · The first scan didn\'t finish';s.innerHTML=jobSaid('refresh','The first scan');r.style.display=''}}}
 // A setup job that failed: the app's plain sentence (who stopped it, what to do); what it printed is one click away (#25)
 function jobSaid(k,job){const j=J[k]||{},tail=(j.log||'').trim().slice(-400);
@@ -587,9 +640,11 @@ function retryStage(){const st=stage();kicked[st==='voice'?'voice':'scan']=false
 // Update Slack needs Slack connected AND the owner's Slack id known (refresh --slack-only is SKIPPED without it)
 const slackOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='slack'&&x.ok)&&DOC.steps.some(x=>x.id==='self'&&x.ok));
 function paintButtons(st){const rb=$('#refresh');rb.style.display=st==='ready'&&$('#page_home').style.display!=='none'?'':'none';rb.disabled=running('refresh');rb.textContent=running('refresh')?'Refreshing…':'Refresh';   // hidden, not disabled, until setup is done
- const ub=$('#uslack');ub.style.display=st==='ready'&&slackOk()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
+ // Update Slack: whenever Slack is connected, setup included (#38): the quick pass needs no Who's who
+ const ub=$('#uslack');ub.style.display=slackOk()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
  const vb=$('#voicebtn');vb.disabled=!havePeople()||running('voice');vb.textContent=running('voice')?'Learning…':'Learn my tone';vb.title=havePeople()?'':'save Who\'s who first';
- $('#meta').textContent=S?'last refresh '+(S.last_refresh?fmt(S.last_refresh):'never')+(S.last_slack_refresh?' · slack '+fmt(S.last_slack_refresh):''):'';
+ $('#meta').textContent=S?[S.last_refresh?'last refresh '+fmt(S.last_refresh):S.last_slack_refresh?'':'last refresh never',S.last_slack_refresh?'slack '+fmt(S.last_slack_refresh):''].filter(Boolean).join(' · '):'';
+ $('#isolated_pill').style.display=ISO?'':'none';
  const src=['slack','gmail'].map(id=>DOC&&DOC.steps&&DOC.steps.find(x=>x.id===id)).filter(Boolean);   // only after a check, and not over the checklist that says it already
  $('#gmail').textContent=['checking','checkfail','connect'].includes(st)?'':src.map(x=>(x.id==='slack'?'Slack':'Gmail')+(x.ok?' connected':' not connected')).join(' · ');$('#gmail').style.display=$('#gmail').textContent?'':'none';
  $('#log').textContent=J?Object.keys(J).map(k=>J[k]&&J[k].log?`--- ${k}\n${J[k].log}`:'').filter(Boolean).join('\n'):'';
@@ -698,7 +753,7 @@ function closeVault(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  dlgOpen({title:'How are you closing '+(l.vault_id||id)+'?',sub:(l.owner?l.owner+' — ':'')+l.ask,ok:'Mark done',
   fields:[{id:'closure',label:'What did you do? Name any other standing items this changes (A7, A8…).',type:'textarea',rows:5}],
   onOk:async()=>{const closure=dlgVal('closure');if(!closure)throw localErr('say how you closed it - this goes into the vault');
-   await api('/api/action',{id,action:'done',closure});if(J)J.standing={running:true};await loadState();renderLists();toast('Marked done and written to the vault: '+(l.vault_id||id))}})}
+   await api('/api/action',{id,action:'done',closure});jobStarted('standing');await loadState();renderLists();toast('Marked done and written to the vault: '+(l.vault_id||id))}})}
 async function addNeed(){const owner=$('#need_who').value.trim(),ask=$('#need_ask').value.trim(),notes=$('#need_notes').value.trim();
  if(!ask){$('#need_ask').focus();toast('Type what needs doing first',{err:true});return}
  try{const r=await api('/api/action',{action:'add',owner,ask,notes});$('#need_who').value='';$('#need_ask').value='';$('#need_notes').value='';banner('');await loadState();renderLists();
@@ -708,11 +763,11 @@ const counts=()=>{const L=(S&&S.loops)||[],live=l=>l.status!=='done'&&!(l.snooze
 let before=null;   // counts when a refresh started, so the finish toast can say what changed
 async function refresh(slackOnly){if(running('refresh'))return;before=counts();
  try{await api('/api/refresh',{slack_only:!!slackOnly})}catch(e){toast('Refresh could not start: '+errSaid(e),{err:true});return}
- J.refresh={running:true};tick()}
+ jobStarted('refresh');tick()}
 
 // ---------- day log: instant digest from state, prose on demand ----------
 let DL=null;
-async function loadDaylog(){try{DL=await api('/api/daylog')}catch(e){DL=null}paintDaylog()}
+async function loadDaylog(strict){try{DL=await api('/api/daylog')}catch(e){DL=null;if(strict){paintDaylog();throw e}}paintDaylog()}   // strict: a job-end follow-up, retried if this fails
 function paintDaylog(){const d=DL;if(!d||!$('#dl_digest'))return;const g=d.digest||{};
  const line=(k,t)=>(g[k]||[]).length?`<div><b>${t}:</b> ${g[k].map(x=>esc((x.owner?x.owner+' — ':'')+x.ask)).join(' · ')}</div>`:'';
  $('#dl_digest').innerHTML=line('closed','Closed today')+line('opened','Asked today')+line('chased','Chased today')+`<div>${g.waiting||0} waiting on them · ${g.needs_me||0} need you</div>`;
@@ -720,14 +775,14 @@ function paintDaylog(){const d=DL;if(!d||!$('#dl_digest'))return;const g=d.diges
  const has=!!d.text;$('#dl_text').style.display=has?'':'none';$('#dl_text').textContent=d.text||'';$('#dl_copy').style.display=has?'':'none';$('#dl_open').style.display=d.has_page?'':'none';
  const b=$('#dl_run');b.disabled=running('daylog');b.textContent=running('daylog')?'Writing…':(has?'Write it again':'Write it up');
  if(running('daylog'))$('#dl_msg').textContent='reading today\'s messages… about a minute';else if($('#dl_msg').textContent.startsWith('reading'))$('#dl_msg').textContent=''}
-async function writeDaylog(){if(running('daylog'))return;try{await api('/api/daylog',{});J.daylog={running:true};paintDaylog()}catch(e){$('#dl_msg').textContent=errSaid(e)}}
+async function writeDaylog(){if(running('daylog'))return;try{await api('/api/daylog',{});jobStarted('daylog');paintDaylog()}catch(e){$('#dl_msg').textContent=errSaid(e)}}
 async function copyDaylog(){try{await navigator.clipboard.writeText((DL&&DL.text)||'');$('#dl_msg').textContent='copied'}catch(e){$('#dl_msg').textContent='copy failed — select the text instead'}}
 
 // ---------- roadmap: stage rows here, add cards to the Miro frame through Claude ----------
 let RM=null,rmSaveT=null,rmArmT=null,rmArmed=false,rmRendered='';
 const miroOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='miro'&&x.ok));
 function rmRows(){return (RM&&RM.store&&RM.store.rows)||[]}
-async function loadRm(){try{RM=await api('/api/roadmap')}catch(e){RM=null}rmRendered='';paintRm()}
+async function loadRm(strict){try{RM=await api('/api/roadmap')}catch(e){RM=null;if(strict){rmRendered='';paintRm();throw e}}rmRendered='';paintRm()}
 function paintRm(){if(!RM||!$('#roadmap'))return;
  if(!miroOk()){$('#rm_head').textContent=(C&&C.agent)==='codex'?"· Miro isn't available with Codex (see the connection checklist)":'· connect Miro in Claude to use this (see the connection checklist)';$('#roadmap').style.display='none';return}
  if(!RM.configured.ok){$('#rm_head').innerHTML='· <a href="#" onclick="showTab(&quot;settings&quot;,&quot;cs_connections&quot;);return false" title="opens Settings">set the board and frame in Settings</a>';$('#roadmap').style.display='none';return}
@@ -758,7 +813,7 @@ function rmDrop(i){rmRows().splice(i,1);rmRendered='';paintRm();rmDisarm();rmSav
 function rmAddRow(){const b=RM.store.board||{};rmRows().push({title:'',detail:'',owners:'',lane:(b.lanes||[])[0]||'',column:(b.columns||[])[0]||'',state:'not_started',source:'hand'});rmRendered='';paintRm();rmDisarm();rmSave()}
 function rmTouch(){rmDisarm();rmSave()}
 function rmSave(){clearTimeout(rmSaveT);rmSaveT=setTimeout(async()=>{try{RM.store.pasted=$('#rm_paste').value;rmRendered=JSON.stringify(RM.store);await api('/api/roadmap',{mode:'save',rows:rmRows(),pasted:RM.store.pasted})}catch(e){$('#rm_msg').textContent='not saved: '+errSaid(e)}},500)}
-async function rmJob(mode,extra){try{$('#rm_msg').textContent='';const r=await api('/api/roadmap',Object.assign({mode},extra||{}));if(r.started===false){$('#rm_msg').textContent='already running';return}J.roadmap={running:true};paintRm()}catch(e){$('#rm_msg').textContent=errSaid(e)}}
+async function rmJob(mode,extra){try{$('#rm_msg').textContent='';const r=await api('/api/roadmap',Object.assign({mode},extra||{}));if(r.started===false){$('#rm_msg').textContent='already running';return}jobStarted('roadmap');paintRm()}catch(e){$('#rm_msg').textContent=errSaid(e)}}
 function rmRead(){rmJob('read')}
 function rmParse(){const p=$('#rm_paste').value.trim();if(!p){$('#rm_msg').textContent='paste some notes first';return}clearTimeout(rmSaveT);rmJob('parse',{pasted:p})}
 function rmPreview(){rmDisarm();rmJob('preview')}
@@ -775,7 +830,7 @@ async function chase(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  if(willSend(l)&&!confirm(`This will SEND a chase to ${l.owner} right now, in your name, without you seeing it first.\n\nSend?`))return;
  if(!willSend(l)&&l.last_chase_at&&!confirm(`You already ${l.last_chase_mode==='send'?'sent':'drafted'} a chase for ${l.owner} on ${fmt(l.last_chase_at)}.\nIf a draft is still unsent this will create a second one.\n\nDraft another?`))return;
  try{await api('/api/chase',{id})}catch(e){toast('Chase could not start: '+errSaid(e),{err:true});return}
- J.chase={running:true};toast((willSend(l)?'Sending a chase to ':'Drafting a chase for ')+l.owner+'… about a minute');tick()}
+ jobStarted('chase');toast((willSend(l)?'Sending a chase to ':'Drafting a chase for ')+l.owner+'… about a minute');tick()}
 
 // ---------- settings form: painted only on first open and after Save, never by background ticks ----------
 function paintForm(){if(!C)return;formPainted=true;$('#cfg_name').value=C.owner_name||'';$('#cfg_agent').value=C.agent||'claude';modelUI(C.agent||'claude');$('#cfg_use_slack').checked=!!C.use_slack;$('#cfg_history').value=String(C.history_days||30);$('#cfg_time').value=C.refresh_time||'09:15';
@@ -812,8 +867,8 @@ let dirty=false;
 function cfgDirty(){if(dirty)return;dirty=true;$('#cfg_save').textContent='Save settings (unsaved changes)';$('#cfg_msg').textContent=''}
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
 async function saveTime(){$('#time_msg').textContent='updating task…';const r=await api('/api/schedule',{time:$('#cfg_time').value});$('#time_msg').textContent=r.ok?'scheduled weekdays at '+$('#cfg_time').value:'failed: '+(r.error||r.out)}
-async function learnVoice(){if(!havePeople()||running('voice'))return;kicked.voice=true;await api('/api/voice',{});J.voice={running:true};paintButtons(stage())}
-async function startOver(){if(!confirm('Wipe the list, people picks and learned tone, and go back to step 1?\n\nThis cannot be undone.'))return;await api('/api/reset',{});DOC=null;docAt=0;P=null;peopleRendered='';Object.keys(kicked).forEach(k=>delete kicked[k]);formPainted=false;await loadCfg();showTab('home');loop()}
+async function learnVoice(){if(!havePeople()||running('voice'))return;kicked.voice=true;await api('/api/voice',{});jobStarted('voice');paintButtons(stage())}
+async function startOver(){if(!confirm('Wipe the list, people picks and learned tone, and go back to step 1?\n\nThis cannot be undone.'))return;await api('/api/reset',{});DOC=null;docAt=0;P=null;peopleRendered='';Object.keys(kicked).forEach(k=>delete kicked[k]);pressed=false;goRemember(null);formPainted=false;await loadCfg();showTab('home');loop()}
 async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').textContent=agentLabel()+' window opened — finish there, then come back. The ticks update by themselves.'}
 
 // ---------- doctor + the main loop ----------
@@ -830,9 +885,27 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
  else{if(docFails)clog('connection check ran fine again');docFails=0;DOC=r;
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
-let wasRunning=false,loopT=null,said={},runSeen=new Set();
+let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set();
+const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job>:<seq>"): never handled twice at once
+// A job's end is noticed by its "seq" (app.py _ended: one number per job end, always going up), never by seeing it
+// running and then not (#49): a job that fails within a second is over before the next poll, and was never seen
+// running. SEEN holds the last seq handled per job, for the server SEEN_INST (null until the first poll, which only
+// takes note: nothing that ended before this page opened is announced). A new server instance (the app restarted and
+// counts from 1 again) starts SEEN afresh, so its ends are all new. An end is acknowledged (ack) only once it has
+// been handled: a follow-up load that fails leaves it for the next poll. WATCH: jobs this page started, polled every
+// 1.5 s until their end.
+let SEEN=null,SEEN_INST=null,INST='';const WATCH={};
+function jobStarted(k){if(!J)J={};J[k]=Object.assign({},J[k]||{},{running:true});WATCH[k]=Date.now();if(!runSeen.has(k)){runSeen.add(k);clog(k+' started')}pollSoon()}
+function pollSoon(){if(inLoop||stopped)return;clearTimeout(loopT);loopT=setTimeout(loop,1000)}
+function newlyEnded(){const out=[];if(!J)return out;
+ if(SEEN===null){SEEN={};SEEN_INST=INST;for(const k of Object.keys(J))SEEN[k]=J[k].seq||0;return out}
+ if(SEEN_INST!==INST){SEEN={};SEEN_INST=INST}   // another server: its seq numbers are its own
+ for(const k of Object.keys(J)){const j=J[k];if(j&&!j.running&&j.seq&&j.seq!==(SEEN[k]||0)&&!CLAIMED.has(INST+':'+k+':'+j.seq))out.push(k)}
+ for(const k of Object.keys(WATCH))if(!out.includes(k)&&Date.now()-WATCH[k]>15000&&!running(k))delete WATCH[k];   // never started after all
+ return out}
+function ack(keys,seqs){keys.forEach((k,i)=>{SEEN[k]=seqs[i];delete WATCH[k]})}
 // Peak-End: when a job ends, say what it did and what is next - never just let the spinner vanish
-function finished(){if(!J)return;for(const k of Object.keys(J)){const j=J[k];if(!j||j.running||j.rc===undefined||said[k]===j.log)continue;said[k]=j.log;
+function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.running||j.rc===undefined)continue;
  const ok=j.rc===0,tail=(j.log||'').trim().split('\n').pop()||'';clog(`${k} finished rc=${j.rc}`+(tail?' · '+tail.slice(0,200):''));
  if(!ok&&j.rc===2){toast(`${k}: skipped - ${tail.replace(/^SKIPPED:?\s*/i,'')}`,{ms:6000});continue}
  if(!ok){toast(j.said||`${k} didn't finish - details under Settings → History → "Last job output"`,{err:true,ms:10000});if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true);continue}   // signed out and the like: bring the checklist and its Sign in back   // the log stays in the Console and Settings
@@ -843,17 +916,23 @@ function finished(){if(!J)return;for(const k of Object.keys(J)){const j=J[k];if(
  else if(k==='roadmap')toast('Roadmap step done - see the result in the Roadmap section');
  else if(k==='voice')toast('Tone learned - chases will sound like you');
  else if(k==='people')toast('People suggested - pick their seniority');}}
-async function loop(){clearTimeout(loopT);try{
+// One pass at a time, whoever asks (timer, a job start, the tab coming back, Start over): a call during a pass only
+// asks for one more pass once it is done (review of #48, P2 2).
+async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inLoop=true;try{
   await loadState();
-  const now=Object.values(J).some(j=>j.running);
   for(const k of Object.keys(J))if(J[k].running&&!runSeen.has(k))clog(k+' started');runSeen=new Set(Object.keys(J).filter(k=>J[k].running));
-  if(wasRunning&&!now){await loadCfg();await loadDaylog();await loadRm();finished()}   // a job just finished: pick up new people/voice/config/day log/roadmap, say what happened
-  wasRunning=now;
+  const ended=newlyEnded();
+  if(ended.length){const seqs=ended.map(k=>J[k].seq),keys=ended.map((k,i)=>INST+':'+k+':'+seqs[i]);   // a job just ended: pick up new people/voice/config/day log/roadmap, say what happened
+   keys.forEach(x=>CLAIMED.add(x));   // claimed before anything is awaited
+   try{await loadCfg();await loadDaylog(true);await loadRm(true);finished(ended);ack(ended,seqs)}   // a load that throws skips the ack: next poll tries again
+   finally{keys.forEach(x=>CLAIMED.delete(x))}}
   const st=stage();
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
-  await tick();banner('');
- }catch(e){appDown(e)}
- const st=stage();loopT=setTimeout(loop,(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
+  await tick();banner('');offline=false;
+ }catch(e){offline=true;appDown(e)}   // not answering: no fast polls until it does (below)
+ inLoop=false;if(stopped)return;if(pendingLoop){pendingLoop=false;return loop()}   // asked for during this pass: once more, now
+ const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
+ loopT=setTimeout(loop,offline?60000:Object.keys(WATCH).length?1500:(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped)loop()});
 window.addEventListener('pagehide',()=>{if(stopped)return;const b=new Blob([JSON.stringify({page:PAGE})],{type:'application/json'});if(!(navigator.sendBeacon&&navigator.sendBeacon('/api/bye',b)))fetch('/api/bye',{method:'POST',body:b,keepalive:true}).catch(()=>{})});
 // Back/forward cache restore: reload, so the page's copy of the wording (MSG) and its code are the app's current ones.
