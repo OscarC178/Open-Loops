@@ -1160,6 +1160,8 @@ if NODE:
 say("4. install.sh --isolated, and setup.ps1 -Isolated (static)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+check("(-NoApp)" not in code and "$(if ($Isolated) { 'test copy' } else { '-NoApp' })" in code
+      and "$(if ($Isolated) { 'test copy' } else { '-NoTask' })" in code, "setup.ps1 -Isolated says 'test copy' too (review of #59)")
 check("[switch]$Isolated" in code and "if ($Isolated) { $NoApp = [switch]$true; $NoTask = [switch]$true }" in code,
       "setup.ps1 takes -Isolated, which implies -NoApp and -NoTask")
 check(code.count("-NotePropertyName isolated -NotePropertyValue $true") == 2 and "PSObject.Properties.Remove('isolated')" in code
@@ -1211,9 +1213,15 @@ try:
     cursor = datetime.fromisoformat(json.loads((dest / "state.json").read_text(encoding="utf-8"))["cursor"])
     want = datetime.now().astimezone() - timedelta(days=30)
     check(abs((cursor - want).total_seconds()) < 600, f"the first-scan cursor is history_days (30) back, as the page says, not a week ({cursor})")
+    env_ = {k: v for k, v in os.environ.items() if k not in ("OPENLOOPS_DEST", "OPENLOOPS_ISOLATED")}
+    env_.update(HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}", OPENLOOPS_PORT="8791")
+    rp = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(dest), "--isolated", "--no-launch"], env=env_,
+                        capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    check(rp.returncode == 0 and "http://localhost:8791 (the OPENLOOPS_PORT in your environment" in rp.stdout,
+          f"review of #59: with OPENLOOPS_PORT set, the address is the one the app will use ({rp.stdout[-200:]!r})")
     r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--name", "Other")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
-    check("(--no-app)" in r.stdout and "(--no-task)" in r.stdout and "http://localhost:8790" in r.stdout
+    check("(--no-app)" in r.stdout and "(--no-task)" in r.stdout and "http://localhost:8790 (the port in its config.json" in r.stdout
           and "Kept the name this copy already has: Test (--name only names a new copy)" in r.stdout,
           "without --isolated the flags are named; the port comes from config.json; a later --name is said to be kept out")
     check(r.returncode == 0 and "isolated" not in cfg and cfg.get("test_copy") is True and cfg.get("owner_name") == "Test",

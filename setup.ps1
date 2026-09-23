@@ -179,7 +179,7 @@ $pyw  = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
 if (-not $pyw) { $pyw = (Get-Command python).Source }
 $ico  = Join-Path $Dest "docs\AppIcon.ico"
 if ($NoApp) {
-    Ok "Skipped the Desktop and Start menu icons (-NoApp). Start this copy with: cd `"$Dest`"; python -m openloops.app"
+    Ok "Skipped the Desktop and Start menu icons ($(if ($Isolated) { 'test copy' } else { '-NoApp' })). Start this copy with: cd `"$Dest`"; python -m openloops.app"
 } else {
     $ws = New-Object -ComObject WScript.Shell
     foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
@@ -202,7 +202,7 @@ if ($Isolated) {
     }
 }
 if ($NoTask) {
-    Ok "Skipped the weekday refresh (-NoTask): whatever was already scheduled is unchanged"
+    Ok "Skipped the weekday refresh ($(if ($Isolated) { 'test copy' } else { '-NoTask' })): whatever was already scheduled is unchanged"
 } else {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -At $At | Out-Null
     # $ErrorActionPreference = "Stop" does not react to a native process's exit code in Windows PowerShell 5.1.

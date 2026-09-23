@@ -274,11 +274,13 @@ if [ -n "$OWNER" ]; then
         ok "Your first name: $OWNER (used so messages sound like you)"
     fi
 fi
-# The port this copy answers on, for the address printed at the end: --port, else config.json "port", else 8765 (app.py)
+# The port the printed start command answers on, as app.py picks it for a run without --port: OPENLOOPS_PORT in the
+# environment, else config.json "port" (where --port was just saved), else 8765 (review of #59)
 SHOW_PORT=$(python3 -c 'import json,sys
 try: print(int(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("port") or 8765))
 except Exception: print(8765)' "$CFG_FILE")
 [ -n "$PORT" ] && SHOW_PORT="$PORT"
+if [[ "${OPENLOOPS_PORT:-}" =~ ^[0-9]{1,5}$ ]]; then SHOW_PORT="$((10#$OPENLOOPS_PORT))"; PORT_FROM="OPENLOOPS_PORT in your environment"; else PORT_FROM="port in its config.json"; fi
 # Why a step was skipped, in the words the person typed: --isolated is "test copy", not the flags it implies (#56)
 if [ "$ISOLATED" -eq 1 ]; then SKIP_APP="test copy"; SKIP_TASK="test copy"; else SKIP_APP="--no-app"; SKIP_TASK="--no-task"; fi
 if [ "$ISOLATED" -eq 1 ]; then
@@ -342,7 +344,7 @@ if [ "$NO_APP" -eq 1 ]; then
     echo ""
     echo "  Start this copy with:"
     echo "    cd \"$DEST\" && python3 -m openloops.app"
-    echo "  It opens at http://localhost:$SHOW_PORT"
+    echo "  It opens at http://localhost:$SHOW_PORT (the $PORT_FROM; the next free port if that one is taken)"
 fi
 echo ""
 echo "  Done. You can close this window."
