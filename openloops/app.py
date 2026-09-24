@@ -737,6 +737,7 @@ def run_connect(step):
                 if rc != 0:
                     break
         except PrivateFileError as e:  # Windows could not make the output file private: not started, said plainly
+            me["reason"] = "private_file"  # third review of #70: the row shows signin_private_failed, not connect_failed
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\n{e}\n")
         except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"

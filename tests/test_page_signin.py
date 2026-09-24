@@ -172,4 +172,17 @@ for tab in (True, False):
  out.toasts=TOASTS.slice();""")
     want = messages.say("connect_stopped_tab" if tab else "connect_stopped", party="Slack")
     check(out["toasts"] == [want], f"tab_opened {str(tab).lower()}: the toast is {want!r} ({out['toasts']})")
+# ---------------------------------------------------------------- 7. a sign-in refused for want of a private file
+say("7. third review of #70: a run ended with reason private_file shows signin_private_failed on its row, toasted once")
+out = node("""
+ CONN.slack={busy:true,msg:'Waiting',run:'R1'};const w=connectWatch('slack',{});
+ await runTo(10000,()=>({running:false,rc:-1,run_id:'R1',reason:'private_file'}));await w;
+ out.msg=(CONN.slack||{}).msg;out.toasts=TOASTS.slice();
+ CONN.gmail={busy:true,msg:'Waiting',run:'R2'};const w2=connectWatch('gmail',{});
+ await runTo(20000,()=>({running:false,rc:1,run_id:'R2'}));await w2;
+ out.other=(CONN.gmail||{}).msg;out.toasts2=TOASTS.length;""")
+said = messages.say("signin_private_failed")
+check(out["msg"] == said and out["toasts"] == [said], f"the row and one toast say it ({out['msg']!r}, {out['toasts']})")
+check(out["other"] == messages.say("connect_failed", party="Google") and out["toasts2"] == 1,
+      f"...while any other failure keeps connect_failed and no extra toast ({out['other']!r})")
 say("all passed")

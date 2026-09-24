@@ -256,6 +256,27 @@ with tempfile.TemporaryDirectory(prefix="openloops-acl-") as td:
         else:
             os.environ.pop("USERNAME", None)
 
+# ---------------------------------------------------------------- the refusal reaches the row
+say("5c. a sign-in refused for want of a private file says so on its row (reason private_file)")
+from openloops import agent  # noqa: E402
+saved = (app._connect_one, agent.login_cmd, agent.connect_url, agent.name)
+agent.name, agent.connect_url = (lambda: "claude"), (lambda step, who=None: None)
+agent.login_cmd = lambda step, who=None: [["claude", "mcp", "login", "plugin:miro:miro", "--no-browser"]]
+app._connect_one = lambda step, argv, log, deadline: (_ for _ in ()).throw(app.PrivateFileError(messages.say("signin_private_failed")))
+try:
+    ok, why = app.run_connect("miro")
+    check(ok, f"the run starts ({why})")
+    for _ in range(100):
+        if not app.connects["miro"]["running"]:
+            break
+        time.sleep(0.05)
+    st = app.connect_status("miro")
+    check(st["running"] is False and st["rc"] != 0 and st.get("reason") == "private_file",
+          f"its status carries reason private_file for the page ({st.get('reason')!r}, rc {st['rc']})")
+    check(st["last"] == messages.say("signin_private_failed"), "...and the log's last line is the plain sentence")
+finally:
+    app._connect_one, agent.login_cmd, agent.connect_url, agent.name = saved
+
 # ---------------------------------------------------------------- output that is not UTF-8
 say("6. sign-in output that is not UTF-8 (a cp1252 console) still reads, and its link survives")
 o = app.SigninOutput()

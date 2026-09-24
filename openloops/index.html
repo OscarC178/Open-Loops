@@ -805,7 +805,9 @@ async function connectWatch(step,row){const inst=step==='install',mine=CONN[step
     :msg('codex_browser_failed',{service:n})};CONN[step].opened=s.rc===0;repaint();return}
   const ai=aiName(mine.agent||row.agent);
   const after=CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
-   :step==='slack_install'?msg('slack_install_failed'):msg('connect_failed',{party:PARTY(step)})};
+   :step==='slack_install'?msg('slack_install_failed')
+   :s.reason==='private_file'?msg('signin_private_failed'):msg('connect_failed',{party:PARTY(step)})};   // not started: no private file (Windows)
+  if(s.reason==='private_file')toast(msg('signin_private_failed'),{err:true});   // once: this watcher ends here
   await doctor(true);   // repaints the checklist: the row goes green, or offers its next step
   if(CONN[step]!==after)return;   // changed meanwhile: not this watcher's to say more
   if(s.rc===0&&!inst&&DOC&&DOC.steps&&DOC.steps.some(x=>!x.ok&&x.connect===step)){CONN[step]={msg:msg('connect_no_change',{party:PARTY(step)})};repaint()}   // finished fine, row still red: say so
