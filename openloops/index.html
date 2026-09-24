@@ -794,6 +794,8 @@ paintConnect=function(){paintConnectBase();
 // Set-up any time after (SETUP_OPEN), so a broken connection is fixed from the same place.
 // Codex and Miro, said once (#64): the Miro row's sentence, which the picker and the Settings note repeat word for word
 const CODEX_MIRO=(MSG.codex_no_miro&&MSG.codex_no_miro.what)||'';
+// Check again with Codex chosen: its check takes about half a minute (#64); said next to the button while it runs
+const codexWait=a=>suBusy==='check'&&a==='codex'&&MSG.codex_checking?` <span class="sub">${esc(MSG.codex_checking.fix)}</span>`:'';
 const AI_CHOICES=[   // what each needs and costs, and what it cannot do (#26, INSTALL.md "More than one account")
  ['claude','Claude','Needs a paid Claude plan. Slack, Gmail and Miro each connect by clicking Allow in your browser; one Slack and one Gmail per Claude account.'],
  ['codex','ChatGPT (Codex)','Needs a ChatGPT account: Codex comes with Free and paid plans, but whether Free gets Gmail and Slack isn\'t confirmed. Every scan uses some of its Codex allowance. Gmail and Slack are the ones your ChatGPT account connected. '+CODEX_MIRO],
@@ -846,7 +848,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
  const openAgent=a==='grok'&&ai.length===2&&ai[0].ok&&!ai[1].ok;   // Grok signs in in its own window
  setHTML($('#su_ai_act'),stale||rowBtn(ai)?'':openAgent?`<button class="primary" onclick="suOpenAgent()">Open ${esc(agentLabel())}</button>`
-  :`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
+  :`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>${codexWait(a)}`);
  suPill('#su_ai_state',suState('ai',st));
  // 2. your sources: one row each, one Connect each; one is enough
  $('#su_src_help').textContent=a==='grok'?'Gmail alone is enough (Slack only if you turn it on). Each row says the one-off step it needs.'
@@ -854,7 +856,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :' Each Connect opens your browser, where you click Allow.');
  const src=stale?[]:suRows(SU_SRC),srcFirst=srcReady()?'':(src.find(s=>!s.ok&&s.connect)||{}).connect;   // once one is connected, the rest are extras, not the next step
  paintRows($('#su_src_rows'),src.map(s=>checkRow(s,s.connect===srcFirst)));
- setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
+ setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>${codexWait(a)}`);
  suPill('#su_src_state',suState('src',st));
  // 3. your schedule: the morning time, whether the morning refresh started (Mac, doctor.py "schedule"), and last the first scan
  $('#su_time').innerHTML=ISO?esc(msg('sched_test_copy'))

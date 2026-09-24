@@ -212,4 +212,10 @@ check("$('#cfg_codex_miro').textContent=CODEX_MIRO" in html and "and Miro isn't 
       "the Settings note under Codex says the same sentence")
 check(messages.say("codex_checking") == "Checking Codex on this computer. This can take about half a minute."
       and "a==='codex'?esc(msg('codex_checking'))" in html, "Codex's check tells you it can take about half a minute")
+if NODE:   # Check again with Codex already chosen (review of #66): the same half-minute note, next to the button
+    out = node(["const esc=s=>String(s);", grab("const MSG="), "let suBusy='';", grab("const codexWait=")],
+               "suBusy='check';out.codex=codexWait('codex');out.claude=codexWait('claude');suBusy='';out.idle=codexWait('codex');")
+    check(messages.part("codex_checking", "fix") in out["codex"] and out["claude"] == "" and out["idle"] == "",
+          f"Check again with Codex says it can take about half a minute; not for Claude, not when idle ({out})")
+check(html.count("'Check again'}</button>${codexWait(a)}") == 2, "...on both Check again buttons of the Set-up view")
 say("all passed")
