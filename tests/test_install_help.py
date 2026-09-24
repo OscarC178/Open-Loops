@@ -11,6 +11,9 @@ call and exit 99 - any reach into a real install fails loudly. Any stub call fai
   1. --help and -h: exit 0, print the usage line and the flag list; nothing written anywhere, no stub called. The
      list is hand-written (#60): its table must name exactly the flags install.sh's case statement accepts (read from
      the script, so the two cannot drift), and every line fits an 80-column terminal with no issue numbers in it.
+     The reader of the case statement is tried on altered copies first: a spaced alternation ("--future | -f)") and
+     "(--paren)" are read, an indented "pretend)" inside a heredoc is not, and an arm it cannot read ("--quoted",
+     a glob) fails the test with the line quoted.
   2. an unknown option (--bogus, a typo --isolatd, a stray word, one after a good option): exit 1, "unknown option:
      <arg>" and the usage line on stderr; nothing written, no stub called, "Paused" never printed.
   3. a value-taking option with no value (--dest last, --dest --isolated, --port last, --at ""): exit 1 the same way,
@@ -46,6 +49,54 @@ def table_flags(text):
             first = re.split(r" {2,}", ln.strip(), maxsplit=1)[0]
             out += [part.split()[0] for part in first.split(", ")]
     return out
+
+
+class Unparsed(Exception):
+    """A line in install.sh's option loop that case_flags() cannot read: the drift check must fail, not guess."""
+
+
+# One case-arm head: an optional "(", alternatives such as "-h|--help" or "--future | -f" (spaces allowed around
+# "|"), each a plain word of letters, digits and dashes or the catch-all "*", then ")" and the rest of the line.
+ARM = re.compile(r"^\s*\(?\s*((?:[-\w]+|\*)(?:\s*\|\s*(?:[-\w]+|\*))*)\s*\)(.*)$")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")   # "<<'EOF'", "<<EOF", "<<-EOF"; "<<<" is a here-string, not this
+
+
+def case_flags(sh):
+    """The flags install.sh's option loop accepts, read from its `case "$1" in ... esac` (#60 review).
+
+    A small reader, not a shell parser: between `case "$1" in` and its `esac` every line, once blank lines and
+    comments are left out, must be an arm head the ARM pattern reads, or a line of a multi-line arm's body up to the
+    one ending in ";;". Heredoc bodies inside an arm are skipped whole, so a line in one that looks like an arm
+    ("pretend)") is never counted. Anything else raises Unparsed with the line, so a new spelling of an arm (quoted
+    patterns, globs) fails the test instead of being silently missed. The catch-all "*" is left out of the result."""
+    start = sh.index("while [[ $# -gt 0 ]]")
+    lines = sh[start:].splitlines()
+    i = next(n for n, ln in enumerate(lines) if re.match(r'^\s*case\s+"\$1"\s+in\s*$', ln)) + 1
+    flags, in_arm, heredoc = [], False, None
+    for ln in lines[i:]:
+        code = ln.strip()
+        if heredoc:                        # inside a heredoc body: skip until its closing word
+            if code == heredoc:
+                heredoc = None
+            continue
+        if not code or code.startswith("#"):
+            continue
+        if not in_arm:
+            if re.match(r"^esac\b", code):
+                return flags
+            m = ARM.match(ln)
+            if not m:
+                raise Unparsed(ln)
+            flags += [f for f in re.split(r"\s*\|\s*", m.group(1)) if f != "*"]
+            body = m.group(2)
+        else:
+            body = ln
+        h = HEREDOC.search(body.replace("<<<", ""))
+        if h:
+            heredoc = h.group(2)
+        # the arm ends at ";;" (or ";&" / ";;&") at the end of a line, before any trailing comment
+        in_arm = not re.search(r";(;&?|&)\s*(#.*)?$", body)
+    raise Unparsed("(no esac after the option loop's case)")
 
 
 def plain_lines(text, what):
@@ -136,14 +187,34 @@ try:
               + ("" if not calls.exists() else f" (called: {calls.read_text().strip()!r})"))
 
     say("1. --help and -h")
-    # the flags the parser accepts, read from install.sh's own case statement: the patterns before ")" in the
-    # `while [[ $# -gt 0 ]]` loop, "-h|--help" split into its spellings, the catch-all "*" left out
+    # the flags the parser accepts, read from install.sh's own case statement (case_flags above): "-h|--help" split
+    # into its spellings, the catch-all "*" left out. A line it cannot read fails here, quoted.
     sh = (REPO / "install.sh").read_text(encoding="utf-8")
-    loop = sh[sh.index("while [[ $# -gt 0 ]]"):]
-    loop = loop[:re.search(r"\n\s*esac\b", loop).start()]
-    accepted = [f for pat in re.findall(r"^\s+([-\w|]+)\)", loop, re.M) for f in pat.split("|")]
+    try:
+        accepted = case_flags(sh)
+    except Unparsed as e:
+        check(False, f"install.sh's option loop has a line the drift check cannot read: {str(e).strip()!r}")
     check(len(accepted) >= 10 and "-h" in accepted and "--isolated" in accepted,
           f"read the accepted flags from install.sh's case statement ({accepted})")
+    # the reader on altered copies of the script (in memory only, nothing is run): a new arm in another spelling must
+    # show up (so the table check below would fail), a heredoc line must not, and an arm it cannot read must raise
+    loop_at = sh.index("while [[ $# -gt 0 ]]")   # the option loop's own "*)", not need_value()'s earlier one
+    catch_all = loop_at + re.search(r"^\s*\*\)", sh[loop_at:], re.M).start()
+    def with_arm(text):
+        return sh[:catch_all] + text + sh[catch_all:]
+    got = case_flags(with_arm("        --future | -f) shift ;;\n"))
+    check(got == accepted + ["--future", "-f"], f"fixture: a spaced alternation '--future | -f)' is read ({got[-2:]})")
+    got = case_flags(with_arm("        (--paren) shift ;;\n"))
+    check(got[-1] == "--paren", "fixture: '(--paren)' is read")
+    got = case_flags(with_arm("        --demo)\n            cat <<'EOF'\n        pretend) not a flag\nEOF\n            shift ;;\n"))
+    check(got == accepted + ["--demo"] and "pretend" not in got,
+          "fixture: an indented 'pretend)' inside a heredoc is not collected; the arm around it is")
+    for bad in ('        "--quoted") shift ;;\n', "        --glob*) shift ;;\n"):
+        try:
+            case_flags(with_arm(bad))
+            check(False, f"fixture: {bad.strip()!r} should not be readable")
+        except Unparsed as e:
+            check(str(e).strip() == bad.strip(), f"fixture: {bad.strip()!r} fails the check, with the line quoted")
     for flag in ("--help", "-h", "--no-launch --help"):
         r = run(*flag.split())
         check(r.returncode == 0 and r.stdout.startswith("usage: bash install.sh") and "--isolated" in r.stdout
