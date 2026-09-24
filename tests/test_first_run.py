@@ -1215,8 +1215,8 @@ try:
     check("Skipped Open Loops.app (test copy)" in r.stdout and "Skipped the weekday refresh (test copy)" in r.stdout
           and "(--no-app)" not in r.stdout and "(--no-task)" not in r.stdout,
           "#56: --isolated says 'test copy', not the flags it implies")
-    check("Start this copy with:" in r.stdout and f'cd "{dest}" && python3 -m openloops.app' in r.stdout
-          and "http://localhost:8790" in r.stdout and "Your first name: Test (used so messages sound like you)" in r.stdout,
+    check("Start this copy with:" in r.stdout and f'cd "{dest}" && python3 -m openloops.app --port 8790' in r.stdout
+          and "http://localhost:8790 (the --port you gave" in r.stdout and "Your first name: Test (used so messages sound like you)" in r.stdout,
           f"#56: the output gives the start command, the address with its port, and the --name ({r.stdout[-260:]!r})")
     cursor = datetime.fromisoformat(json.loads((dest / "state.json").read_text(encoding="utf-8"))["cursor"])
     want = datetime.now().astimezone() - timedelta(days=30)
@@ -1225,8 +1225,14 @@ try:
     env_.update(HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}", OPENLOOPS_PORT="8791")
     rp = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(dest), "--isolated", "--no-launch"], env=env_,
                         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
-    check(rp.returncode == 0 and "http://localhost:8791 (the OPENLOOPS_PORT in your environment" in rp.stdout,
-          f"review of #59: with OPENLOOPS_PORT set, the address is the one the app will use ({rp.stdout[-200:]!r})")
+    check(rp.returncode == 0 and "http://localhost:8791 (the OPENLOOPS_PORT in your environment" in rp.stdout
+          and "python3 -m openloops.app\n" in rp.stdout,
+          f"review of #59: no --port, OPENLOOPS_PORT set: the address is the one the app will use ({rp.stdout[-200:]!r})")
+    rq = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(dest), "--isolated", "--no-launch", "--port", "8792"], env=env_,
+                        capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    check(rq.returncode == 0 and "python3 -m openloops.app --port 8792" in rq.stdout and "http://localhost:8792 (the --port you gave" in rq.stdout,
+          f"...--port beats OPENLOOPS_PORT, as in app.py: the command carries it and the address matches ({rq.stdout[-200:]!r})")
+    install(home, "--dest", str(dest), "--isolated", "--no-launch", "--port", "8790")   # back to 8790 for the checks below
     r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--name", "Other")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
     check("(--no-app)" in r.stdout and "(--no-task)" in r.stdout and "http://localhost:8790 (the port in its config.json" in r.stdout
