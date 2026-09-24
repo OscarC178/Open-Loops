@@ -1010,7 +1010,7 @@ if NODE:
               f"later polls do not ask again; once the offline banner clears they do, without watching the same run twice ({out['n2']}, {out['n3']}, {out['picked']})")
         ds = out["dismissed"]
         gone = json.loads(out["SS"].get("ol.allowDismissed") or "{}")
-        check(not ds["open"] and ds["busy"] and ds["started"] and gone == {"slack": ds["started"]},
+        check(not ds["open"] and ds["busy"] and ds["started"] and gone.get("slack", {}).get("run") == ds["started"] and list(gone) == ["slack"],
               f"Close on the pop-up: closed, the row still busy, and that run remembered for this tab ({gone})")
         check(out["gated"] == {"ok": False, "busy": False, "open": False} and out["changed"] == {"ok": False, "busy": False, "open": False}
               and out["during"] is False,
@@ -1024,21 +1024,44 @@ if NODE:
  fs.writeFileSync(BIN+'/allow','');await until(()=>!(CONN.slack&&CONN.slack.busy)&&DOC.steps.find(x=>x.id==='slack').ok,30000);
  out.done={ok:DOC.steps.find(x=>x.id==='slack').ok,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML,gone:SS['ol.allowDismissed']};
  // closed before the run's start time is known: remembered as "?", which the next status (here a reload's sweep) resolves
- const G=()=>JSON.parse(SS['ol.allowDismissed']||'{}');CONN.gmail={busy:true,msg:'x'};ALLOW={step:'gmail'};allowDismiss();out.early=G().gmail;delete CONN.gmail;
- const R=(running,rc)=>[{},{running,rc,url:'https://example.invalid/g',started:'2026-09-24T11:00:00',step:'gmail',agent:'claude'}];
- FAKE['/api/connect/gmail']=R(true,null);await connectReattach();out.resolved={gone:G().gmail,busy:CONN.gmail.busy,open:$('#allow_dlg').open};
- FAKE['/api/connect/gmail']=R(false,0);await until(()=>G().gmail===undefined,15000);out.ended=!(CONN.gmail&&CONN.gmail.busy);   // the watcher saw it end
- FAKE['/api/connect/gmail']=R(true,null);await connectReattach();out.same={busy:CONN.gmail.busy,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step};""", tmp, session=out["SS"])
+ const G=()=>JSON.parse(SS['ol.allowDismissed']||'{}');const iso=ms=>new Date(ms-new Date(ms).getTimezoneOffset()*60000).toISOString().slice(0,19);   // the app's local, zone-less form
+ const R=(running,rc,started)=>[{},{running,rc,url:'https://example.invalid/g',started,step:'gmail',agent:'claude'}];
+ const A=iso(Date.now());CONN.gmail={busy:true,msg:'x'};allowOpen('gmail');allowDismiss();out.early=G().gmail.run;delete CONN.gmail;
+ FAKE['/api/connect/gmail']=R(true,null,A);await connectReattach();out.resolved={gone:G().gmail.run,busy:CONN.gmail.busy,open:$('#allow_dlg').open};
+ FAKE['/api/connect/gmail']=R(false,0,A);await until(()=>G().gmail===undefined,15000);out.ended=!(CONN.gmail&&CONN.gmail.busy);   // the watcher saw it end
+ FAKE['/api/connect/gmail']=R(true,null,A);await connectReattach();out.same={busy:CONN.gmail.busy,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step};allowClose();
+ // Codex probe (a): A closed before its first poll, the page reloaded before A ended, then B runs: B's pop-up opens
+ FAKE['/api/connect/gmail']=R(false,0,A);await until(()=>!(CONN.gmail&&CONN.gmail.busy),15000);delete CONN.gmail;await sleep(50);
+ CONN.gmail={busy:true,msg:'x'};allowOpen('gmail');allowDismiss();delete CONN.gmail;const early=G().gmail.run;   // A: "?"
+ const B=iso(Date.now()+10000);FAKE['/api/connect/gmail']=R(true,null,B);await connectReattach();
+ out.probeA={early,busy:CONN.gmail.busy,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,note:G().gmail||null};allowClose();
+ // Codex probe (b): run A's watcher ends while the check it then runs is still out; B's pop-up is closed meanwhile; A's
+ // cleanup must leave B's note alone
+ const ends=[],realEnd=allowClosedEnd;allowClosedEnd=(s,r)=>{ends.push(s+' '+r);return realEnd(s,r)};
+ const MA=iso(Date.now()-60000),MB=iso(Date.now()+20000);DOC_DEADLINE_MS=3000;
+ FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/m',started:MA,step:'miro',agent:'claude'}];
+ delete CONN.miro;await connectReattach();allowClose();   // A picked up and watched
+ HANG.add('/api/doctor');FAKE['/api/connect/miro']=[{},{running:false,rc:0,url:'',started:MA,step:'miro',agent:'claude'}];
+ await until(()=>!(CONN.miro&&CONN.miro.busy),15000);   // A ended: its watcher is now waiting on the check
+ CONN.miro={busy:true,msg:'x',started:MB};allowOpen('miro');allowDismiss();   // B, closed while A's check is out
+ await until(()=>ends.includes('miro '+MA),15000);allowClosedEnd=realEnd;DOC_DEADLINE_MS=500000;
+ out.probeB={note:G().miro||null,MB};""", tmp, session=out["SS"])
         ag = out["again"]
         check(ag["busy"] and not ag["open"] and '<span class="spin"></span>' in ag["rows"] and "Open the sign-in page" in ag["rows"],
               "a reload after closing the pop-up: the row is busy again with its link, but the pop-up stays closed for that run")
         d = out["done"]
         check(d["ok"] is True and not d["open"] and "spin" not in d["rows"] and d["gone"] == "{}",
               "clicking Allow finishes it as if pressed on this page: the row turns green, and the closed pop-up's note goes with the run")
-        check(out["early"] == "?" and out["resolved"] == {"gone": "2026-09-24T11:00:00", "busy": True, "open": False},
+        check(out["early"] == "?" and out["resolved"]["gone"] != "?" and out["resolved"]["busy"] and not out["resolved"]["open"],
               f"a pop-up closed before the run's start time is known is still remembered; the next status names the run ({out['resolved']})")
         check(out["ended"] and out["same"] == {"busy": True, "open": True, "step": "gmail"},
               "once that run ends its note goes, so a later run started in the same second opens the pop-up again")
+        pa = out["probeA"]
+        check(pa["early"] == "?" and pa["busy"] and pa["open"] and pa["step"] == "gmail" and pa["note"] is None,
+              f"closed before its first poll, reloaded before it ended: a later run is not taken for it, its pop-up opens and the placeholder goes ({pa})")
+        pb = out["probeB"]
+        check(pb["note"] and pb["note"].get("run") == pb["MB"],
+              f"an ended run's cleanup, finishing after the next run's pop-up was closed, leaves that next run's note alone ({pb})")
     finally:
         quit_app(port, srv)   # a failure part-way can leave the fake sign-in waiting: the app's own quit stops it
         stop(srv)
