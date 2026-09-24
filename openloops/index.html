@@ -857,11 +857,13 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :'The first scan has started; how far it has got shows below.';
  suPill('#su_sched_state',suState('sched',st));
  $('#su_all_sub').textContent='each check on its own, and Open '+agentLabel()+' for anything a button can\'t do'}
-// Why your AI can't be changed just now, '' when it can (#62): a sign-in or install this page is watching, or (jobs) a
-// job running with the current AI. The picker's line and Settings' refusal both say it.
+// Why your AI can't be changed just now, '' when it can (#62): an install, a sign-in waiting in the browser or the Slack
+// plugin's install this page is watching, or (jobs) a job running with the current AI. The picker's line and Settings'
+// refusal both say it.
 function aiLockSaid(jobs){const run=Object.keys(CONN).filter(k=>CONN[k]&&CONN[k].busy);
  if(run.includes('install'))return msg('ai_change_install',{ai:aiName(CONN.install.agent)});
- if(run.length)return msg('ai_change_signin');
+ if(run.some(k=>k!=='slack_install'))return msg('ai_change_signin');
+ if(run.length)return msg('ai_change_plugin');
  return jobs&&jobRunning()?msg('ai_change_job',{ai:aiName((C&&C.agent)||'claude')}):''}
 async function chooseAI(a){if(suBusy||aiPending()||!C||(C.agent||'claude')===a||suRunning(Object.keys(CONN)))return;   // aiPending: the last change's check is not in yet (#56)
  if(jobRunning()){toast(aiLockSaid(true),{err:true});return}

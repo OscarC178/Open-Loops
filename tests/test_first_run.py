@@ -532,7 +532,9 @@ if a[:2] == ["mcp", "login"]:
     if not os.isatty(0):
         print("Couldn't complete authentication: stdin isn't a terminal"); sys.exit(1)
     print("Visit this URL to authorize:\n  https://example.invalid/authorize?state=abc\n", flush=True)
-    end = time.time() + 60
+    # how long it waits: 60 s, or what the test wrote in signin_secs (7l spans two page loads: its own, longer limit)
+    secs = float(open(os.path.join(here, "signin_secs")).read()) if flag("signin_secs") else 60
+    end = time.time() + secs
     while not flag("allow") and time.time() < end:
         time.sleep(0.2)
     if not flag("allow"):
@@ -1142,6 +1144,7 @@ if NODE:
     # connectReattach()) and the waiting sign-in is Claude's again. While it waits, the picker says why it is greyed out
     # and Settings refuses a change of AI with the same sentence. The rows keep their nodes across ticks.
     tmp = setup_install("openloops-setup-reattach-ai-")
+    (tmp / "bin" / "signin_secs").write_text("600")   # waits until the test quits the app, not a shared 60 s (review of #65)
     srv, port = start_app(tmp, setup_env(tmp))
     try:
         SWEEP_JS = """
@@ -1168,6 +1171,8 @@ if NODE:
  out.claude={...busy(),picked:picked(),rows:$('#su_src_rows').innerHTML};
  // 3. while it waits: the picker says why it is greyed out, and Settings will not change the AI
  await tick();out.why={text:$('#su_ai_why').textContent,shown:$('#su_ai_why').style.display,disabled:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length};
+ const sl=CONN.slack;delete CONN.slack;CONN.slack_install={busy:true,msg:'Installing the Slack plugin…'};paintSetup(stage());
+ out.whyPlugin=$('#su_ai_why').textContent;delete CONN.slack_install;CONN.slack=sl;paintSetup(stage());   // review of #65: not a browser sign-in
  let n=CALLS.length;TOASTS.length=0;form('codex');await saveCfg();
  out.settings={calls:CALLS.slice(n),toasts:TOASTS.slice(),said:$('#cfg_msg').textContent,agent:C.agent,cfg:JSON.parse(fs.readFileSync(BIN+'/../config.json','utf8')).agent};
  // review of #65: "Create a starter file there" saves first; a refused Save creates nothing (it would use the old path)
@@ -1187,6 +1192,10 @@ if NODE:
               f"#62: back on Claude through the picker, the page sweeps again by itself: the same run is busy again, with its pop-up ({c['busy']}, {c['open']}, {c['picked']})")
         check(out["why"] == {"text": messages.say("ai_change_signin"), "shown": "", "disabled": 3},
               f"#62: while the sign-in waits, the greyed-out picker says why, in plain words from messages.py ({out['why']})")
+        check(out["whyPlugin"] == messages.say("ai_change_plugin"),
+              f"review of #65: the Slack plugin's install is not called a sign-in waiting in the browser ({out['whyPlugin']})")
+        check("close" not in messages.say("ai_change_signin") and "quit Open Loops" in messages.say("ai_change_signin"),
+              "review of #65: the sentence does not promise that closing the pop-up frees the AI choice (the run keeps waiting)")
         s = out["settings"]
         check(s["calls"] == [] and s["toasts"] == [messages.say("ai_change_signin")] and s["said"] == "not saved: " + messages.say("ai_change_signin")
               and s["agent"] == "claude" and s["cfg"] == "claude",

@@ -458,9 +458,16 @@ FAILURES = {
 
     # Why the set-up page's AI picker is greyed out (#62), in the line under it; Settings refuses a change of AI with
     # the same sentence while a sign-in or install runs. {ai}: the AI being installed, or the one the job runs with.
+    # Closing the Allow pop-up does not stop the sign-in (it keeps waiting in the browser), so the fix names what does:
+    # finishing it, or quitting Open Loops, which stops every setup step still waiting (review of #65).
     "ai_change_signin": {
         "what": "A sign-in is still waiting for you in your browser.",
-        "fix": "Finish or close the sign-in first, then you can change your AI.",
+        "fix": "Finish it there first, then you can change your AI; to stop it instead, quit Open Loops and open it again.",
+        "button": None},
+    # the Slack plugin's install (slack_install): nothing to do in the browser, it finishes by itself
+    "ai_change_plugin": {
+        "what": "Open Loops is still installing the Slack plugin.",
+        "fix": "Change your AI once that has finished.",
         "button": None},
     "ai_change_install": {
         "what": "{ai} is still being installed.",
