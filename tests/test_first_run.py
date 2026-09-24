@@ -1409,20 +1409,31 @@ if NODE:
 say("4. install.sh --isolated, and setup.ps1 -Isolated (static)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
-check('python -m openloops.app$(if ($Port) { " --port $Port" })' in code and "Start this copy with: $manual" in code,
-      "setup.ps1: the printed start command carries -Port, as its launch does")
-# ...and that line as PowerShell evaluates it (review of #59): pwsh is on GitHub's Ubuntu and macOS runners; the whole
-# script needs Windows (Scheduled Tasks, shortcuts), which the test matrix does not have, so only this line is run
-pwsh = shutil.which("pwsh")
+# the start command and address of a copy with no icon are printed at the end, as install.sh prints them (#27 part 2);
+# the command carries -Port, as its launch does
+check('if ($Port) { $showPort = $Port; $portArg = " --port $Port"; $portFrom = "-Port you gave" }' in code
+      and 'Write-Host "    cd `"$Dest`"; python -m openloops.app$portArg"' in code
+      and 'Write-Host "  It opens at http://localhost:$showPort (the $portFrom; the next free port if that one is taken)"' in code,
+      "setup.ps1: the printed start command carries -Port, as its launch does, and the address says where the port came from")
+# ...and those lines as PowerShell evaluates them (review of #59): pwsh is on GitHub's Ubuntu and macOS runners; the
+# whole script needs Windows (Scheduled Tasks, shortcuts), which the test matrix does not have, so only they are run.
+# tests/test_setup_ps1.py runs the whole script on Windows.
+pwsh = shutil.which("pwsh") or (shutil.which("powershell") if sys.platform == "win32" else None)
 if pwsh:
-    line = next(l.strip() for l in code.splitlines() if l.strip().startswith("$manual = "))
-    for port_, want_ in ((8790, 'cd "C:\\OL test"; python -m openloops.app --port 8790'), (0, 'cd "C:\\OL test"; python -m openloops.app')):
-        r_ = subprocess.run([pwsh, "-NoProfile", "-Command", f'$Dest = "C:\\OL test"; $Port = {port_}; $env:OPENLOOPS_PORT = "8791"; {line}; $manual'],
-                            capture_output=True, text=True, timeout=60)
-        check(r_.returncode == 0 and r_.stdout.strip() == want_,
-              f"setup.ps1's printed command, evaluated by PowerShell with -Port {port_} and OPENLOOPS_PORT=8791: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
+    lines_ = code.splitlines()
+    start_ = next(i for i, l in enumerate(lines_) if l.strip() == "$cfgPort = 8765")
+    end_ = next(i for i, l in enumerate(lines_) if i > start_ and l.strip().startswith("else { $showPort = $cfgPort"))
+    block_ = "\n".join(lines_[start_:end_ + 1])
+    for port_, want_, port_want_ in ((8790, 'cd "C:\\OL test"; python -m openloops.app --port 8790', "8790"),
+                                     (0, 'cd "C:\\OL test"; python -m openloops.app', "8791")):
+        cmd_ = (f'$Dest = "C:\\OL test"; $CfgFile = "C:\\OL test\\no-such-config.json"; $Port = {port_}; $env:OPENLOOPS_PORT = "8791"; '
+                f'{block_}\n"cd `"$Dest`"; python -m openloops.app$portArg"; $showPort')
+        r_ = subprocess.run([pwsh, "-NoProfile", "-Command", cmd_], capture_output=True, text=True, timeout=60)
+        got_ = r_.stdout.split()
+        check(r_.returncode == 0 and r_.stdout.strip().splitlines()[:1] == [want_] and got_[-1:] == [port_want_],
+              f"setup.ps1's printed command and port, evaluated by PowerShell with -Port {port_} and OPENLOOPS_PORT=8791: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
 else:
-    say("SKIP running setup.ps1's start-command line: no pwsh here (CI's runners have it)")
+    say("SKIP running setup.ps1's start-command lines: no pwsh here (CI's runners have it)")
 check("$TaskRemoved = $true" in code and 'if ($NoTask -and $TaskRemoved) {' in code, "setup.ps1: a removed task is not then called unchanged")
 check("(-NoApp)" not in code and "$(if ($Isolated) { 'test copy' } else { '-NoApp' })" in code
       and "$(if ($Isolated) { 'test copy' } else { '-NoTask' })" in code, "setup.ps1 -Isolated says 'test copy' too (review of #59)")
