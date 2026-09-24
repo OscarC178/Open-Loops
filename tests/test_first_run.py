@@ -642,7 +642,7 @@ def setup_js(port, scenario, tmp, session=None):
         "get children(){return this.kids},replaceChild(a,b){this.kids[this.kids.indexOf(b)]=a;a.parent=this;return b},removeChild(c){this.kids.splice(this.kids.indexOf(c),1);return c},"
         "contains(x){return x===this||this.kids.some(k=>k.contains(x))},"
         "classList:{toggle(){}},appendChild(c){this.kids.push(c);c.parent=this;return c},showModal(){this.open=true},close(){this.open=false},addEventListener(){}});",
-        "const $=s=>els[s]||(els[s]=mk(s));const document={getElementById:id=>$('#'+id),createElement:()=>mk('new')};",
+        "const $=s=>els[s]||(els[s]=mk(s));const document={getElementById:id=>$('#'+id),createElement:()=>mk('new'),querySelectorAll:()=>[]};",
         "const CON=[];function clog(m){CON.push(String(m))}const TOASTS=[];function toast(m){TOASTS.push(String(m))}",
         "function renderLists(){}function paintVoice(){}function banner(){}function appDown(e){CON.push('appDown '+e)}function paintDaylog(){}function paintRm(){}",
         "function paintForm(){}async function loadDaylog(){}async function loadRm(){}function agentUI(){}function agentFormUI(){}const PAGE='t';let stopped=false;",
@@ -663,6 +663,7 @@ def setup_js(port, scenario, tmp, session=None):
         cut("// Update Slack needs Slack", "\n// ---------- lists"),
         cut("const counts=()=>", "\n// ---------- day log"),
         grab("async function openClaude("), grab("async function learnVoice("),
+        cut("const MODELS={", "\nfunction modelUI("), grab("let dirty=false;"), cut("async function saveCfg(", "\n// the to-do file box"),   # Settings' Save (#62: its AI lock)
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),
         """const CALLS=[];const realFetch=global.fetch;
 const FAKE={};   // url -> [answer to a POST, answer to a GET]: a setup step the app itself never runs (no browser opens)

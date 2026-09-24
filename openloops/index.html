@@ -122,6 +122,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <div class="su-top"><h3 id="su_ai_h">1 · Your AI</h3><span class="su-state" id="su_ai_state"></span></div>
    <div class="sub">The AI assistant that reads your messages and writes the nudges. It runs on this computer, on your own plan.</div>
    <div class="su-pick" id="su_ai_pick" role="radiogroup" aria-labelledby="su_ai_h" onkeydown="suPickKey(event)"></div>
+   <div class="sub" id="su_ai_why" role="status" style="display:none"></div>
    <div id="su_ai_rows"></div>
    <div class="su-act" id="su_ai_act"></div>
   </section>
@@ -820,6 +821,8 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  const a=aiSwitching||(C&&C.agent)||'claude',stale=suBusy==='agent'||aiPending(),anyRun=suRunning(Object.keys(CONN))||jobRunning();
  // 1. your AI: the choice, then its two rows (installed, signed in); the one button is the row's, else Open Grok / Check again
  setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun||stale?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
+ // #62: greyed out because something is running: say why, under the picker (not while it is changing: the rows say that)
+ const why=!suBusy&&!stale&&anyRun?aiLockSaid(true):'';$('#su_ai_why').textContent=why;$('#su_ai_why').style.display=why?'':'none';
  const ai=stale?[]:suRows(SU_AI),aiFirst=(ai.find(s=>!s.ok&&s.connect)||{}).connect;
  paintRows($('#su_ai_rows'),stale?[`<div class="sub" style="padding:6px 0"><span class="spin"></span>Checking ${esc(aiName(a))} on this computer…</div>`]:ai.map(s=>checkRow(s,s.connect===aiFirst)));
  const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
@@ -845,8 +848,14 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :'The first scan has started; how far it has got shows below.';
  suPill('#su_sched_state',suState('sched',st));
  $('#su_all_sub').textContent='each check on its own, and Open '+agentLabel()+' for anything a button can\'t do'}
+// Why your AI can't be changed just now, '' when it can (#62): a sign-in or install this page is watching, or (jobs) a
+// job running with the current AI. The picker's line and Settings' refusal both say it.
+function aiLockSaid(jobs){const run=Object.keys(CONN).filter(k=>CONN[k]&&CONN[k].busy);
+ if(run.includes('install'))return msg('ai_change_install',{ai:aiName(CONN.install.agent)});
+ if(run.length)return msg('ai_change_signin');
+ return jobs&&jobRunning()?msg('ai_change_job',{ai:aiName((C&&C.agent)||'claude')}):''}
 async function chooseAI(a){if(suBusy||aiPending()||!C||(C.agent||'claude')===a||suRunning(Object.keys(CONN)))return;   // aiPending: the last change's check is not in yet (#56)
- if(jobRunning()){toast(`Open Loops is still running a job with ${aiName(C.agent||'claude')}. Change your AI once it has finished.`,{err:true});return}
+ if(jobRunning()){toast(aiLockSaid(true),{err:true});return}
  suBusy='agent';aiSwitching=a;tick();   // "checking" until the new AI's own check is in: nothing starts meanwhile
  try{await api('/api/config',{agent:a});clog('set-up: your AI is now '+a);
   try{await loadCfg()}catch(e){clog('set-up: settings not re-read, trying once more');try{await loadCfg()}catch(e2){if(C){C.agent=a;agentUI()}}}   // saved: C must say so before the check
@@ -1159,7 +1168,11 @@ function paintForm(){if(!C)return;formPainted=true;$('#cfg_name').value=C.owner_
 function paintVoice(){if(V&&haveVoice()){$('#voice_meta').textContent='learned '+fmt(V.learned_at);
   $('#voice').innerHTML=`<div class="sub" style="margin:6px 0 10px"><b>General:</b> ${V.general||''}</div><b style="font-size:12px">Sample chases in your voice</b>`+Object.entries(V.samples||{}).map(([k,v])=>`<div class="sub" style="margin:6px 0"><b style="text-transform:capitalize">${k}:</b> ${v}</div>`).join('')+`<b style="font-size:12px;display:block;margin-top:10px">Per person</b>`+Object.entries(V.people||{}).map(([k,v])=>`<div class="sub" style="margin:6px 0"><b>${k}</b> (${v.level}) — ${v.style}${(v.examples||[]).map(e=>`<br><i>“${e}”</i>`).join('')}</div>`).join('')}
  else{$('#voice_meta').textContent=havePeople()?'not learned yet':'save Who\'s who first';$('#voice').innerHTML=''}}
-async function saveCfg(){try{const tone={};document.querySelectorAll('[data-tone]').forEach(t=>tone[t.dataset.tone]=t.value);
+async function saveCfg(){
+ // #62: as the set-up page's picker, no change of AI while a sign-in or install runs: that run is the old AI's. Nothing
+ // is saved; the form keeps its edits, so Save works once the sign-in is over.
+ const lock=C&&$('#cfg_agent').value!==(C.agent||'claude')?aiLockSaid(false):'';if(lock){$('#cfg_msg').textContent='not saved: '+lock;toast(lock,{err:true});return}
+ try{const tone={};document.querySelectorAll('[data-tone]').forEach(t=>tone[t.dataset.tone]=t.value);
  // people: radios in the table win; the JSON box is the fallback for adding/removing entries
  let people=JSON.parse($('#cfg_people').value);Object.keys(C.people||{}).forEach((n,i)=>{const v=document.querySelector(`input[name="pp${i}"]:checked`);if(v&&people[n])people[n].level=v.value});
  const body={agent:$('#cfg_agent').value,use_slack:$('#cfg_use_slack').checked,history_days:+$('#cfg_history').value||30,owner_name:$('#cfg_name').value.trim(),standing_file:$('#cfg_standing').value.trim(),vault_path:'',roadmap_board:$('#cfg_rm_board').value.trim(),roadmap_frame:$('#cfg_rm_frame').value.trim(),chase_external_email:$('#cfg_ext').checked,send_internal:$('#cfg_send_int').checked,send_external:$('#cfg_send_ext').checked,internal_domains:$('#cfg_domains').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),auto_chase:{enabled:$('#cfg_auto').checked,after_workdays:+$('#cfg_auto_days').value||3,max_chases:+$('#cfg_auto_max').value||3},tone,people,

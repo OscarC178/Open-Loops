@@ -456,6 +456,21 @@ FAILURES = {
         "fix": "This usually takes a few minutes.",
         "button": None},
 
+    # Why the set-up page's AI picker is greyed out (#62), in the line under it; Settings refuses a change of AI with
+    # the same sentence while a sign-in or install runs. {ai}: the AI being installed, or the one the job runs with.
+    "ai_change_signin": {
+        "what": "A sign-in is still waiting for you in your browser.",
+        "fix": "Finish or close the sign-in first, then you can change your AI.",
+        "button": None},
+    "ai_change_install": {
+        "what": "{ai} is still being installed.",
+        "fix": "Change your AI once the install has finished.",
+        "button": None},
+    "ai_change_job": {
+        "what": "Open Loops is still running a job with {ai}.",
+        "fix": "Change your AI once it has finished.",
+        "button": None},
+
     # ---- your own to-do file (standing.py, #37)
     "standing_no_path": {
         "what": "No to-do file is selected.",
