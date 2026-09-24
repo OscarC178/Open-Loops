@@ -128,13 +128,14 @@ slow) stops the job with that reason, within the job's own time limit.
 that ChatGPT account), a job runs without them and is told "Gmail is not connected in this ChatGPT account; skip email";
 the same for Slack. A refresh then keeps that source's cursor (`gmail_cursor` / `slack_cursor` in `state.json`) where it
 was, so nothing is skipped once it is connected. With neither connected, the job does not run and says so.
-**Why a run sometimes has no Gmail or Slack tools (#42, measured 2026-09-24 on Codex 0.156.1, 34 runs on one Mac).**
-Codex holds the connector tools back ("deferred"): they are not in the model's first view and only appear once it
-searches or lists its tools. The default model, `gpt-5.6-sol`, sometimes answers without looking (5 of 6 runs with a
-plain prompt, 3 of 6 even when told to search first); every run that did look found both Gmail and Slack.
-`gpt-6-astra` gets the tools up front and had them in all 18 test runs, at a cost of roughly 15k more input tokens and
-about 8 s longer per run. Open Loops now tells every run to look its tools up before anything else, and keeps the
-retry below as the backstop; whether to make `gpt-6-astra` the default is still open.
+**Why a run sometimes has no Gmail or Slack tools (#42, measured 2026-09-24 on Codex 0.156.1, 33 runs on one Mac).**
+With `gpt-5.6-sol` (the default model), Codex holds the connector tools back ("deferred"): they are not in the model's
+first view and only appear once it searches or lists its tools. That model sometimes answers without looking (5 of 6
+runs with a plain prompt, 3 of 6 even when told to search first); every run that did look found both Gmail and Slack.
+With `gpt-6-astra` the tools were there from the first request in all 18 test runs, at a cost of roughly 15k more input
+tokens and about 8 s longer to the first message. Open Loops now tells every run whose job has Gmail or Slack tools to
+look them up before anything else (an extra round trip and more tokens; how much it helps has not been measured yet),
+and keeps the retry below as the backstop. Whether to make `gpt-6-astra` the default is still open.
 
 Now and then a Codex session starts without one connector's tools (seen in real runs). `codex exec --json` does not
 report which tools a session got, so each run is asked to end its reply with a `TOOLS_SEEN:` line naming the listed
