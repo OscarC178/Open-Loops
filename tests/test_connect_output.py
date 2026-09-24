@@ -88,6 +88,18 @@ o = app.SigninOutput(limit=1000)
 o.feed(b"word " * 400 + b"https://example.invalid/authorize?state=SECRET more\n")
 check(o.url == "https://example.invalid/authorize?state=SECRET" and "SECRET" not in o.text(),
       "an over-long line with spaces is cut between words, so the link on it is still found whole and redacted")
+o = app.SigninOutput(limit=1000)   # CodeRabbit on #70: the same line still arriving, so the cut-at-space branch runs
+for i in range(0, 2000, 300):     # 2 KB of words in pieces, no newline anywhere
+    o.feed((b"word " * 400)[i:i + 300])
+check(0 < len(o.carry) <= 1000 and o.kept.startswith("word ") and o.kept.endswith(" ") and len(o.text()) <= 2000,
+      f"an over-long line still arriving is cut at a space: part kept, the rest carried ({len(o.kept)} kept, {len(o.carry)} carried)")
+o.feed(b"https://example.invalid/authorize?state=SECRET more")
+check(o.url == "https://example.invalid/authorize?state=SECRET" and "SECRET" not in o.text() and len(o.carry) <= 1000,
+      "...a link arriving after the cut is found whole once a space follows it, and never written with its query")
+for _ in range(20):
+    o.feed(b"word " * 100)
+check(len(o.kept) <= 1000 and len(o.carry) <= 1000 and "SECRET" not in o.text(),
+      f"...and however long the line runs, what is kept stays bounded ({len(o.kept)} + {len(o.carry)})")
 
 # ---------------------------------------------------------------- Stop before the browser opens
 say("4. a Stop that lands before the link is read never opens the browser (both runners share this handler)")
