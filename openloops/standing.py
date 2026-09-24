@@ -208,25 +208,29 @@ def merge_seen(fresh, before, after):
 
     before: the map as that read found it; after: the map touch_seen() made of it. A poll reads the to-do file outside
     the lock, so another poll (or a job's write) may have saved state.json since: fresh's map is never replaced by
-    this read's whole copy, only the keys this read changed are applied to it:
-      - added here: kept as fresh has it if another poll recorded it first (its first_seen stays), else added;
-      - wording changed here: fp / changed_at / action taken unless fresh already holds this wording;
-      - gone from the file here: removed (a key this read never saw, one another poll just added, is left alone).
-    -> True if fresh changed (it then needs saving)."""
+    this read's whole copy, and a change is applied to a key only if nobody else changed that key meanwhile, i.e.
+    fresh still holds the record this read started from (review of #66):
+      - added here (not in before): added if fresh has no record for it; one there already (another poll recorded
+        it first) is kept as it is, its first_seen and changed_at included;
+      - reworded here: fp / changed_at / action taken only if fresh still equals before[k]; else fresh is kept;
+      - left the open list here (closed, snoozed or deleted): removed only if fresh still equals before[k]; a record
+        another poll re-added or reworded since is kept.
+    A conflict keeps fresh, the newer save; the next poll reads the file again and records whatever is still
+    different, so nothing is lost for longer than one poll. -> True if fresh changed (it then needs saving)."""
     cur = {k: dict(v) for k, v in (fresh.get("vault_seen") or {}).items() if isinstance(v, dict)}
     changed = "vault_seen" not in fresh
     for k, rec in after.items():
         if before.get(k) == rec:
             continue   # untouched by this read
-        have = cur.get(k)
-        if have is None:
-            cur[k] = dict(rec)
-            changed = True
-        elif have.get("fp") != rec.get("fp"):
-            have.update(fp=rec.get("fp"), changed_at=rec.get("changed_at"), action=rec.get("action"))
+        if k not in before:
+            if k not in cur:
+                cur[k] = dict(rec)
+                changed = True
+        elif cur.get(k) == before[k]:
+            cur[k] = dict(cur[k], fp=rec.get("fp"), changed_at=rec.get("changed_at"), action=rec.get("action"))
             changed = True
     for k in before:
-        if k not in after and k in cur:
+        if k not in after and k in cur and cur[k] == before[k]:
             del cur[k]
             changed = True
     fresh["vault_seen"] = cur
