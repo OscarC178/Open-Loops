@@ -675,10 +675,19 @@ global.fetch=(u,o)=>{const post=!!(o&&o.method==='POST');if(post)CALLS.push(u+' 
  if(HANG.has(u)){HANG.delete(u);return new Promise((res,rej)=>{const sg=o&&o.signal;if(sg)sg.addEventListener('abort',()=>rej(Object.assign(new Error('aborted'),{name:'AbortError'})))})}   // never answers
  if(FAKE[u])return Promise.resolve({ok:true,status:200,json:async()=>FAKE[u][post?0:1],text:async()=>JSON.stringify(FAKE[u][post?0:1])});
  return fetchApp(u,o)};
-// node's fetch keeps sockets for reuse that the app (HTTP/1.0: one request per connection) has already closed; a burst
-// of GETs (a reattach sweep, #62) leaves some, and the next request written to one fails with EPIPE before the app
-// reads it. A browser sends it again on a new connection; so does this, once, for that failure only.
-const fetchApp=(u,o)=>realFetch(BASE+u,o).catch(e=>{const c=e&&e.cause&&e.cause.code;if(['EPIPE','ECONNRESET','UND_ERR_SOCKET'].includes(c))return realFetch(BASE+u,o);throw e});
+// Every request the page makes goes out on a connection of its own (agent:false). node's fetch keeps sockets for reuse
+// that the app (HTTP/1.0: one request per connection) has already closed, and after a burst of GETs (a reattach sweep,
+// #62) the next request written to one failed with EPIPE. Nothing is ever sent twice, a POST least of all (review of
+// #65): ATTEMPTS records every request as it is sent, so a replay would show. A body goes with its length (the app reads
+// Content-Length; http.request would otherwise send it chunked).
+const http=require('http'),ATTEMPTS=[];
+const fetchApp=(u,o,base)=>new Promise((ok,no)=>{o=o||{};const m=o.method||'GET';ATTEMPTS.push(m+' '+u);
+ const req=http.request((base||BASE)+u,{method:m,headers:Object.assign({},o.headers||{},o.body?{'Content-Length':Buffer.byteLength(o.body)}:{}),agent:false},res=>{const cs=[];res.on('data',c=>cs.push(c));res.on('error',no);
+  res.on('end',()=>ok(new Response(Buffer.concat(cs),{status:res.statusCode,headers:{'content-type':res.headers['content-type']||''}})))});
+ req.on('error',e=>no(Object.assign(new TypeError('fetch failed'),{cause:e})));   // as fetch says it: the page's api() words it
+ const sg=o.signal,abort=()=>{req.destroy();no(Object.assign(new Error('aborted'),{name:'AbortError'}))};
+ if(sg){if(sg.aborted)return abort();sg.addEventListener('abort',abort)}
+ if(o.body)req.write(o.body);req.end()});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(f,ms=60000){const end=Date.now()+ms;while(!f()){if(Date.now()>end)throw new Error('timed out');await sleep(100)}}
 const jobCalls=()=>CALLS.filter(c=>/^\\/api\\/(people|voice|refresh) /.test(c));
@@ -1142,6 +1151,9 @@ if NODE:
  const form=a=>{['#cfg_domains','#cfg_excl_people','#cfg_excl_topics','#cfg_standing','#cfg_rm_board','#cfg_rm_frame','#cfg_model','#cfg_effort'].forEach(k=>{$(k).value=''});   // Settings' fields
   $('#cfg_agent').value=a;$('#cfg_people').value=JSON.stringify(C.people||{});$('#cfg_name').value=C.owner_name||'';$('#cfg_history').value='30'};"""
         out = setup_js(port, SWEEP_JS + """
+ // review of #65: a request that fails is not sent again, a POST least of all (port 9: refused at once)
+ const a0=ATTEMPTS.length;let e0='';await fetchApp('/api/config',{method:'POST',body:'{}'},'http://127.0.0.1:9').catch(e=>{e0=e.message});
+ out.noReplay={said:e0,sent:ATTEMPTS.slice(a0)};
  await boot();await tick();
  await realFetch(BASE+'/api/connect/slack',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // pressed for Claude before the reload
  let st={};for(let i=0;i<150&&!st.url;i++){st=await (await realFetch(BASE+'/api/connect/slack')).json();if(!st.url)await sleep(100)}
@@ -1162,6 +1174,8 @@ if NODE:
  dirty=true;form('codex');$('#cfg_standing').value='/tmp/new-todo.md';n=CALLS.length;const saved=await saveCfg();await standingCreate();
  out.create={saved,calls:CALLS.slice(n),disabled:$('#standing_create').disabled};dirty=false;
 """, tmp)
+        check(out["noReplay"] == {"said": "fetch failed", "sent": ["POST /api/config"]},
+              f"review of #65: the test page never resends a request; a POST that fails was sent once ({out['noReplay']})")
         check(out["status"] == {"agent": "claude", "running": True}, f"the app's status says which AI a running sign-in is for ({out['status']})")
         check(out["switched"] == {"agent": "codex", "doc": "codex", "pend": False}, "the change to Codex is saved and checked")
         check(out["codex"] == {"busy": False, "open": False, "said": 1} and out["codexLoop"] == 1,
