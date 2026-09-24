@@ -338,8 +338,9 @@ def _connect_one(step, argv, log, deadline):
 def run_connect(step):
     """Start a Claude or Codex setup step in the background -> (started, error). One run per step at a time."""
     from . import agent
-    if step not in agent.connect_steps():
-        return False, "no such setup step for " + agent.display_name()
+    who = agent.name()   # read once (#27): the run is recorded, checked and run for this AI, whatever Settings say later
+    if step not in agent.connect_steps(who):
+        return False, "no such setup step for " + agent.display_name(who)
     with connect_lock:  # check and claim in one go
         if quit_requested:
             return False, "Open Loops is closing"
@@ -347,20 +348,20 @@ def run_connect(step):
             return False, "already running"
         # "agent": the AI this run is for (#27), so a page reloaded after the AI was changed does not pick it up as the new one's
         connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
-                          "agent": agent.name()}
+                          "agent": who}
     log = connect_log(step)
 
     def go():
         rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
-            url = agent.connect_url(step)
+            url = agent.connect_url(step, who)
             if url:  # a page to open, not a command: done once the browser has it; the user presses Check again after
                 with open(log, "a", encoding="utf-8") as f:
                     f.write(f"opened {url} in the browser\n")
                 connects[step].update(url=url, opened=True)
                 rc = 0 if webbrowser.open(url) else 1
                 return
-            for argv in agent.login_cmd(step) or []:
+            for argv in agent.login_cmd(step, who) or []:
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
                     break

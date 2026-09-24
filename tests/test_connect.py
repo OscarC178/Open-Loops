@@ -341,14 +341,14 @@ if which == "rollback":  # setup fails after the step is claimed: the claim must
     assert not ok and why.startswith("could not start gmail"), (ok, why)
     assert app.connects["gmail"]["running"] is False, app.connects
     log.rmdir()
-    agent.login_cmd = lambda step: [["true"]]
+    agent.login_cmd = lambda step, *a: [["true"]]
     ok, why = app.run_connect("gmail")
     assert ok, "still wedged after a failed start: " + why
     assert settle("gmail")
 if which == "quit":
     # Quit lands while a worker is still getting ready: the worker must not start its command afterwards
     ready = threading.Event()
-    agent.login_cmd = lambda step: (ready.wait(5), [["sleep", "30"]])[1]
+    agent.login_cmd = lambda step, *a: (ready.wait(5), [["sleep", "30"]])[1]
     ok, why = app.run_connect("miro")
     assert ok, why
     app.quit_requested = True
@@ -360,7 +360,7 @@ if which == "quit":
     assert not ok and "closing" in why, (ok, why)
     app.quit_requested = False
     # a child that closed its terminal but lives on stays visible to Quit until it has been waited for
-    agent.login_cmd = lambda step: [["sh", "-c", "exec >/dev/null 2>&1 </dev/null; sleep 30"]]
+    agent.login_cmd = lambda step, *a: [["sh", "-c", "exec >/dev/null 2>&1 </dev/null; sleep 30"]]
     ok, why = app.run_connect("miro")
     assert ok, why
     time.sleep(1.5)
@@ -368,6 +368,22 @@ if which == "quit":
     t = time.time()
     app.stop_connects()
     assert settle("miro", 10) and time.time() - t < 3, "Quit did not stop the child"
+if which == "agent_race":
+    # #27: Settings switch the AI to Codex after the press is recorded but before its worker has built the command.
+    # The run must be recorded and run for the same AI (the one read at the press), never labelled Claude, run as Codex.
+    cfg = {"agent": "claude"}
+    agent._cfg = lambda: cfg
+    launched = []
+    app._connect_one = lambda step, argv, log, deadline: (launched.append(argv), 0)[1]   # nothing really runs
+    real_url = agent.connect_url
+    def switched(step, agent_name=None):   # the worker's first read: the switch lands just before it
+        cfg["agent"] = "codex"
+        return real_url(step, agent_name)
+    agent.connect_url = switched
+    ok, why = app.run_connect("login")
+    assert ok, why
+    assert settle("login")
+    assert app.connects["login"]["agent"] == "claude" and launched == [["claude", "auth", "login"]], (app.connects["login"], launched)
 print("HARNESS OK " + which)
 '''
 
@@ -416,6 +432,8 @@ env = isolated_env(tmp, PATH=str(tmp / "bin") + os.pathsep + os.environ.get("PAT
                    BROWSER=str(tmp / "bin" / "browser"))
 out = harness("rollback")
 check(out.endswith("HARNESS OK rollback"), f"a setup step whose start fails is not left 'already running' ({out[-300:]})")
+out = harness("agent_race")
+check(out.endswith("HARNESS OK agent_race"), f"the AI is read once at the press: a switch before the worker starts cannot run Codex under a Claude label ({out[-300:]})")
 out = harness("quit")
 check(out.endswith("HARNESS OK quit"), f"Quit owns every setup-step process, however late it starts or ends ({out[-300:]})")
 
