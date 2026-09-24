@@ -1275,7 +1275,10 @@ if NODE:
   steps:$('#setup_steps').innerHTML.includes("connectStop('slack')"),miro:rows.includes("connectStop('miro')")};
  // Settings refuses a change of AI while it waits: the Console says "not saved: …", never "error: …"
  form('codex');const con0=CON.length;await saveCfg();out.refused=CON.slice(con0);
- const n=CALLS.length;await connectStop('slack');
+ // #67 review: the pop-up covers the row, so it carries the same Stop: for another run it is disabled and posts nothing
+ const dlg=()=>({open:$('#allow_dlg').open,shown:$('#allow_stop').style.display,text:$('#allow_stop').textContent,disabled:$('#allow_stop').disabled});
+ ALLOW.run='another';allowPaint();out.dlgOther=dlg();let n=CALLS.length;await allowStop();out.dlgOtherCalls=CALLS.slice(n);ALLOW.run=run;allowPaint();
+ out.dlg=dlg();n=CALLS.length;await allowStop();   // what its onclick runs: connectStop(step, the pop-up's run)
  out.stopped={calls:CALLS.slice(n),busy:!!(CONN.slack&&CONN.slack.busy),msg:(CONN.slack||{}).msg||'',open:$('#allow_dlg').open,
   note:SS['ol.allowDismissed'],rows:$('#su_src_rows').innerHTML,why:$('#su_ai_why').style.display,
   locked:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length,toasts:TOASTS.slice(-1),con:CON.slice(-1)};
@@ -1316,6 +1319,10 @@ if NODE:
         check(so["calls"][0] == f'/api/connect/slack/stop {{"run_id":"{out["run"]}"}}' and so["con"] == ["setup: slack stopped"]
               and [c.split(" ")[0] for c in so["calls"]] == ["/api/connect/slack/stop", "/api/doctor"],
               f"#67: Stop posts to /api/connect/slack/stop, once, and then checks the connections again ({so['calls']})")
+        check(out["dlg"] == {"open": True, "shown": "", "text": messages.LABELS["stop_signin"], "disabled": False}
+              and out["dlgOther"]["disabled"] is True and out["dlgOtherCalls"] == []
+              and 'id="allow_stop" onclick="allowStop()"' in page and "function allowStop(){const a=ALLOW;return a?connectStop(a.step,a.run)" in page,
+              f"#67 review: the Allow pop-up has Stop this sign-in too, calling the row's handler with the pop-up's run; for another run it is disabled and posts nothing ({out['dlg']}, {out['dlgOther']})")
         check(not so["busy"] and so["msg"] == "" and "connectStep('slack')" in so["rows"] and "connectStop(" not in so["rows"],
               f"...the row is back to its Connect button, with no failure sentence ({so['msg']!r})")
         check(not so["open"] and so["note"] == "{}", f"...the pop-up is closed and that run's closed-pop-up note is gone ({so['note']})")

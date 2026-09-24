@@ -279,6 +279,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   <div class="sub" id="allow_msg" style="margin-top:8px"></div>
   <div style="margin-top:14px;display:flex;gap:8px">
    <button class="primary" id="allow_check" onclick="allowCheck()" style="display:none">Check again</button>
+   <button type="button" id="allow_stop" onclick="allowStop()" style="display:none"></button>
    <button type="button" onclick="allowDismiss()">Close</button>
   </div>
 </div></dialog>
@@ -734,13 +735,14 @@ function connectStopped(step,mine,run){if(!mine||CONN[step]!==mine)return false;
 // The POST names the run this row shows (run_id): the app stops that one, or none (409, another run holds the step now).
 // The answer changes the row only if it still shows that run (#67 review): the watcher may have cleared it meanwhile,
 // another run may hold it, or a change of AI may have removed it.
-async function connectStop(step){const c=CONN[step];if(!c||!c.busy||c.stopping||!c.run)return;const run=c.run;c.stopping=true;repaint();
+// run: the run the caller shows (the pop-up's); given, a row that shows another run is not stopped for it.
+async function connectStop(step,run_){const c=CONN[step];if(!c||!c.busy||c.stopping||!c.run||(run_&&run_!==c.run))return;const run=c.run;c.stopping=true;repaint();allowPaint();
  try{const r=await api('/api/connect/'+step+'/stop',{run_id:run});clog('setup: '+step+(r.ok?' stopped':' was not running'));
   if(r.ok)toast(msg('connect_stopped',{party:PARTY(step)}));
   if(CONN[step]!==c)return;
-  if(r.running){c.stopping=false;repaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
+  if(r.running){c.stopping=false;repaint();allowPaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
   connectStopped(step,c,run)}
- catch(e){if(CONN[step]===c){c.stopping=false;repaint()}toast(errSaid(e),{err:true})}}
+ catch(e){if(CONN[step]===c){c.stopping=false;repaint();allowPaint()}toast(errSaid(e),{err:true})}}
 // Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
 // row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload. It writes only to
 // the row it was started for (#67 review): once that row is replaced (a new run, a Stop's answer) or removed (a change
@@ -957,7 +959,11 @@ function allowPaint(){if(!ALLOW)return;const c=CONN[ALLOW.step]||{},u=ALLOW.url|
  // what went wrong, in the app's words: the step's own failure (a Codex page that would not open included), or what the row
  // said after a Check again pressed here. A Codex page that did open needs no second sentence: the title says what to do.
  $('#allow_msg').textContent=ALLOW.said||(!c.busy&&c.msg&&!c.opened?c.msg:'');
- $('#allow_check').style.display=page||(!c.busy&&c.msg)?'':'none'}
+ $('#allow_check').style.display=page||(!c.busy&&c.msg)?'':'none';
+ // #67 review: the pop-up covers the row, so it has the row's Stop too: the same handler, for the run the pop-up is for
+ const st=$('#allow_stop'),can=c.busy&&canStop(ALLOW.step);st.style.display=can?'':'none';st.textContent=c.stopping?LABEL.stopping:LABEL.stop_signin;
+ st.disabled=!can||!!c.stopping||!c.run||(!!ALLOW.run&&ALLOW.run!==c.run)}
+function allowStop(){const a=ALLOW;return a?connectStop(a.step,a.run):Promise.resolve()}
 async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
  if(row&&row.ok){allowClose();toast(row.title.replace(/ \(optional.*\)$/,'')+'.');return}
  if(!a.url){try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&s.url)a.url=s.url}catch(e){}}   // the fallback link, from the run's own status
