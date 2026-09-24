@@ -311,7 +311,7 @@ FAILURES = {
         "button": None},
     "codex_notools": {
         "what": "Codex couldn't reach its Gmail or Slack tools this time, so nothing was saved.",
-        "fix": "Try again in a minute, and if it keeps happening choose a different Codex model under Settings, Your AI, Model, as some models find their Gmail and Slack tools more reliably than others.",
+        "fix": "Try again in a minute, or choose another Codex model under Settings, Your AI, Model if this keeps happening.",
         "button": None},
     "codex_stale": {
         "what": "Codex couldn't refresh its list of your ChatGPT connections (it is more than a day old), so Open Loops didn't run it.",
