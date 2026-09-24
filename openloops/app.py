@@ -69,15 +69,18 @@ import os
 def _port_arg():
     """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
     so a checkout never collides with, or is mistaken for, the installed copy on 8765; a test install
-    (`install.sh --dest … --port 8790`) keeps its port in its own config.json so every launch uses it."""
+    (`install.sh --dest … --port 8790`) keeps its port in its own config.json so every launch uses it.
+    An OPENLOOPS_PORT the app could never listen on (99999, "abc") counts as unset and the next source is used, as a
+    hand-edited config.json "port" is treated (review of #70); --port is checked by check_args before this runs."""
     a = sys.argv
     for i, x in enumerate(a):
         if x.startswith("--port="):
             return int(x.split("=", 1)[1])
         if x == "--port" and i + 1 < len(a):
             return int(a[i + 1])
-    if os.environ.get("OPENLOOPS_PORT"):
-        return int(os.environ["OPENLOOPS_PORT"])
+    env_port = os.environ.get("OPENLOOPS_PORT", "")
+    if re.fullmatch(r"[0-9]{1,5}", env_port) and 1024 <= int(env_port) <= 65535:  # ASCII digits, a port it can listen on
+        return int(env_port)
     try:
         p = int(load_cfg().get("port") or 8765)
     except (TypeError, ValueError):  # a hand-edited "port": "abc" falls back to the default rather than not starting

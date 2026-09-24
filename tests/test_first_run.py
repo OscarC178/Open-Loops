@@ -1428,7 +1428,8 @@ if pwsh:
     cfg_.write_text('{"port": 99999}', encoding="utf-8")  # a saved port the app could never listen on: it uses 8765
     for port_, env_port_, want_, port_want_ in ((8790, "8791", 'cd "C:\\OL test"; python -m openloops.app --port 8790', "8790"),
                                                 (0, "8791", 'cd "C:\\OL test"; python -m openloops.app', "8791"),
-                                                (0, "", 'cd "C:\\OL test"; python -m openloops.app', "8765")):
+                                                (0, "", 'cd "C:\\OL test"; python -m openloops.app', "8765"),
+                                                (0, "99999", 'cd "C:\\OL test"; python -m openloops.app', "8765")):  # neither usable
         cmd_ = (f'$Dest = "C:\\OL test"; $CfgFile = "{cfg_}"; $Port = {port_}; $env:OPENLOOPS_PORT = "{env_port_}"; '
                 f'{block_}\n"cd `"$Dest`"; python -m openloops.app$portArg"; $showPort')
         r_ = subprocess.run([pwsh, "-NoProfile", "-Command", cmd_], capture_output=True, text=True, timeout=60)
@@ -1506,6 +1507,10 @@ try:
                         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
     check(rq.returncode == 0 and "python3 -m openloops.app --port 8792" in rq.stdout and "http://localhost:8792 (the --port you gave" in rq.stdout,
           f"...--port beats OPENLOOPS_PORT, as in app.py: the command carries it and the address matches ({rq.stdout[-200:]!r})")
+    rr = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(dest), "--isolated", "--no-launch"],
+                        env=dict(env_, OPENLOOPS_PORT="99999"), capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    check(rr.returncode == 0 and "(the port in its config.json" in rr.stdout and "99999" not in rr.stdout,
+          f"review of #70: an OPENLOOPS_PORT the app could never listen on is not the printed address ({rr.stdout[-200:]!r})")
     install(home, "--dest", str(dest), "--isolated", "--no-launch", "--port", "8790")   # back to 8790 for the checks below
     r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--name", "Other")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
