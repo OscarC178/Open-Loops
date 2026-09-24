@@ -550,8 +550,16 @@ try:
           f"reset with an unreadable config.json refuses and deletes nothing (code {code}, state changed={state_after != state_before})")
     cfg.write_text(good, encoding="utf-8")
 
+    # #67: /api/diag reports the model of the AI chosen now: Claude's "model", Codex's "codex_model", none for Grok
+    api("/api/config", {"agent": "claude", "model": "sonnet", "codex_model": "gpt-5.6-sol"})
+    d1 = api("/api/diag")[1]
+    api("/api/config", {"agent": "codex"})
+    d2 = api("/api/diag")[1]
     # Grok: no setup buttons
     api("/api/config", {"agent": "grok"})
+    d3 = api("/api/diag")[1]
+    check((d1["agent"], d1["model"], d2["agent"], d2["model"], d3["agent"], d3["model"]) == ("claude", "sonnet", "codex", "gpt-5.6-sol", "grok", ""),
+          f"#67: /api/diag's model is the active AI's: sonnet under Claude, codex_model under Codex, none under Grok ({d1['model']!r}, {d2['model']!r}, {d3['model']!r})")
     code, out = api("/api/connect/login", {})
     check(code == 400 and "Grok" in out.get("error", ""), "with Grok selected the endpoint refuses")
 

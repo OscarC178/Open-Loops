@@ -585,6 +585,13 @@ def connect_status(step):
     return c
 
 
+def _diag_model():
+    """/api/diag's "model" (#67): the model the jobs run on now, as agent.model() reads it for the chosen AI, so Codex
+    reports codex_model rather than Claude's "sonnet". Grok ignores both keys: ""."""
+    from . import agent
+    return "" if agent.name() == "grok" else agent.model()
+
+
 def test_copy():
     """Whether this install is a test copy: config.json "test_copy" (install.sh --dest --no-app --no-task) or an isolated
     one (#36). Such a copy has no Desktop or Applications icon, so the page's "not running" banner names the command."""
@@ -673,7 +680,9 @@ class H(BaseHTTPRequestHandler):
             self._json({"app": "openloops",   # identity: install.sh only asks a server to quit if this is here and root matches
                         "python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
-                        "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
+                        # #67: the active AI's model (Codex: codex_model); Grok takes none, so none is reported
+                        "up_since": STARTED, "agent": c.get("agent") or "claude",
+                        "model": _diag_model(),
                         "isolated": isolated(),   # #36: a test copy that reads no to-do file and starts no scan by itself
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
                         "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
