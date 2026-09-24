@@ -509,7 +509,7 @@ SCHEDULE_MSG = {
 }
 # where "the latest installer" is: the page shows it as a button under the red row (the installer moves old installs)
 DOWNLOAD_URL = "https://github.com/OscarC178/Open-Loops/releases/latest"
-RUN_REFRESH_RE = re.compile(r":\s(/[^:]*/scripts/run-refresh\.sh)")
+RUN_REFRESH_RE = re.compile(r":\s(.+?/scripts/run-refresh\.sh)")  # any folder, a drive letter's colon included
 
 
 STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written by scripts/run-refresh.sh
@@ -559,8 +559,9 @@ def schedule_step(logs=None, root=None):
         return None
     kind, when, ln = last
     if kind == "started":
-        try:
-            when = datetime.strptime(when, "%Y-%m-%dT%H:%M:%S%z").strftime("%a %-d %b at %H:%M")
+        try:  # "Thu 24 Sep at 09:15"; the day without a leading zero, spelt out since %-d is not a Windows strftime code
+            d = datetime.strptime(when, "%Y-%m-%dT%H:%M:%S%z")
+            when = f"{d:%a} {d.day} {d:%b} at {d:%H:%M}"
         except ValueError:
             pass  # keep the raw text rather than hide the row
         return {"id": "schedule", "ok": True, "optional": True, "kind": "started",
