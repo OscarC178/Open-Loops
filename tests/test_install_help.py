@@ -69,11 +69,11 @@ def case_flags(sh):
     comments are left out, must be an arm head the ARM pattern reads, or a line of a multi-line arm's body up to the
     one ending in ";;". Heredoc bodies inside an arm are skipped whole, so a line in one that looks like an arm
     ("pretend)") is never counted; a heredoc ends only at a line that is exactly its word (after tabs alone for
-    "<<-"), as in bash. The loop's case ends only at a line that is exactly "esac", so an arm such as "esac-extra)"
-    is read as an arm. A nested `case` inside an arm is not followed: its ";;" and "esac" would end the outer arm and
-    loop early and silently drop the flags after it, so it raises instead. Anything else raises Unparsed with the
-    line, so a new spelling of an arm (quoted patterns, globs) fails the test instead of being silently missed. The
-    catch-all "*" is left out of the result."""
+    "<<-"), as in bash. The loop's case ends only at a line that is exactly "esac", or "esac" then a space and a
+    comment ("esac # end of options"), so an arm such as "esac-extra)" is read as an arm. A nested `case` inside an
+    arm is not followed: its ";;" and "esac" would end the outer arm and loop early and silently drop the flags after
+    it, so it raises instead. Anything else raises Unparsed with the line, so a new spelling of an arm (quoted
+    patterns, globs) fails the test instead of being silently missed. The catch-all "*" is left out of the result."""
     start = sh.index("while [[ $# -gt 0 ]]")
     lines = sh[start:].splitlines()
     i = next(n for n, ln in enumerate(lines) if re.match(r'^\s*case\s+"\$1"\s+in\s*$', ln)) + 1
@@ -88,7 +88,7 @@ def case_flags(sh):
         if not code or code.startswith("#"):
             continue
         if not in_arm:
-            if code == "esac":             # the whole line, never "esac-extra)" or "esac;"
+            if re.fullmatch(r"esac(?:\s+#.*)?", code):   # the whole line bar a comment, never "esac-extra)" or "esac;"
                 return flags
             m = ARM.match(ln)
             if not m:
@@ -219,6 +219,10 @@ try:
           "fixture: an indented 'pretend)' inside a heredoc is not collected; the arm around it is")
     got = case_flags(with_arm("        esac-extra) shift ;;\n"))
     check(got == accepted + ["esac-extra"], "fixture: an arm named 'esac-extra)' is read as an arm, not the end")
+    # "esac # end of options" is a plain esac to bash (a comment starts at a word), so it ends the loop's case too
+    loop_esac = loop_at + re.search(r"^\s*esac\s*$", sh[loop_at:], re.M).end()
+    got = case_flags(sh[:loop_esac] + " # end of options" + sh[loop_esac:])
+    check(got == accepted, "fixture: 'esac # end of options' ends the case like a bare 'esac'")
     # "EOF " and "  EOF" do not end a <<-EOF heredoc (bash strips tabs only), so "x ;;" and "pretend2)" are still
     # heredoc text; a reader that ended it early would collect "pretend2" or trip over the real closing line
     got = case_flags(with_arm("        --demo2)\n            cat <<-EOF\nEOF \n  EOF\nx ;;\n        pretend2) shift ;;\n"
