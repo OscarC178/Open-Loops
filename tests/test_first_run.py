@@ -1168,6 +1168,8 @@ if NODE:
 say("4. install.sh --isolated, and setup.ps1 -Isolated (static)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+check('python -m openloops.app$(if ($Port) { " --port $Port" })' in code and "Start this copy with: $manual" in code,
+      "setup.ps1: the printed start command carries -Port, as its launch does")
 check("$TaskRemoved = $true" in code and 'if ($NoTask -and $TaskRemoved) {' in code, "setup.ps1: a removed task is not then called unchanged")
 check("(-NoApp)" not in code and "$(if ($Isolated) { 'test copy' } else { '-NoApp' })" in code
       and "$(if ($Isolated) { 'test copy' } else { '-NoTask' })" in code, "setup.ps1 -Isolated says 'test copy' too (review of #59)")

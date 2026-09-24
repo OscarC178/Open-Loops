@@ -179,7 +179,9 @@ $pyw  = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
 if (-not $pyw) { $pyw = (Get-Command python).Source }
 $ico  = Join-Path $Dest "docs\AppIcon.ico"
 if ($NoApp) {
-    Ok "Skipped the Desktop and Start menu icons ($(if ($Isolated) { 'test copy' } else { '-NoApp' })). Start this copy with: cd `"$Dest`"; python -m openloops.app"
+    # the printed command passes -Port as the launch below does: --port beats a leftover OPENLOOPS_PORT (review of #59)
+    $manual = "cd `"$Dest`"; python -m openloops.app$(if ($Port) { " --port $Port" })"
+    Ok "Skipped the Desktop and Start menu icons ($(if ($Isolated) { 'test copy' } else { '-NoApp' })). Start this copy with: $manual"
 } else {
     $ws = New-Object -ComObject WScript.Shell
     foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
