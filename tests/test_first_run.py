@@ -905,6 +905,9 @@ if NODE:
  // review of #59: another tab switched to Codex; this one still caches Claude. A good Codex answer re-reads settings once
  C.agent='claude';paintSetup(stage());out.stale={pend:aiPending(),disabled:dis()};await doctor(true);paintSetup(stage());
  out.stale.after={pend:aiPending(),agent:C.agent,disabled:dis(),reread:CON.filter(l=>l.includes('settings re-read')).length};
+ // ...and a re-read that fails once is tried again on the next good check, instead of leaving the picker disabled
+ C.agent='claude';docReread='';FAIL_GET.add('/api/config');await doctor(true);paintSetup(stage());out.rereadFail={pend:aiPending(),disabled:dis()};
+ await doctor(true);paintSetup(stage());out.retried={pend:aiPending(),agent:C.agent,disabled:dis()};
  J.refresh=Object.assign({},J.refresh,{running:true});n=CALLS.length;TOASTS.length=0;await chooseAI('claude');
  out.job={calls:CALLS.slice(n),toasts:TOASTS.slice(),agent:C.agent};J.refresh.running=false;
  FAIL_ONCE.add('/api/doctor');n=CALLS.length;await chooseAI('claude');
@@ -924,6 +927,8 @@ if NODE:
         st_ = out["stale"]
         check(st_["pend"] is True and st_["disabled"] == 3 and st_["after"] == {"pend": False, "agent": "codex", "disabled": 0, "reread": 1},
               f"another tab switched the AI: the next good check re-reads settings once and the picker is usable again ({st_})")
+        check(out["rereadFail"] == {"pend": True, "disabled": 3} and out["retried"] == {"pend": False, "agent": "codex", "disabled": 0},
+              f"...a failed settings re-read is retried on the next good check, and the picker comes back ({out['rereadFail']}, {out['retried']})")
         check(out["job"]["calls"] == [] and out["job"]["agent"] == "codex"
               and out["job"]["toasts"] == ["Open Loops is still running a job with Codex. Change your AI once it has finished."],
               f"changing the AI while a job runs is refused, in a sentence ({out['job']['toasts']})")

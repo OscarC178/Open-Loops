@@ -1194,7 +1194,9 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
   // A good answer for another AI with no change under way here: another tab changed it, or a save went through but its
   // answer was lost. This tab's settings are stale, and aiPending() would keep the picker disabled for good, so read
   // them again, once per mismatch (review of #59).
-  if(r.agent&&C&&r.agent!==(C.agent||'claude')&&!aiSwitching&&docReread!==r.agent){docReread=r.agent;clog('set-up: the check was for '+r.agent+', settings re-read');try{await loadCfg()}catch(e){}}
+  if(r.agent&&C&&r.agent!==(C.agent||'claude')&&!aiSwitching&&docReread!==r.agent){   // one re-read per answer at most
+   // the marker is set only once the re-read worked: a failed one is tried again on the next good check (review of #59)
+   try{await loadCfg();docReread=r.agent;clog('set-up: the check was for '+r.agent+', settings re-read')}catch(e){clog('set-up: the check was for '+r.agent+', settings not re-read, trying on the next check')}}
   else if(r.agent&&C&&r.agent===(C.agent||'claude'))docReread='';
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
