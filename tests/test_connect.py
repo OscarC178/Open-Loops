@@ -393,15 +393,17 @@ if which == "stop":
     end = time.time() + 5
     while "miro" not in app.connect_procs and time.time() < end:
         time.sleep(0.05)
-    assert app.stop_connect("miro") is True
+    rid = app.connects["miro"]["run_id"]
+    assert app.stop_connect("miro", "not-this-run")[0] == "other run" and not app.connects["miro"].get("stopped"), "a stale id stopped the run"
+    assert app.stop_connect("miro", rid)[0] == "stopped"
     assert settle("miro", 10) and app.connects["miro"]["rc"] != 0 and not os.path.exists(marker), app.connects["miro"]
-    assert app.stop_connect("miro") is False, "a second stop found a run"
+    assert app.stop_connect("miro", rid)[0] == "not running", "a second stop found a run"
     # ...and a Stop that lands before the worker has started its command: nothing starts afterwards
     ready = threading.Event()
     agent.login_cmd = lambda step, *a: (ready.wait(5), [["touch", marker]])[1]
     ok, why = app.run_connect("gmail")
     assert ok, why
-    assert app.stop_connect("gmail") is True
+    assert app.stop_connect("gmail", app.connects["gmail"]["run_id"])[0] == "stopped"
     ready.set()
     assert settle("gmail") and not os.path.exists(marker) and not app.connect_procs, "the worker started its command after Stop"
     # the next run of that step is a new run, not a stopped one
@@ -594,29 +596,41 @@ try:
     api("/api/config", {"agent": "claude"})
     (tmp / "bin" / "hang").touch()
     waiting = lambda: subprocess.run(["pgrep", "-f", str(tmp / "bin" / "claude") + ".*mcp login"], capture_output=True).returncode == 0
-    api("/api/connect/miro", {})
-    for _ in range(50):
-        if api("/api/connect/miro")[1].get("url"):
-            break
-        time.sleep(0.1)
+    def start_miro():  # -> the new run's id, once its sign-in is waiting (its link printed)
+        r = api("/api/connect/miro", {})[1]
+        for _ in range(50):
+            if api("/api/connect/miro")[1].get("url"):
+                break
+            time.sleep(0.1)
+        return r.get("run_id")
+    rid = start_miro()
     check(waiting() and api("/api/connect/miro")[1]["running"] is True, "a Miro sign-in is waiting in the browser")
-    t = time.time()
     code, out = api("/api/connect/miro/stop", {})
+    check(code == 400 and out.get("error") == "no run_id" and waiting(), f"#67 review: a Stop that names no run stops nothing (400) ({out})")
+    t = time.time()
+    code, out = api("/api/connect/miro/stop", {"run_id": rid})
     s = api("/api/connect/miro")[1]
     check(code == 200 and out == {"ok": True, "running": False} and time.time() - t < 8,
           f"POST /api/connect/miro/stop answers once the run has ended ({code}, {out})")
     check(not waiting() and s["running"] is False and s.get("stopped") is True and s["last"] == "stopped: Stop this sign-in was pressed",
           f"...the fake claude child is gone, and the status shows running false, stopped, and why in its last line ({s})")
-    code, out = api("/api/connect/miro/stop", {})
+    code, out = api("/api/connect/miro/stop", {"run_id": rid})
     check(code == 200 and out == {"ok": False, "running": False, "error": "not running"}, f"a second Stop: nothing running ({out})")
-    code, out = api("/api/connect/miro", {})
-    check(out.get("started") is True, "the row's button starts a new run afterwards (the stop was for that run only)")
-    api("/api/connect/miro/stop", {})
+    rid2 = start_miro()
+    check(rid2 and rid2 != rid and waiting(), "the row's button starts a new run afterwards (the stop was for that run only)")
+    # #67 review: a Stop for the old run (a tab that has not polled since) lands while the new run waits: 409, in plain
+    # words, and the new run keeps running
+    code, out = api("/api/connect/miro/stop", {"run_id": rid})
+    s = api("/api/connect/miro")[1]
+    check(code == 409 and out.get("ok") is False and out.get("said") == messages.say("connect_stop_other")
+          and s["running"] is True and s["run_id"] == rid2 and not s.get("stopped") and waiting(),
+          f"#67 review: a Stop naming an earlier run is refused (409, plain words) and the newer run keeps waiting ({code}, {out})")
+    api("/api/connect/miro/stop", {"run_id": rid2})
     (tmp / "bin" / "hang").unlink()
     for bad in ("install", "slack_install", "bogus"):
-        code, out = api(f"/api/connect/{bad}/stop", {})
+        code, out = api(f"/api/connect/{bad}/stop", {"run_id": "x"})
         check(code == 400 and out.get("ok") is False, f"#67: {bad!r} cannot be stopped from its row (400)")
-    code, _ = api("/api/connect/miro/stop", {}, origin="http://evil.example")
+    code, _ = api("/api/connect/miro/stop", {"run_id": "x"}, origin="http://evil.example")
     check(code == 403, "a Stop from another site is refused (403), as every POST")
     api("/api/config", {"agent": "grok"})
 

@@ -1264,8 +1264,10 @@ if NODE:
     try:
         out = setup_js(port, SWEEP_JS + """
  await boot();await tick();const started=CON.filter(l=>l===LABEL.console_started).length;
+ // #67 review: a row pressed here is busy before the app has said which run it is: its Stop waits for that
+ CONN.gmail={busy:true,msg:'x'};out.norun=connectBtn({connect:'gmail'},false);CONN.gmail.run='r1';out.withrun=connectBtn({connect:'gmail'},false);delete CONN.gmail;
  const w=connectStep('slack');await until(()=>CONN.slack&&CONN.slack.busy&&CONN.slack.url,20000);
- const run=CONN.slack.run;allowDismiss();out.note=JSON.parse(SS['ol.allowDismissed']||'{}').slack===run;
+ const run=CONN.slack.run;out.run=run;allowDismiss();out.note=JSON.parse(SS['ol.allowDismissed']||'{}').slack===run;
  allowOpen('slack',run);paintSetup(stage());   // the pop-up open again, as a reload would bring it back
  const rows=$('#su_src_rows').innerHTML;
  out.wait={stop:rows.includes(`<button onclick="connectStop('slack')">${LABEL.stop_signin}</button>`),link:rows.includes('Open the sign-in page'),
@@ -1285,6 +1287,9 @@ if NODE:
  CON.push('no answer from /api/state: fetch failed');const st=await api('/api/state');
  FAKE['/api/state']=[{},Object.assign({},st,{instance:'another-start'})];await loadState();delete FAKE['/api/state'];
  out.restart=CON.slice(-2);await loadState();out.back=CON[CON.length-1];""", tmp)
+        check(f"<button onclick=\"connectStop('gmail')\" disabled>{messages.LABELS['stop_signin']}</button>" in out["norun"]
+              and f"<button onclick=\"connectStop('gmail')\">{messages.LABELS['stop_signin']}</button>" in out["withrun"],
+              "#67 review: Stop is disabled until the app's answer has named the run, then enabled")
         check(out["note"] is True, "the pop-up closed for this run is remembered for it, as before (#27)")
         wt = out["wait"]
         check(wt["stop"] and wt["link"] and wt["steps"] and not wt["miro"],
@@ -1294,7 +1299,7 @@ if NODE:
         check(out["refused"] == ["not saved: " + messages.say("ai_change_signin")],
               f"#67: Settings' refused Save is a Console note (not saved: …), with no error: line ({out['refused']})")
         so = out["stopped"]
-        check(so["calls"] == ["/api/connect/slack/stop {}"] and so["con"] == ["setup: slack stopped"],
+        check(so["calls"] == [f'/api/connect/slack/stop {{"run_id":"{out["run"]}"}}'] and so["con"] == ["setup: slack stopped"],
               f"#67: Stop posts to /api/connect/slack/stop, once ({so['calls']})")
         check(not so["busy"] and so["msg"] == "" and "connectStep('slack')" in so["rows"] and "connectStop(" not in so["rows"],
               f"...the row is back to its Connect button, with no failure sentence ({so['msg']!r})")

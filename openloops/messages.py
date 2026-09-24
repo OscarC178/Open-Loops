@@ -213,6 +213,11 @@ FAILURES = {
         "what": "The {party} sign-in was stopped, so nothing changed.",
         "fix": "Press its button again whenever you are ready.",
         "button": None},
+    # #67: Stop pressed on a row whose run had already ended, with another run of that step started since (another tab)
+    "connect_stop_other": {
+        "what": "That sign-in had already ended, and another one has started since, so Open Loops left it running.",
+        "fix": "Press Stop this sign-in again on the row as it is now if you want to stop that one too.",
+        "button": None},
     "connect_timeout": {
         "what": "Open Loops stopped waiting for your browser after 5 minutes.",
         "fix": "Press the button again when you're ready to sign in.",

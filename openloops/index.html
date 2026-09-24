@@ -696,7 +696,7 @@ function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!
  // shown before the press (nothing runs unseen), folded away: a non-technical user needs the button, not the shell (#25)
  const cmd=shown?`<details class="sub" style="margin-top:4px"${CMD_OPEN[s.connect]?' open':''} ontoggle="CMD_OPEN['${s.connect}']=this.open"><summary>Show the exact command${c.busy?' that is running':''}</summary><code style="display:block;white-space:pre-wrap;word-break:break-all">${esc(shown)}</code></details>`:'';
  // #67: a sign-in waiting in the browser can be stopped from its row (not an install: app.py STOPPABLE)
- const stop=canStop(s.connect)?` <button onclick="connectStop('${s.connect}')"${c.stopping?' disabled':''}>${esc(c.stopping?LABEL.stopping:LABEL.stop_signin)}</button>`:'';
+ const stop=canStop(s.connect)?` <button onclick="connectStop('${s.connect}')"${c.stopping||!c.run?' disabled':''}>${esc(c.stopping?LABEL.stopping:LABEL.stop_signin)}</button>`:'';   // disabled until the app has said which run it is
  if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}${stop}</div>${cmd}`;
  const label=s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect];   // the same row identity the press sends
  return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
@@ -723,8 +723,9 @@ async function connectStep(step){
  return connectWatch(step,row)}
 // #67: Stop this sign-in. The app stops that one run and answers once it has ended; the row goes back to its button,
 // the pop-up (if open for it) closes, this run's closed-pop-up note goes, and the AI picker unlocks with the repaint.
-async function connectStop(step){const c=CONN[step];if(!c||!c.busy||c.stopping)return;const run=c.run||'';c.stopping=true;repaint();
- try{const r=await api('/api/connect/'+step+'/stop',{});clog('setup: '+step+(r.ok?' stopped':' was not running'));
+// The POST names the run this row shows (run_id): the app stops that one, or none (409, another run holds the step now).
+async function connectStop(step){const c=CONN[step];if(!c||!c.busy||c.stopping||!c.run)return;const run=c.run;c.stopping=true;repaint();
+ try{const r=await api('/api/connect/'+step+'/stop',{run_id:run});clog('setup: '+step+(r.ok?' stopped':' was not running'));
   if(r.running){c.stopping=false;repaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
   CONN[step]={};if(ALLOW&&ALLOW.step===step)allowClose();if(run)allowClosedEnd(step,run);repaint();
   if(r.ok)toast(msg('connect_stopped',{party:PARTY(step)}))}

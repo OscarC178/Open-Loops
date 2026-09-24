@@ -299,20 +299,25 @@ def stop_connects():
         kill_tree(p)
 
 
-def stop_connect(step):
-    """#67: the row's "Stop this sign-in": stop that one step's run -> True if it was running. The run is marked
-    "stopped" under the same lock _launch checks, so a run between two commands (or not yet started) starts nothing
-    more; the command running now is killed as stop_connects() does. The worker then ends the run as usual (running
-    false, and the log says why)."""
+def stop_connect(step, run_id):
+    """#67: the row's "Stop this sign-in": stop that one step's run, the one the row shows (run_id) -> (why, record).
+    why: "stopped", "not running" (it had already ended) or "other run" (it ended and another run of the step started
+    since, perhaps in another tab: that one is never stopped for it). record: the run's own connects entry, so a caller
+    waiting for it to end watches that run, not whatever holds the step by then. The run is marked "stopped" under the
+    same lock _launch checks, so a run between two commands (or not yet started) starts nothing more; the command
+    running now is killed as stop_connects() does. The worker then ends the run as usual (running false, and the log
+    says why)."""
     with connect_lock:
         c = connects.get(step)
-        if not c or not c.get("running"):
-            return False
+        if not c or c.get("run_id") != run_id:
+            return ("other run" if c and c.get("running") else "not running"), c
+        if not c.get("running"):
+            return "not running", c
         c["stopped"] = True
         p = connect_procs.get(step)
     if p is not None:
         kill_tree(p)
-    return True
+    return "stopped", c
 
 
 def _launch(step, *args, **kw):
@@ -865,12 +870,17 @@ class H(BaseHTTPRequestHandler):
             step = self.path[len("/api/connect/"):-len("/stop")]
             if step not in STOPPABLE:  # an install, or not a step at all: nothing here stops it
                 return self._json({"ok": False, "error": "not a sign-in that can be stopped"}, 400)
-            ok = stop_connect(step)
+            rid = str(body.get("run_id") or "")
+            if not rid:  # the page sends the run it shows; nothing else is stopped on its behalf
+                return self._json({"ok": False, "error": "no run_id"}, 400)
+            why, c = stop_connect(step, rid)
+            if why == "other run":  # the run the row showed is over, and another has started since: left alone
+                return self._json({"ok": False, "error": why, "running": True, "said": messages.say("connect_stop_other")}, 409)
             end = time.time() + 8  # kill_tree waits up to 3 s, the worker's reap up to 5 s: answer once it has ended
-            while ok and (connects.get(step) or {}).get("running") and time.time() < end:
+            while why == "stopped" and c.get("running") and time.time() < end:  # this run's own record, not the step's
                 time.sleep(0.1)
-            return self._json({"ok": ok, "running": bool((connects.get(step) or {}).get("running")),
-                               **({} if ok else {"error": "not running"})})
+            return self._json({"ok": why == "stopped", "running": bool(c and c.get("running")),
+                               **({} if why == "stopped" else {"error": why})})
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
