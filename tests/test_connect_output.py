@@ -167,6 +167,43 @@ with tempfile.TemporaryDirectory(prefix="openloops-raw-") as td:
     check(log.read_text(encoding="utf-8").strip().splitlines()[-1] == messages.say("signin_file_left"),
           "...in one plain-words line from messages.py, at the end of the step's log (the Console shows it)")
 
+# ---------------------------------------------------------------- making it private must work before anything is written
+say("5b. Windows' icacls must succeed, or the sign-in does not start (a fake icacls, so this runs everywhere)")
+with tempfile.TemporaryDirectory(prefix="openloops-acl-") as td:
+    fake = Path(td) / "fake_icacls.py"
+    fake.write_text("import sys, time\nmode = open(sys.argv[1]).read().strip()\n"
+                    "if mode == 'hang': time.sleep(30)\nsys.exit(0 if mode == 'ok' else 5)\n", encoding="utf-8")
+    mode = Path(td) / "mode.txt"
+    saved = (app.ICACLS, app.ICACLS_TIMEOUT_S, os.environ.get("USERNAME"))
+    app.ICACLS, app.ICACLS_TIMEOUT_S = [sys.executable, str(fake), str(mode)], 2
+    os.environ["USERNAME"] = "tester"
+    out = Path(td) / "connect-miro.out"
+    try:
+        mode.write_text("ok")
+        os.close(app._private_file(out, restrict=True))
+        check(out.exists(), "icacls succeeds: the file is made and handed over")
+        for m, what in (("fail", "icacls refuses (non-zero exit)"), ("hang", "icacls does not answer in time")):
+            mode.write_text(m)
+            try:
+                app._private_file(out, restrict=True)
+                raise SystemExit(f"FAIL: {what}: a file was handed over anyway")
+            except app.PrivateFileError as e:
+                check(str(e) == messages.say("signin_private_failed") and not out.exists(),
+                      f"{what}: no file to write to, and the reason in plain words from messages.py")
+        mode.write_text("ok")
+        del os.environ["USERNAME"]
+        try:
+            app._private_file(out, restrict=True)
+            raise SystemExit("FAIL: no user name: a file was handed over anyway")
+        except app.PrivateFileError:
+            check(not out.exists(), "no user name to grant it to: refused the same way")
+    finally:
+        app.ICACLS, app.ICACLS_TIMEOUT_S = saved[0], saved[1]
+        if saved[2] is not None:
+            os.environ["USERNAME"] = saved[2]
+        else:
+            os.environ.pop("USERNAME", None)
+
 # ---------------------------------------------------------------- output that is not UTF-8
 say("6. sign-in output that is not UTF-8 (a cp1252 console) still reads, and its link survives")
 o = app.SigninOutput()

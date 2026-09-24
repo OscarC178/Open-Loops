@@ -225,6 +225,11 @@ FAILURES = {
         "what": "Open Loops couldn't delete a temporary file that holds the last sign-in link.",
         "fix": "Nothing to do now: Open Loops deletes it the next time you press that sign-in's button.",
         "button": None},
+    # second review of #70: Windows could not restrict that temporary file to this user, so the sign-in was not started
+    "signin_private_failed": {
+        "what": "Open Loops couldn't make a private file for the sign-in output, so it didn't start the sign-in.",
+        "fix": "Press the button again, and if it happens again press Copy all in the Console at the bottom and send it to whoever set Open Loops up.",
+        "button": None},
     "connect_timeout": {
         "what": "Open Loops stopped waiting for your browser after 5 minutes.",
         "fix": "Press the button again when you're ready to sign in.",

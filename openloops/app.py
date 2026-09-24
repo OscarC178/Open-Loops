@@ -563,29 +563,49 @@ def _read_on(path, offset, saw):
     return offset
 
 
-def _private_file(path):
+ICACLS = ["icacls"]   # the command _private_file restricts a file with on Windows; tests point it at a fake
+ICACLS_TIMEOUT_S = 15
+
+
+class PrivateFileError(OSError):
+    """_private_file could not make its file private; str() is the plain-words sentence (messages.py)."""
+
+
+def _private_file(path, restrict=None):
     """A new, empty file only this user may read, for a command's raw output -> an OS-level descriptor open for
     writing (the caller hands it to the child, then closes it). Review of #70: the file used to be made by cmd.exe's
     `>` redirection, with whatever the folder passed on. Any earlier file there (left by a run the app could not clean
     up after: a forced end, a power cut) is removed first; O_EXCL then refuses anything that appears in its place.
-    Mac and Linux: mode 0600. Windows: the mode only sets read-only-or-not, so icacls then drops the inherited
-    permissions and grants this user alone full control; best effort, as a locked-down PC may refuse it, and the
-    file lives only while the sign-in runs (state/ sits in the user's own profile anyway)."""
+    Mac and Linux: mode 0600. Windows (restrict, the default there): the mode only sets read-only-or-not, so icacls
+    drops the inherited permissions and grants this user alone full control. Second review of #70: that must work
+    before anything is written. If icacls fails, times out or there is no user name to grant, the file is removed
+    and PrivateFileError is raised: the sign-in does not start and its log says why in plain words, rather than
+    the link's query going to a file others may read."""
+    restrict = WIN if restrict is None else restrict
     try:
         path.unlink()
     except FileNotFoundError:
         pass
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
-    if WIN:
-        user = os.environ.get("USERNAME", "")
-        if user:
-            if os.environ.get("USERDOMAIN"):
-                user = os.environ["USERDOMAIN"] + "\\" + user
-            try:
-                subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
-                               timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
-            except Exception:
-                pass
+    if not restrict:
+        return fd
+    user, ok = os.environ.get("USERNAME", ""), False
+    if user:
+        if os.environ.get("USERDOMAIN"):
+            user = os.environ["USERDOMAIN"] + "\\" + user
+        try:
+            r = subprocess.run([*ICACLS, str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
+                               timeout=ICACLS_TIMEOUT_S, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            ok = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):  # icacls missing, or no answer within ICACLS_TIMEOUT_S
+            ok = False
+    if not ok:
+        os.close(fd)
+        try:
+            path.unlink()
+        except OSError:
+            pass  # empty, and removed again before the next run writes
+        raise PrivateFileError(messages.say("signin_private_failed"))
     return fd
 
 
@@ -698,6 +718,9 @@ def run_connect(step):
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
                     break
+        except PrivateFileError as e:  # Windows could not make the output file private: not started, said plainly
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\n{e}\n")
         except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
