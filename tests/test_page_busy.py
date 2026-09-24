@@ -53,7 +53,7 @@ def node(parts, scenario):
     r = subprocess.run([NODE, "-e", js], capture_output=True, text=True, timeout=60)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"FAIL: node could not run the page's code: {r.stderr.strip()[-800:]}")
-    out = json.loads(r.stdout.strip().splitlines()[-1])
+    out = json.loads(r.stdout.strip().split("\n")[-1])   # split on newlines only: the output may hold U+2028
     if out.get("error"):
         raise SystemExit(f"FAIL: the page's code threw: {out['error'][-800:]}")
     return out
@@ -194,6 +194,23 @@ for k, v in messages.ACTION_FAILED.items():
     check(v.startswith("Couldn't ") and not v.endswith((".", ":")) and "failed" not in v.lower()
           and not re.search(r"\b(color|behavior|canceled)\b", v), f"ACTION_FAILED[{k}]: a verb phrase, no end stop ({v!r})")
 check("const ACT_FAILED=" + messages.page_action_failed_json() + ";" in html, "the served page carries the table")
+# the second placeholder is filled exactly once and survives hostile text: "</script>", "<!--", quotes, U+2028
+raw = (Path(app.__file__).parent / "index.html").read_text(encoding="utf-8")
+check(raw.count("/*OL_MESSAGES*/{}") == 1 and raw.count("/*OL_ACTION_FAILED*/{}") == 1 and "/*OL_ACTION_FAILED*/" not in html,
+      "index.html has each placeholder once, and the served page has none left")
+hostile = {"snooze": "Couldn't </script><script>alert(1)</script> <!-- \"q\" 'a' & \u2028 \u2029 \\ end"}
+real, messages.ACTION_FAILED = messages.ACTION_FAILED, hostile
+try:
+    served = app.index_bytes().decode("utf-8")
+finally:
+    messages.ACTION_FAILED = real
+line = next(ln for ln in served.splitlines() if ln.startswith("const ACT_FAILED="))
+check("</script" not in line.lower() and "<!--" not in line and "\u2028" not in line and "\u2029" not in line,
+      "a hostile ACTION_FAILED line cannot end or change the script element")
+check(served.count("</script>") == html.count("</script>"), "...and the page has no more script ends than before")
+if NODE:
+    got = node([line], "out.v=ACT_FAILED;")
+    check(got["v"] == hostile, "...and the page reads it back as the same text")
 check("' failed: '" not in html and "SAID[action]||action)+' failed" not in html, "the page no longer builds '<label> failed:'")
 
 # ---------------------------------------------------------------- 4. Codex and Miro; Codex's check time

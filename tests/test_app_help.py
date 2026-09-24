@@ -5,11 +5,14 @@
 The app used to ignore any option it did not know, so `--help` started it and opened the browser (the same class of
 bug as install.sh's #55). Every run here is in a throwaway folder holding only a copy of openloops/ (no config.json,
 no state.json), with $HOME an empty folder, BROWSER a stub that logs the call, and `open`, `xdg-open` and `claude`
-stubs first on PATH that log the call too, so any reach for the browser or a check fails the test. Checks:
+stubs first on PATH that log the call too, so any reach for the browser or a check fails the test. A sitecustomize.py
+on PYTHONPATH wraps socket bind/listen and webbrowser.open in the app's own process and logs every call, so an
+attempted bind is seen even if the socket is closed again before the process exits (a first run proves the logging
+works). Checks:
   1. --help and -h: exit 0 at once, the usage line (under 80 columns) and a row for each option; the list names
      exactly the options app.py reads (from its source, so the two cannot drift), every line under 80 columns and no
      issue numbers in it. Nothing is written (no config.json, state.json, state/, nothing under $HOME), no stub is
-     called, nothing listens on the port given.
+     called, no socket is bound or listened on and no browser is asked for (the sitecustomize log stays empty).
   2. an unknown option (--bogus, a typo --no-browsr, a stray word, one after good options), --port with no number:
      exit 1, "unknown option: <arg>" (or the --port line) and the usage line on stderr; the same nothing-happened
      checks.
@@ -20,7 +23,7 @@ import os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-from _helpers import free_port, isolate_this_process, listening  # noqa: E402
+from _helpers import free_port, isolate_this_process  # noqa: E402
 isolate_this_process("openloops-apphelp-parent-")   # importing app (part 3) writes its files into a throwaway copy
 t0 = time.time()
 WIN = sys.platform == "win32"
@@ -51,10 +54,36 @@ try:
         f = stubs / name
         f.write_text(f'#!/bin/sh\necho "{name} $*" >> "{log}"\n', encoding="utf-8")
         f.chmod(0o755)
+    # in the app's own process: every bind / listen / webbrowser.open is logged before it runs
+    inst, calls = tmp / "instrument", tmp / "py-calls.log"
+    inst.mkdir()
+    (inst / "sitecustomize.py").write_text(f"""import socket, webbrowser
+_LOG = {str(calls)!r}
+def _note(what):
+    with open(_LOG, "a", encoding="utf-8") as f:
+        f.write(what + "\\n")
+_bind, _listen, _open = socket.socket.bind, socket.socket.listen, webbrowser.open
+def bind(self, *a):
+    _note("bind " + repr(a))
+    return _bind(self, *a)
+def listen(self, *a):
+    _note("listen")
+    return _listen(self, *a)
+def wopen(url, *a, **k):
+    _note("webbrowser.open " + url)
+    return True
+socket.socket.bind, socket.socket.listen, webbrowser.open = bind, listen, wopen
+""", encoding="utf-8")
     env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), BROWSER=str(stubs / "browser"),
-               PATH=str(stubs) + os.pathsep + os.environ.get("PATH", ""), PYTHONDONTWRITEBYTECODE="1")
+               PATH=str(stubs) + os.pathsep + os.environ.get("PATH", ""), PYTHONDONTWRITEBYTECODE="1",
+               PYTHONPATH=str(inst) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""))
     env.pop("OPENLOOPS_PORT", None)
     port = free_port()
+    # the instrument works: a process that binds and closes at once is still caught
+    subprocess.run([sys.executable, "-c", "import socket; s = socket.socket(); s.bind(('127.0.0.1', 0)); s.close()"],
+                   env=env, check=True, timeout=20)
+    check(calls.exists() and "bind" in calls.read_text(encoding="utf-8"), "the bind log catches a bind closed at once")
+    calls.unlink()
     before = tree(tmp)
 
     def run(*args):
@@ -67,13 +96,15 @@ try:
     def nothing_happened(what):
         check(tree(tmp) == before, f"{what}: nothing written (no config.json, state.json, state/, nothing in $HOME)")
         check(not log.exists(), f"{what}: no browser opened and nothing checked (no stub called)")
-        check(not listening(port), f"{what}: nothing listens on the port given")
+        check(not calls.exists(), f"{what}: no socket bound or listened on, no browser asked for "
+                                  f"({calls.read_text(encoding='utf-8').strip() if calls.exists() else ''})")
 
     # ------------------------------------------------------------ 1. --help / -h
     src = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
     read = set(re.findall(r'"(--[a-z-]+)"\s+(?:not\s+)?in\s+sys\.argv', src)) | {"--port"}   # _port_arg reads --port
     for flag in ("--help", "-h"):
         rc, out, err, took = run(flag, "--port", str(port))
+        check("Open Loops ->" not in out, f"{flag}: the app never says it is listening")
         check(rc == 0 and took < 10, f"{flag}: exits 0 at once ({rc}, {took:.1f} s, {err.strip()[-200:]})")
         lines = out.splitlines()
         check(lines and lines[0].startswith("usage: ") and "-m openloops.app" in lines[0] and len(lines[0]) < 80,
