@@ -871,7 +871,7 @@ def wait_step(step, secs=20):
 srv, PORT = start_server()
 try:
     code, out = api("/api/connect/login", {})
-    check(code == 200 and out == {"started": True}, "Sign in starts with Codex selected")
+    check(code == 200 and (out.get("started") is True and len(out.get("run_id", "")) == 32), "Sign in starts with Codex selected")
     s = wait_step("login")
     fcalls = [json.loads(x)["argv"] for x in (fbin / "calls.jsonl").read_text().splitlines()]
     check(s["rc"] == 0 and ["login"] in fcalls, f"it ran codex login (rc {s['rc']}, last {s['last']!r})")

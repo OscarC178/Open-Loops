@@ -292,7 +292,7 @@ try:
     # a download that fails outright
     use("fail")
     code, out = api("/api/connect/install", shown)
-    check(code == 200 and out == {"started": True}, "POST /api/connect/install starts it")
+    check(code == 200 and (out.get("started") is True and len(out.get("run_id", "")) == 32), "POST /api/connect/install starts it")
     s = wait_install()
     check(s["rc"] == 22 and s["why"] == "vendor" and "404" in s["last"], f"a failed download stops at the download (got {s['rc']}, {s['why']!r}, {s['last']!r})")
     check(s["said"].startswith("Anthropic's download site answered with an error") and "curl" not in s["said"]
@@ -347,7 +347,7 @@ try:
     # the real thing, with the fake installer
     use("ok")
     code, out = api("/api/connect/install", shown)
-    check(out == {"started": True}, "pressed again: started")
+    check((out.get("started") is True and len(out.get("run_id", "")) == 32), "pressed again: started")
     code, out = api("/api/connect/install", shown)
     check(out.get("started") is False and out.get("error") == "already running"
           and out.get("said", "").startswith("Open Loops is already installing Claude"), "a second click while it runs starts nothing, and says so")
@@ -390,7 +390,7 @@ try:
     shown = {k: api("/api/connect/install")[1][k] for k in ("agent", "command_id")}
     code, out = api("/api/connect/install", shown)
     time.sleep(1)
-    check(out == {"started": True} and waiting(), "an install is running")
+    check((out.get("started") is True and len(out.get("run_id", "")) == 32) and waiting(), "an install is running")
     api("/api/quit", {})
     try:
         srv.wait(10)

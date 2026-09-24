@@ -450,10 +450,13 @@ try:
 
     # Miro on the "server" route: mcp login on a pseudo-terminal, link read from the output and opened once
     code, out = api("/api/connect/miro", {})
-    check(code == 200 and out == {"started": True}, "POST /api/connect/miro answers at once with started")
+    check(code == 200 and out.get("started") is True and set(out) == {"started", "run_id"}, "POST /api/connect/miro answers at once with started (and its run_id)")
+    rid = out.get("run_id", "")
     code, out = api("/api/connect/miro", {})
     check(out.get("started") is False and out.get("error") == "already running" and out.get("said") == messages.say("connect_busy"),
           "a second click while it runs starts nothing, and says why in a sentence")
+    check(len(rid) == 32 and out.get("run_id") == rid and api("/api/connect/miro")[1].get("run_id") == rid,
+          "#27: the POST that starts a run returns its run_id, and the second click and the status return the same one")
     s = wait_step("miro")
     link = "https://example.invalid/authorize?state=abc&redirect_uri=http%3A%2F%2Flocalhost%3A51580%2Fcallback"
     check(s["rc"] == 0, f"mcp login exited 0 on a terminal (got rc={s['rc']}, last={s['last']!r})")
@@ -467,7 +470,8 @@ try:
           "the log keeps the link's address but not its query")
 
     # install: marketplace already known -> install only, no browser
-    api("/api/connect/slack_install", {})
+    rid2 = api("/api/connect/slack_install", {})[1].get("run_id", "")
+    check(len(rid2) == 32 and rid2 != rid, "each run has an id of its own")
     s = wait_step("slack_install")
     check(s["rc"] == 0 and "plugin | install | slack@claude-plugins-official" in calls()
           and not any(c.startswith("plugin | marketplace | add") for c in calls()), "Slack plugin installed without re-adding the marketplace")
