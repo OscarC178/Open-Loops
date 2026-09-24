@@ -104,141 +104,145 @@ check(len(o.kept) <= 1000 and len(o.carry) <= 1000 and "SECRET" not in o.text(),
 # ---------------------------------------------------------------- Stop before the browser opens
 say("4. a Stop that lands before the link is read never opens the browser (both runners share this handler)")
 opened = []
-app.webbrowser.open = lambda url, *a, **k: opened.append(url) or True   # no browser in this test, ever
+real_browser, app.webbrowser.open = app.webbrowser.open, lambda url, *a, **k: opened.append(url) or True   # no browser in this test, ever
 ARGV = ["claude", "mcp", "login", "plugin:miro:miro", "--no-browser"]
-with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
-    log = Path(td) / "connect-miro.log"
-    printed = b"Visit this URL to authorize:\n  " + LINK.encode() + b"\n"
+try:  # the browser double and the run records put back however this section ends
+    with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
+        log = Path(td) / "connect-miro.log"
+        printed = b"Visit this URL to authorize:\n  " + LINK.encode() + b"\n"
 
-    me = {"running": True, "url": "", "stopped": True}   # Stop pressed before the first output poll
-    app._output_handler(me, ARGV, log, "$ claude mcp login\n")(printed)
-    check(not opened and not me["url"], "Stop before the first read: the link printed meanwhile opens nothing, and no fallback link")
-    check("SECRET" not in log.read_text(encoding="utf-8") and NOTE in log.read_text(encoding="utf-8"),
-          "...the log still shows what the CLI printed, the link redacted")
+        me = {"running": True, "url": "", "stopped": True}   # Stop pressed before the first output poll
+        app._output_handler(me, ARGV, log, "$ claude mcp login\n")(printed)
+        check(not opened and not me["url"], "Stop before the first read: the link printed meanwhile opens nothing, and no fallback link")
+        check("SECRET" not in log.read_text(encoding="utf-8") and NOTE in log.read_text(encoding="utf-8"),
+              "...the log still shows what the CLI printed, the link redacted")
 
-    me = {"running": True, "url": ""}
-    saw = app._output_handler(me, ARGV, log, "")
-    saw(printed[:-1])                  # the link printed, not yet known to be whole (no whitespace after it)
-    me["stopped"] = True               # Stop lands before the next read
-    saw(b"\nWaiting for authorization...\n")
-    check(not opened and not me["url"], "Stop after the link was printed but before the next read: no browser opens")
+        me = {"running": True, "url": ""}
+        saw = app._output_handler(me, ARGV, log, "")
+        saw(printed[:-1])                  # the link printed, not yet known to be whole (no whitespace after it)
+        me["stopped"] = True               # Stop lands before the next read
+        saw(b"\nWaiting for authorization...\n")
+        check(not opened and not me["url"], "Stop after the link was printed but before the next read: no browser opens")
 
-    me = {"running": True, "url": ""}   # second review: Stop lands after the link was taken, before the browser call
-    check(app._before_open is None, "the hook is None in the app, so it does nothing there")
-    app._before_open = lambda run: run.update(stopped=True)
-    try:
+        me = {"running": True, "url": ""}   # second review: Stop lands after the link was taken, before the browser call
+        check(app._before_open is None, "the hook is None in the app, so it does nothing there")
+        app._before_open = lambda run: run.update(stopped=True)
+        try:
+            app._output_handler(me, ARGV, log, "")(printed)
+        finally:
+            app._before_open = None
+        check(not opened and not me["url"] and not me.get("opening"),
+              "Stop between taking the link and opening it: the last check under the lock sees it, no browser opens")
+
+        me = {"running": True, "url": ""}
+        saw = app._output_handler(me, ARGV, log, "")
+        saw(printed)
+        check(me.get("opening") is False and me.get("link_opened") is True,
+              "a dispatch that went ahead is cleared once the browser call returned, and recorded as link_opened")
+        saw(b"again " + LINK.encode() + b"\n")
+        check(opened == [LINK] and me["url"] == LINK, "a run nobody stopped: the link is opened, once")
+
+        me = {"running": True, "url": ""}   # third review: a browser call that raises still clears "opening"
+        real_open, app.webbrowser.open = app.webbrowser.open, lambda url, *a, **k: (_ for _ in ()).throw(OSError("no browser"))
+        try:
+            app._output_handler(me, ARGV, log, "")(printed)
+            raise SystemExit("FAIL: the browser's error was swallowed")
+        except OSError:
+            pass
+        finally:
+            app.webbrowser.open = real_open
+        check(me.get("opening") is False and not me.get("link_opened"), "a browser call that raised: opening cleared, nothing recorded as opened")
+
+        # a Stop that lands while the browser call is under way waits for it (bounded) before it answers
+        import threading  # noqa: E402
+        app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R1"}
+        seen = {}
+
+        def slow_open(url, *a, **k):
+            t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R1"), at_reply=dict(me)))
+            t.start()
+            for _ in range(100):   # until the Stop has marked the run (it then waits for "opening" to clear)
+                if me.get("stopped"):
+                    break
+                time.sleep(0.01)
+            seen["t"] = t
+            opened.append(url)
+            return True
+        real_open, app.webbrowser.open = app.webbrowser.open, slow_open
+        try:
+            app._output_handler(me, ARGV, log, "")(printed)
+        finally:
+            app.webbrowser.open = real_open
+        seen["t"].join(5)
+        check(seen["stop"][0] == "stopped" and seen["at_reply"].get("opening") is False and seen["at_reply"].get("link_opened") is True,
+              "Stop during the browser call: it waits for the call to return, then sees the tab recorded as opened")
+        check(seen["stop"][2] == "yes", "...and its reply says a tab had opened (tab_opened yes), so the toast can say so")
+
+        # fourth review: a browser call that outlasts the Stop's wait and then fails is "maybe" while it runs, never "yes"
+        wait0, app.STOP_OPENING_WAIT_S = app.STOP_OPENING_WAIT_S, 0.3   # the wait shortened; the call takes longer
+        app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R3"}
+        seen.clear()
+
+        def slower_false(url, *a, **k):
+            t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R3")))
+            t.start()
+            t.join(5)                     # the Stop's wait runs out while this call is still under way
+            seen["during"] = app._tab_state(me)
+            return False                  # ...and then the browser says it could not open the link
+        real_open, app.webbrowser.open = app.webbrowser.open, slower_false
+        try:
+            app._output_handler(me, ARGV, log, "")(printed)
+        finally:
+            app.webbrowser.open, app.STOP_OPENING_WAIT_S = real_open, wait0
+        check(seen["stop"][2] == "maybe" and seen["during"] == "maybe" and app._tab_state(me) == "no" and not me.get("link_opened"),
+              f"a call still under way when the Stop's wait ends is 'maybe'; once it returns False, 'no', never 'yes' ({seen['stop'][2]}, {app._tab_state(me)})")
+
+        app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R4"}   # ...and a call that raises: "no"
+        seen.clear()
+
+        def raising(url, *a, **k):
+            t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R4")))
+            t.start()
+            for _ in range(100):
+                if me.get("stopped"):
+                    break
+                time.sleep(0.01)
+            seen["t"] = t
+            raise OSError("no browser")
+        real_open, app.webbrowser.open = app.webbrowser.open, raising
+        try:
+            app._output_handler(me, ARGV, log, "")(printed)
+        except OSError:
+            pass
+        finally:
+            app.webbrowser.open = real_open
+        seen["t"].join(5)
+        check(seen["stop"][2] == "no" and app._tab_state(me) == "no", f"a browser call that raises during a Stop: 'no' ({seen['stop'][2]})")
+
+        app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R2"}   # a Stop before the last check
+        n = len(opened)
+        app._before_open = lambda run: seen.update(early=app.stop_connect("miro", "R2"))
+        try:
+            app._output_handler(me, ARGV, log, "")(printed)
+        finally:
+            app._before_open = None
+        check(seen["early"][0] == "stopped" and seen["early"][2] == "no" and len(opened) == n,
+              "Stop before the last check: tab_opened no, and no tab opened")
+        app.connects.pop("miro", None)
+        opened.clear()
+        opened.clear()
+        me = {"running": True, "url": ""}
+        app._output_handler(me, ["claude", "auth", "login"], log, "")(printed)
+        check(not opened and me["url"] == LINK, "a CLI not told --no-browser opens its own: the link is only kept for the page")
+        opened.clear()
+        app.quit_requested = True
+        me = {"running": True, "url": ""}
         app._output_handler(me, ARGV, log, "")(printed)
-    finally:
-        app._before_open = None
-    check(not opened and not me["url"] and not me.get("opening"),
-          "Stop between taking the link and opening it: the last check under the lock sees it, no browser opens")
-
-    me = {"running": True, "url": ""}
-    saw = app._output_handler(me, ARGV, log, "")
-    saw(printed)
-    check(me.get("opening") is False and me.get("link_opened") is True,
-          "a dispatch that went ahead is cleared once the browser call returned, and recorded as link_opened")
-    saw(b"again " + LINK.encode() + b"\n")
-    check(opened == [LINK] and me["url"] == LINK, "a run nobody stopped: the link is opened, once")
-
-    me = {"running": True, "url": ""}   # third review: a browser call that raises still clears "opening"
-    real_open, app.webbrowser.open = app.webbrowser.open, lambda url, *a, **k: (_ for _ in ()).throw(OSError("no browser"))
-    try:
-        app._output_handler(me, ARGV, log, "")(printed)
-        raise SystemExit("FAIL: the browser's error was swallowed")
-    except OSError:
-        pass
-    finally:
-        app.webbrowser.open = real_open
-    check(me.get("opening") is False and not me.get("link_opened"), "a browser call that raised: opening cleared, nothing recorded as opened")
-
-    # a Stop that lands while the browser call is under way waits for it (bounded) before it answers
-    import threading  # noqa: E402
-    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R1"}
-    seen = {}
-
-    def slow_open(url, *a, **k):
-        t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R1"), at_reply=dict(me)))
-        t.start()
-        for _ in range(100):   # until the Stop has marked the run (it then waits for "opening" to clear)
-            if me.get("stopped"):
-                break
-            time.sleep(0.01)
-        seen["t"] = t
-        opened.append(url)
-        return True
-    real_open, app.webbrowser.open = app.webbrowser.open, slow_open
-    try:
-        app._output_handler(me, ARGV, log, "")(printed)
-    finally:
-        app.webbrowser.open = real_open
-    seen["t"].join(5)
-    check(seen["stop"][0] == "stopped" and seen["at_reply"].get("opening") is False and seen["at_reply"].get("link_opened") is True,
-          "Stop during the browser call: it waits for the call to return, then sees the tab recorded as opened")
-    check(seen["stop"][2] == "yes", "...and its reply says a tab had opened (tab_opened yes), so the toast can say so")
-
-    # fourth review: a browser call that outlasts the Stop's wait and then fails is "maybe" while it runs, never "yes"
-    wait0, app.STOP_OPENING_WAIT_S = app.STOP_OPENING_WAIT_S, 0.3   # the wait shortened; the call takes longer
-    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R3"}
-    seen.clear()
-
-    def slower_false(url, *a, **k):
-        t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R3")))
-        t.start()
-        t.join(5)                     # the Stop's wait runs out while this call is still under way
-        seen["during"] = app._tab_state(me)
-        return False                  # ...and then the browser says it could not open the link
-    real_open, app.webbrowser.open = app.webbrowser.open, slower_false
-    try:
-        app._output_handler(me, ARGV, log, "")(printed)
-    finally:
-        app.webbrowser.open, app.STOP_OPENING_WAIT_S = real_open, wait0
-    check(seen["stop"][2] == "maybe" and seen["during"] == "maybe" and app._tab_state(me) == "no" and not me.get("link_opened"),
-          f"a call still under way when the Stop's wait ends is 'maybe'; once it returns False, 'no', never 'yes' ({seen['stop'][2]}, {app._tab_state(me)})")
-
-    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R4"}   # ...and a call that raises: "no"
-    seen.clear()
-
-    def raising(url, *a, **k):
-        t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R4")))
-        t.start()
-        for _ in range(100):
-            if me.get("stopped"):
-                break
-            time.sleep(0.01)
-        seen["t"] = t
-        raise OSError("no browser")
-    real_open, app.webbrowser.open = app.webbrowser.open, raising
-    try:
-        app._output_handler(me, ARGV, log, "")(printed)
-    except OSError:
-        pass
-    finally:
-        app.webbrowser.open = real_open
-    seen["t"].join(5)
-    check(seen["stop"][2] == "no" and app._tab_state(me) == "no", f"a browser call that raises during a Stop: 'no' ({seen['stop'][2]})")
-
-    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R2"}   # a Stop before the last check
-    n = len(opened)
-    app._before_open = lambda run: seen.update(early=app.stop_connect("miro", "R2"))
-    try:
-        app._output_handler(me, ARGV, log, "")(printed)
-    finally:
-        app._before_open = None
-    check(seen["early"][0] == "stopped" and seen["early"][2] == "no" and len(opened) == n,
-          "Stop before the last check: tab_opened no, and no tab opened")
+        app.quit_requested = False
+        check(not opened and not me["url"], "Quit pressed: no browser opens for a link read afterwards")
+finally:
+    app.webbrowser.open = real_browser
     app.connects.pop("miro", None)
-    opened.clear()
-    opened.clear()
-    me = {"running": True, "url": ""}
-    app._output_handler(me, ["claude", "auth", "login"], log, "")(printed)
-    check(not opened and me["url"] == LINK, "a CLI not told --no-browser opens its own: the link is only kept for the page")
-    opened.clear()
-    app.quit_requested = True
-    me = {"running": True, "url": ""}
-    app._output_handler(me, ARGV, log, "")(printed)
-    app.quit_requested = False
-    check(not opened and not me["url"], "Quit pressed: no browser opens for a link read afterwards")
 
 # ---------------------------------------------------------------- the raw output file (Windows keeps one per run)
 say("5. the raw output file: made private by the app, removed on every way out, a failed removal said in plain words")
@@ -329,6 +333,7 @@ try:
     check(st["last"] == messages.say("signin_private_failed"), "...and the log's last line is the plain sentence")
 finally:
     app._connect_one, agent.login_cmd, agent.connect_url, agent.name = saved
+    app.connects.pop("miro", None)   # the run's record goes too: no later section finds it
 
 # ---------------------------------------------------------------- output that is not UTF-8
 say("6. sign-in output that is not UTF-8 (a cp1252 console) still reads, and its link survives")
