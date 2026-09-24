@@ -12,8 +12,9 @@ call and exit 99 - any reach into a real install fails loudly. Any stub call fai
      list is hand-written (#60): its table must name exactly the flags install.sh's case statement accepts (read from
      the script, so the two cannot drift), and every line fits an 80-column terminal with no issue numbers in it.
      The reader of the case statement is tried on altered copies first: a spaced alternation ("--future | -f)") and
-     "(--paren)" are read, an indented "pretend)" inside a heredoc is not, and an arm it cannot read ("--quoted",
-     a glob) fails the test with the line quoted.
+     "(--paren)" are read, an indented "pretend)" inside a heredoc is not, an "esac-extra)" arm is read as an arm,
+     a heredoc ends only at its exact word, and an arm it cannot read ("--quoted", a glob, a nested case) fails the
+     test with the line quoted, never a silently shorter list.
   2. an unknown option (--bogus, a typo --isolatd, a stray word, one after a good option): exit 1, "unknown option:
      <arg>" and the usage line on stderr; nothing written, no stub called, "Paused" never printed.
   3. a value-taking option with no value (--dest last, --dest --isolated, --port last, --at ""): exit 1 the same way,
@@ -58,7 +59,7 @@ class Unparsed(Exception):
 # One case-arm head: an optional "(", alternatives such as "-h|--help" or "--future | -f" (spaces allowed around
 # "|"), each a plain word of letters, digits and dashes or the catch-all "*", then ")" and the rest of the line.
 ARM = re.compile(r"^\s*\(?\s*((?:[-\w]+|\*)(?:\s*\|\s*(?:[-\w]+|\*))*)\s*\)(.*)$")
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")   # "<<'EOF'", "<<EOF", "<<-EOF"; "<<<" is a here-string, not this
+HEREDOC = re.compile(r"<<(-?)\s*(['\"]?)(\w+)\2")   # "<<'EOF'", "<<EOF", "<<-EOF"; "<<<" is a here-string, not this
 
 
 def case_flags(sh):
@@ -67,22 +68,27 @@ def case_flags(sh):
     A small reader, not a shell parser: between `case "$1" in` and its `esac` every line, once blank lines and
     comments are left out, must be an arm head the ARM pattern reads, or a line of a multi-line arm's body up to the
     one ending in ";;". Heredoc bodies inside an arm are skipped whole, so a line in one that looks like an arm
-    ("pretend)") is never counted. Anything else raises Unparsed with the line, so a new spelling of an arm (quoted
-    patterns, globs) fails the test instead of being silently missed. The catch-all "*" is left out of the result."""
+    ("pretend)") is never counted; a heredoc ends only at a line that is exactly its word (after tabs alone for
+    "<<-"), as in bash. The loop's case ends only at a line that is exactly "esac", so an arm such as "esac-extra)"
+    is read as an arm. A nested `case` inside an arm is not followed: its ";;" and "esac" would end the outer arm and
+    loop early and silently drop the flags after it, so it raises instead. Anything else raises Unparsed with the
+    line, so a new spelling of an arm (quoted patterns, globs) fails the test instead of being silently missed. The
+    catch-all "*" is left out of the result."""
     start = sh.index("while [[ $# -gt 0 ]]")
     lines = sh[start:].splitlines()
     i = next(n for n, ln in enumerate(lines) if re.match(r'^\s*case\s+"\$1"\s+in\s*$', ln)) + 1
     flags, in_arm, heredoc = [], False, None
     for ln in lines[i:]:
         code = ln.strip()
-        if heredoc:                        # inside a heredoc body: skip until its closing word
-            if code == heredoc:
+        if heredoc:                        # inside a heredoc body: skip until its closing line, matched exactly
+            word, dash = heredoc
+            if (ln.lstrip("\t") if dash else ln) == word:
                 heredoc = None
             continue
         if not code or code.startswith("#"):
             continue
         if not in_arm:
-            if re.match(r"^esac\b", code):
+            if code == "esac":             # the whole line, never "esac-extra)" or "esac;"
                 return flags
             m = ARM.match(ln)
             if not m:
@@ -91,9 +97,11 @@ def case_flags(sh):
             body = m.group(2)
         else:
             body = ln
+        if re.search(r"(^|[\s;&|(])case\s.*\sin\b", body):   # a nested case: not followed, see the docstring
+            raise Unparsed(ln)
         h = HEREDOC.search(body.replace("<<<", ""))
         if h:
-            heredoc = h.group(2)
+            heredoc = (h.group(3), h.group(1) == "-")
         # the arm ends at ";;" (or ";&" / ";;&") at the end of a line, before any trailing comment
         in_arm = not re.search(r";(;&?|&)\s*(#.*)?$", body)
     raise Unparsed("(no esac after the option loop's case)")
@@ -209,12 +217,23 @@ try:
     got = case_flags(with_arm("        --demo)\n            cat <<'EOF'\n        pretend) not a flag\nEOF\n            shift ;;\n"))
     check(got == accepted + ["--demo"] and "pretend" not in got,
           "fixture: an indented 'pretend)' inside a heredoc is not collected; the arm around it is")
-    for bad in ('        "--quoted") shift ;;\n', "        --glob*) shift ;;\n"):
+    got = case_flags(with_arm("        esac-extra) shift ;;\n"))
+    check(got == accepted + ["esac-extra"], "fixture: an arm named 'esac-extra)' is read as an arm, not the end")
+    # "EOF " and "  EOF" do not end a <<-EOF heredoc (bash strips tabs only), so "x ;;" and "pretend2)" are still
+    # heredoc text; a reader that ended it early would collect "pretend2" or trip over the real closing line
+    got = case_flags(with_arm("        --demo2)\n            cat <<-EOF\nEOF \n  EOF\nx ;;\n        pretend2) shift ;;\n"
+                              "\t\tEOF\n            shift ;;\n"))
+    check(got == accepted + ["--demo2"],
+          "fixture: a heredoc ends only at its exact word ('EOF ' and '  EOF' do not end '<<-EOF'; tabs do)")
+    nested = "        --nested)\n            case \"$2\" in\n                a) x=1 ;;\n            esac\n            shift ;;\n"
+    for bad, what in (('        "--quoted") shift ;;\n', None), ("        --glob*) shift ;;\n", None),
+                      (nested, '            case "$2" in'), ('        --one) case "$2" in a) ;; esac; shift ;;\n', None)):
+        want = (what or bad).strip()
         try:
-            case_flags(with_arm(bad))
-            check(False, f"fixture: {bad.strip()!r} should not be readable")
+            got = case_flags(with_arm(bad))
+            check(False, f"fixture: {want!r} should fail loudly, not be read (got {got})")
         except Unparsed as e:
-            check(str(e).strip() == bad.strip(), f"fixture: {bad.strip()!r} fails the check, with the line quoted")
+            check(str(e).strip() == want, f"fixture: {want!r} fails the check, with the line quoted")
     for flag in ("--help", "-h", "--no-launch --help"):
         r = run(*flag.split())
         check(r.returncode == 0 and r.stdout.startswith("usage: bash install.sh") and "--isolated" in r.stdout

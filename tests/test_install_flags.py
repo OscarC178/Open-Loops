@@ -326,7 +326,7 @@ try:
         listed = shown.split(" and ")[0].split(", ") if shown else []
         logged = (home / "Library" / "Logs" / "OpenLoops" / "install.log").read_text()
         check(r.returncode == 0 and line.startswith(f"Left out {count} shortcuts: ") and len(listed) == 5
-              and set(listed) <= set(names) and shown.endswith(tail or listed[-1])
+              and set(listed) <= set(names) and len(set(listed)) == 5 and shown.endswith(tail or listed[-1])
               and (tail or " more" not in line) and all(n in logged for n in names),
               f"{count} shortcuts: five named on screen{tail or ''}, all {count} in the install log ({line!r})")
 
