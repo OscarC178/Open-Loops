@@ -373,9 +373,11 @@ FAILURES = {
         "what": "Open Loops couldn't open your browser at ChatGPT's apps page.",
         "fix": "Go to chatgpt.com/apps yourself, connect {service} there, then press Check again.",
         "button": None},
+    # One statement of Codex and Miro (#64): the Miro row under Codex says it, and so does the AI picker's Codex
+    # description (index.html AI_CHOICES reads this "what"), so the two can never disagree again.
     "codex_no_miro": {
-        "what": "Miro isn't available with Codex, so the Roadmap card stays off.",
-        "fix": "To use it, choose Claude under Settings, Your AI.",
+        "what": "Miro isn't available with Codex unless you added a Miro server to Codex yourself.",
+        "fix": "To use the Roadmap card, choose Claude under Settings, Your AI.",
         "button": None},
     "codex_miro_failed": {
         "what": "Codex has a Miro server but it didn't answer.",
@@ -451,6 +453,12 @@ FAILURES = {
         "button": None},
     # Who's who while its job runs. {sources} as in first_scan. It took about 3.5 minutes on a Slack-only set-up in
     # the #48 test, so "a few minutes", not "about a minute" (#54).
+    # The AI card while the new AI is checked (index.html paintSetup). Codex's check takes about 30 s against about
+    # 4 s for Claude (the #64 fresh-install check), so it says so rather than look stuck.
+    "codex_checking": {
+        "what": "Checking Codex on this computer.",
+        "fix": "This can take about half a minute.",
+        "button": None},
     "people_running": {
         "what": "Looking at who you talk to on {sources}.",
         "fix": "This usually takes a few minutes.",
@@ -504,6 +512,23 @@ FAILURES = {
         "button": None},
 }
 
+# A click on a card that the app could not save (index.html act()): "<this>: <the app's own sentence>", a verb form
+# per action (#64), never the past-tense toast label used as a verb ("Snoozed failed"). "other" is for an action
+# without its own line. The page gets this table as it is served (app.index_bytes), like FAILURES.
+ACTION_FAILED = {
+    "done": "Couldn't mark it done",
+    "reopen": "Couldn't reopen it",
+    "snooze": "Couldn't snooze that",
+    "unsnooze": "Couldn't unsnooze that",
+    "priority": "Couldn't change its priority",
+    "note": "Couldn't save the note",
+    "add_link": "Couldn't add the link",
+    "drop_link": "Couldn't remove the link",
+    "auto_off": "Couldn't turn auto-chase off",
+    "auto_on": "Couldn't turn auto-chase on",
+    "other": "Couldn't save that",
+}
+
 # What each job is called in a sentence (the page's toasts and app.py's job_failure()).
 # "refresh_slack": the refresh started by Update Slack (--slack-only), named as the button the person pressed (#50).
 JOBS = {"refresh": "The refresh", "refresh_slack": "The Slack update", "chase": "The chase", "people": "Looking at who you talk to",
@@ -554,14 +579,23 @@ def for_page(win=None, test=False):
             for k, v in FAILURES.items()}
 
 
+def _script_safe(text):
+    """JSON text made safe inside an inline <script> (see page_json)."""
+    for ch, esc in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        text = text.replace(ch, esc)
+    return text
+
+
+def page_action_failed_json():
+    """ACTION_FAILED as JSON for the page's inline <script>, escaped as page_json() does."""
+    return _script_safe(json.dumps(ACTION_FAILED, ensure_ascii=False))
+
+
 def page_json(win=None, table=None, test=False):
     """for_page() as JSON that is safe inside an inline <script>: "<", ">" and "&" become \\u escapes (a sentence
     holding "</script>" or "<!--" cannot end or change the script element), and so do U+2028 / U+2029 (line breaks
     to older JavaScript). JSON.parse and a JavaScript literal read them back as the same characters."""
-    text = json.dumps(for_page(win, test) if table is None else table, ensure_ascii=False)
-    for ch, esc in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
-        text = text.replace(ch, esc)
-    return text
+    return _script_safe(json.dumps(for_page(win, test) if table is None else table, ensure_ascii=False))
 
 
 # Why the AI process itself failed, read from its own diagnostic lines only (#25 review): the process must have exited

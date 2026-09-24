@@ -593,7 +593,9 @@ def test_copy():
 def index_bytes(table=None):
     """index.html with the page's copy of messages.py filled in, for this platform and this install (a test copy gets
     its own "not running" fix, #50), escaped for an inline <script>."""
-    return INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
+    return (INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
+            # a failed card click's verb ("Couldn't snooze that", #64)
+            .replace(b"/*OL_ACTION_FAILED*/{}", messages.page_action_failed_json().encode("utf-8"), 1))
 
 
 class H(BaseHTTPRequestHandler):
