@@ -1023,6 +1023,23 @@ if NODE:
  out.again={busy:CONN.slack.busy,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML};
  fs.writeFileSync(BIN+'/allow','');await until(()=>!(CONN.slack&&CONN.slack.busy)&&DOC.steps.find(x=>x.id==='slack').ok,30000);
  out.done={ok:DOC.steps.find(x=>x.id==='slack').ok,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML,gone:SS['ol.allowDismissed']};
+ // run ids (review of #58): every fake run below starts in the same second, so only the id tells them apart
+ const G=()=>JSON.parse(SS['ol.allowDismissed']||'{}'),S='2026-09-24T12:00:00';
+ const run=(step,id,running,extra)=>[{},Object.assign({running,rc:running?null:0,url:'https://example.invalid/'+step,started:S,step,agent:'claude'},id?{run_id:id}:{},extra||{})];
+ // (a) + (c): A's pop-up closed, the page reloads, B (same second, another id) is running: B's pop-up opens
+ CONN.gmail={busy:true,msg:'x',run:'gA'};allowOpen('gmail','gA');allowDismiss();delete CONN.gmail;out.noteA=G().gmail;
+ FAKE['/api/connect/gmail']=run('gmail','gB',true);await connectReattach();
+ out.a={open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,run:ALLOW&&ALLOW.run,busy:CONN.gmail.busy};
+ allowDismiss();out.noteB=G().gmail;
+ // ...and the same run after another reload stays closed
+ delete CONN.gmail;await connectReattach();out.sameRun={open:$('#allow_dlg').open,busy:CONN.gmail.busy};
+ // (b): run A's watcher ends while B's note is kept: A's cleanup removes only A's own note, never B's
+ allowGoneSet('miro','mB');CONN.miro={busy:true,msg:'x',run:'mA'};FAKE['/api/connect/miro']=run('miro','mA',false);
+ await connectWatch('miro',{});out.b={miro:G().miro};
+ allowGoneSet('miro','mA');CONN.miro={busy:true,msg:'x',run:'mA'};await connectWatch('miro',{});out.bOwn=G().miro===undefined;
+ // (d): a running status from an older app, with no run_id: skipped, like a run with no agent
+ delete CONN.login;FAKE['/api/connect/login']=run('login','',true);await connectReattach();
+ out.d={busy:!!(CONN.login&&CONN.login.busy),open:$('#allow_dlg').open,said:CON.filter(l=>l.includes('login is running with no run id')).length};
 """, tmp, session=out["SS"])
         ag = out["again"]
         check(ag["busy"] and not ag["open"] and '<span class="spin"></span>' in ag["rows"] and "Open the sign-in page" in ag["rows"],
@@ -1030,6 +1047,14 @@ if NODE:
         d = out["done"]
         check(d["ok"] is True and not d["open"] and "spin" not in d["rows"] and d["gone"] == "{}",
               "clicking Allow finishes it as if pressed on this page: the row turns green, and the closed pop-up's note goes with the run")
+        check(out["noteA"] == "gA" and out["a"] == {"open": True, "step": "gmail", "run": "gB", "busy": True},
+              f"(a) A's pop-up closed, then a reload finds B running: B is another run (same second, other id) and its pop-up opens ({out['a']})")
+        check(out["noteB"] == "gB" and out["sameRun"] == {"open": False, "busy": True},
+              "(c) runs started in the same second stay distinct: B's own close is kept for B, and a reload during B stays closed")
+        check(out["b"] == {"miro": "mB"} and out["bOwn"],
+              f"(b) run A's watcher ending removes only A's note: B's survives, A's own goes ({out['b']})")
+        check(out["d"] == {"busy": False, "open": False, "said": 1},
+              f"(d) a running status with no run_id (an older Open Loops) is not picked up, like one with no agent ({out['d']})")
     finally:
         quit_app(port, srv)   # a failure part-way can leave the fake sign-in waiting: the app's own quit stops it
         stop(srv)
