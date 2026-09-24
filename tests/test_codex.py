@@ -50,6 +50,15 @@ check("- gmail.search_emails (the instructions below may call it search_threads)
       "the preamble lists only the job's tools, by connector name, with the short name the prompts use")
 check("Use no tools at all" in agent.codex_preamble([]), "a job with no tools is told to use none")
 check("TOOLS_SEEN:" in pre and "TOOLS_SEEN" not in agent.codex_preamble([]), "a job with tools is asked for a TOOLS_SEEN line")
+# #42: the deferred connector tools are only there once the model looks, so the look-up is the first thing it is told,
+# ahead of the tool list and the job's own text; a job with no tools is not sent looking for any.
+task = "Refresh the open loops."
+full = pre + task
+at = full.find(agent.CODEX_LOOKUP_FIRST)
+check("ALL_TOOLS.map(x => x.name)" in agent.CODEX_LOOKUP_FIRST and "until you have done this look-up" in agent.CODEX_LOOKUP_FIRST
+      and 0 < at < full.find("The only tools you may call are:") < full.find("[End of the Open Loops note") < full.find(task)
+      and agent.CODEX_LOOKUP_FIRST not in agent.codex_preamble([]),
+      "the Codex preamble's first step is to look up the full tool list, before the tool list and any task text")
 for said, want_text, want_seen in (
         ("OK\nTOOLS_SEEN: gmail.search_emails, slack.slack_read_channel", "OK", {"gmail.search_emails", "slack.slack_read_channel"}),
         ("OK\n**TOOLS_SEEN:** none\n", "OK", set()),
