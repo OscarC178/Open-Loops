@@ -595,14 +595,16 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/api/state":
             from . import standing
             # the to-do file can live on a synced or mounted folder: read it outside the lock, on a plain read of
-            # state.json; only the vault_seen it changed is then written, under the lock, onto a fresh read
+            # state.json; only the vault_seen keys this read changed are then applied, under the lock, onto a fresh
+            # read (#61): two overlapping polls each keep the other's first_seen / changed_at
             s = dict(load())
+            seen_before = s.get("vault_seen") or {}
             vault_loops, dirty = standing.as_loops(s)
             if dirty:
                 with state_lock():
                     fresh = load()
-                    fresh["vault_seen"] = s.get("vault_seen") or {}
-                    save(fresh)
+                    if standing.merge_seen(fresh, seen_before, s.get("vault_seen") or {}):
+                        save(fresh)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
                         "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
