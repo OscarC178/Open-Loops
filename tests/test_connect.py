@@ -406,6 +406,8 @@ if which == "stop":
     assert app.stop_connect("gmail", app.connects["gmail"]["run_id"])[0] == "stopped"
     ready.set()
     assert settle("gmail") and not os.path.exists(marker) and not app.connect_procs, "the worker started its command after Stop"
+    last = app.connect_log("gmail").read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert last == "stopped: Stop this sign-in was pressed", "a stop before the first command left no line in the log: " + last
     # the next run of that step is a new run, not a stopped one
     agent.login_cmd = lambda step, *a: [["true"]]
     ok, why = app.run_connect("gmail")

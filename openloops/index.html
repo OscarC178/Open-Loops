@@ -527,11 +527,13 @@ async function loadState(){const my=++ST_SEQ,r=await api('/api/state');if(my<ST_
  J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||'';conBoundary(INST)}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
 // #67: the Console is kept across reloads and restarts, so its "no answer" lines from while the app was not running
 // stayed until Clear. The first answer from a new start of the app (its /api/state "instance", new at every start)
-// adds one line, "— Open Loops started —": what is above it is from before. Nothing is deleted. Once per instance:
-// remembered in this browser, and in memory when the browser keeps nothing.
-const CON_INST='ol.console.instance';let conInstSeen='';
-function conBoundary(inst){if(!inst||inst===conInstSeen)return;conInstSeen=inst;let was='';try{was=localStorage.getItem(CON_INST)||''}catch(e){}
- if(was===inst)return;try{localStorage.setItem(CON_INST,inst)}catch(e){}clog(LABEL.console_started)}
+// adds one line, "— Open Loops started — (<first 8 of the instance>)": what is above it is from before. Nothing is
+// deleted. Whether this start is marked is read from the Console itself, its last mark (review of #68): the mark lives
+// in the buffer that is saved, so another tab saving its own copy cannot leave the saved Console without one.
+let conInstSeen='';
+function conBoundary(inst){if(!inst||inst===conInstSeen)return;conInstSeen=inst;const mark=LABEL.console_started+' ('+inst.slice(0,8)+')';
+ for(let i=CON.length-1;i>=0;i--)if(CON[i].includes(LABEL.console_started)){if(CON[i].endsWith(mark))return;break}
+ clog(mark)}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;

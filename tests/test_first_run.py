@@ -1263,7 +1263,7 @@ if NODE:
     waiting = lambda: subprocess.run(["pgrep", "-f", str(tmp / "bin" / "claude") + ".*mcp login"], capture_output=True).returncode == 0
     try:
         out = setup_js(port, SWEEP_JS + """
- await boot();await tick();const started=CON.filter(l=>l===LABEL.console_started).length;
+ await boot();await tick();const marks=()=>CON.filter(l=>l.startsWith(LABEL.console_started)).length,started=marks();
  // #67 review: a row pressed here is busy before the app has said which run it is: its Stop waits for that
  CONN.gmail={busy:true,msg:'x'};out.norun=connectBtn({connect:'gmail'},false);CONN.gmail.run='r1';out.withrun=connectBtn({connect:'gmail'},false);delete CONN.gmail;
  const w=connectStep('slack');await until(()=>CONN.slack&&CONN.slack.busy&&CONN.slack.url,20000);
@@ -1300,9 +1300,9 @@ if NODE:
  out.watchStop={busy:!!(CONN.gmail&&CONN.gmail.busy),msg:(CONN.gmail||{}).msg||'',note:allowGone().gmail||'',calls:CALLS.slice(n4).map(c=>c.split(' ')[0])};
  delete FAKE['/api/connect/gmail'];
  // the Console's restart mark: once per app start, whatever polls in between; a new start adds one after the old lines
- await loadState();await loadState();out.once=[started,CON.filter(l=>l===LABEL.console_started).length];
+ await loadState();await loadState();out.once=[started,marks()];
  CON.push('no answer from /api/state: fetch failed');const st=await api('/api/state');
- FAKE['/api/state']=[{},Object.assign({},st,{instance:'another-start'})];await loadState();delete FAKE['/api/state'];
+ FAKE['/api/state']=[{},Object.assign({},st,{instance:'another-start-0000'})];await loadState();delete FAKE['/api/state'];
  out.restart=CON.slice(-2);await loadState();out.back=CON[CON.length-1];""", tmp)
         check(f"<button onclick=\"connectStop('gmail')\" disabled>{messages.LABELS['stop_signin']}</button>" in out["norun"]
               and f"<button onclick=\"connectStop('gmail')\">{messages.LABELS['stop_signin']}</button>" in out["withrun"],
@@ -1341,8 +1341,8 @@ if NODE:
         check(out["status"]["running"] is False and out["status"].get("stopped") is True and not waiting(),
               f"the app says the run is over (stopped), and the fake sign-in's process is gone ({out['status'].get('running')}, {out['status'].get('stopped')})")
         check(out["once"] == [1, 1], f"#67: the Console's restart mark is written once for this app start, however often it polls ({out['once']})")
-        check(out["restart"] == ["no answer from /api/state: fetch failed", messages.LABELS["console_started"]]
-              and out["back"] == messages.LABELS["console_started"],
+        check(out["restart"] == ["no answer from /api/state: fetch failed", messages.LABELS["console_started"] + " (another-)"]
+              and out["back"].startswith(messages.LABELS["console_started"] + " (") and out["back"] != out["restart"][1],
               f"#67: a new start of the app (another instance) adds the mark after the old 'no answer' lines, which are kept ({out['restart']})")
     finally:
         quit_app(port, srv)

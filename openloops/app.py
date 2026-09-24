@@ -412,8 +412,6 @@ def _connect_one(step, argv, log, deadline):
     finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
         os.close(m)
         rc = _reap(step, p, 5)
-    if not tail and connects[step].get("stopped"):  # #67: the Console and /api/diag say why it ended
-        tail = "\nstopped: Stop this sign-in was pressed\n"
     if tail:
         with open(log, "a", encoding="utf-8") as f:
             f.write(tail)
@@ -437,7 +435,7 @@ def run_connect(step):
     log = connect_log(step)
 
     def go():
-        rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
+        rc, deadline, me = -1, time.time() + CONNECT_TIMEOUT_S, connects[step]  # me: this run's record
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
             url = agent.connect_url(step, who)
             if url:  # a page to open, not a command: done once the browser has it; the user presses Check again after
@@ -456,7 +454,13 @@ def run_connect(step):
         finally:
             doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
             doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
-            connects[step].update(running=False, rc=rc)
+            if me.get("stopped"):  # #67: however it was stopped (mid-command, between two, before the first, Windows),
+                try:               # the log's last line says why, for the Console and /api/diag
+                    with open(log, "a", encoding="utf-8") as f:
+                        f.write("\nstopped: Stop this sign-in was pressed\n")
+                except OSError:
+                    pass
+            me.update(running=False, rc=rc)
 
     try:  # anything failing between the claim and the worker would leave the step "already running" for good
         log.parent.mkdir(parents=True, exist_ok=True)
