@@ -8,16 +8,23 @@ default install would have something to copy and a morning refresh to pause. The
 regresses: PATH is only a folder of stubs plus /usr/bin and /bin (never the inherited PATH, so no Homebrew), where
 launchctl, curl, rsync, open, osascript and lsof log the call and succeed, and brew, python3, pip3 and git log the
 call and exit 99 - any reach into a real install fails loudly. Any stub call fails the test. Checks:
-  1. --help and -h: exit 0, print the usage line and the flag list; nothing written anywhere, no stub called.
+  1. --help and -h: exit 0, print the usage line and the flag list; nothing written anywhere, no stub called. The
+     list is hand-written (#60): its table must name exactly the flags install.sh's case statement accepts (read from
+     the script, so the two cannot drift), and every line fits an 80-column terminal with no issue numbers in it.
+     The reader of the case statement is tried on altered copies first: a spaced alternation ("--future | -f)") and
+     "(--paren)" are read, an indented "pretend)" inside a heredoc is not, an "esac-extra)" arm is read as an arm,
+     a heredoc ends only at its exact word, and an arm it cannot read ("--quoted", a glob, a nested case) fails the
+     test with the line quoted, never a silently shorter list.
   2. an unknown option (--bogus, a typo --isolatd, a stray word, one after a good option): exit 1, "unknown option:
      <arg>" and the usage line on stderr; nothing written, no stub called, "Paused" never printed.
   3. a value-taking option with no value (--dest last, --dest --isolated, --port last, --at ""): exit 1 the same way,
      and no folder named "--isolated" appears where it was run.
-  4. setup.ps1 (static, PowerShell cannot run here): takes -Help, and it exits before the banner and any check.
+  4. setup.ps1 (static, PowerShell cannot run here): takes -Help, and it exits before the banner and any check; its
+     hand-written list has a row for every parameter in param() (#60), under 80 columns, no issue numbers.
   5. accepted: --name "" (it means "ask for the name"), values with spaces; refused: --dest "" (an empty
      --dest must never mean the copy you use), --, --at 25:00.
 """
-import hashlib, os, plistlib, shutil, stat, subprocess, sys, tempfile, time
+import hashlib, os, plistlib, re, shutil, stat, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -34,6 +41,79 @@ def check(cond, what):
     say(f"ok   {what}")
 
 
+def table_flags(text):
+    """The options named in a help text's table (#60): rows are indented lines starting with "-", the first column
+    ends at the first run of 2+ spaces, and may hold several spellings ("-h, --help"); "--at HH:MM" names --at."""
+    out = []
+    for ln in text.splitlines():
+        if re.match(r"^ +-", ln):
+            first = re.split(r" {2,}", ln.strip(), maxsplit=1)[0]
+            out += [part.split()[0] for part in first.split(", ")]
+    return out
+
+
+class Unparsed(Exception):
+    """A line in install.sh's option loop that case_flags() cannot read: the drift check must fail, not guess."""
+
+
+# One case-arm head: an optional "(", alternatives such as "-h|--help" or "--future | -f" (spaces allowed around
+# "|"), each a plain word of letters, digits and dashes or the catch-all "*", then ")" and the rest of the line.
+ARM = re.compile(r"^\s*\(?\s*((?:[-\w]+|\*)(?:\s*\|\s*(?:[-\w]+|\*))*)\s*\)(.*)$")
+HEREDOC = re.compile(r"<<(-?)\s*(['\"]?)(\w+)\2")   # "<<'EOF'", "<<EOF", "<<-EOF"; "<<<" is a here-string, not this
+
+
+def case_flags(sh):
+    """The flags install.sh's option loop accepts, read from its `case "$1" in ... esac` (#60 review).
+
+    A small reader, not a shell parser: between `case "$1" in` and its `esac` every line, once blank lines and
+    comments are left out, must be an arm head the ARM pattern reads, or a line of a multi-line arm's body up to the
+    one ending in ";;". Heredoc bodies inside an arm are skipped whole, so a line in one that looks like an arm
+    ("pretend)") is never counted; a heredoc ends only at a line that is exactly its word (after tabs alone for
+    "<<-"), as in bash. The loop's case ends only at a line that is exactly "esac", or "esac" then a space and a
+    comment ("esac # end of options"), so an arm such as "esac-extra)" is read as an arm. A nested `case` inside an
+    arm is not followed: its ";;" and "esac" would end the outer arm and loop early and silently drop the flags after
+    it, so it raises instead. Anything else raises Unparsed with the line, so a new spelling of an arm (quoted
+    patterns, globs) fails the test instead of being silently missed. The catch-all "*" is left out of the result."""
+    start = sh.index("while [[ $# -gt 0 ]]")
+    lines = sh[start:].splitlines()
+    i = next(n for n, ln in enumerate(lines) if re.match(r'^\s*case\s+"\$1"\s+in\s*$', ln)) + 1
+    flags, in_arm, heredoc = [], False, None
+    for ln in lines[i:]:
+        code = ln.strip()
+        if heredoc:                        # inside a heredoc body: skip until its closing line, matched exactly
+            word, dash = heredoc
+            if (ln.lstrip("\t") if dash else ln) == word:
+                heredoc = None
+            continue
+        if not code or code.startswith("#"):
+            continue
+        if not in_arm:
+            if re.fullmatch(r"esac(?:\s+#.*)?", code):   # the whole line bar a comment, never "esac-extra)" or "esac;"
+                return flags
+            m = ARM.match(ln)
+            if not m:
+                raise Unparsed(ln)
+            flags += [f for f in re.split(r"\s*\|\s*", m.group(1)) if f != "*"]
+            body = m.group(2)
+        else:
+            body = ln
+        if re.search(r"(^|[\s;&|(])case\s.*\sin\b", body):   # a nested case: not followed, see the docstring
+            raise Unparsed(ln)
+        h = HEREDOC.search(body.replace("<<<", ""))
+        if h:
+            heredoc = (h.group(3), h.group(1) == "-")
+        # the arm ends at ";;" (or ";&" / ";;&") at the end of a line, before any trailing comment
+        in_arm = not re.search(r";(;&?|&)\s*(#.*)?$", body)
+    raise Unparsed("(no esac after the option loop's case)")
+
+
+def plain_lines(text, what):
+    """Every line of a help text fits an 80-column terminal and carries no issue number such as (#36) (#60)."""
+    long = [ln for ln in text.splitlines() if len(ln) >= 80]
+    check(not long, f"{what}: every line under 80 columns ({long!r})")
+    check(not re.search(r"#\d", text), f"{what}: no issue numbers in it")
+
+
 # ---------- 4 first: the static setup.ps1 check runs on every platform ----------
 say("4. setup.ps1 -Help (static: PowerShell cannot run here)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
@@ -42,7 +122,13 @@ help_at = ps.find("if ($Help)")
 check("[switch]$Help" in ps[param_at:ps.index(")\n", param_at) + 1], "setup.ps1's param() takes -Help")
 check(0 < help_at < ps.index("Open Loops - setup\"") and help_at < ps.index("$At -notmatch"),
       "-Help is handled before the banner and the first check")
-check("exit 0" in ps[help_at:help_at + 600], "-Help exits 0")
+block_end = ps.index("\n}\n", help_at)   # the end of the if ($Help) { ... } block
+check(0 < ps.find("exit 0", help_at) < block_end, "-Help exits 0")
+ps_help = ps[ps.index("@'", help_at) + 2:ps.index("'@", help_at)].strip("\n")   # the here-string it prints
+params = re.findall(r"\$(\w+)", ps[param_at:ps.index(")\n", param_at)])   # every parameter param() takes
+check(ps_help.startswith("usage: setup.ps1") and sorted(table_flags(ps_help)) == sorted(f"-{n}" for n in params),
+      f"setup.ps1 -Help lists exactly the parameters param() takes ({params})")
+plain_lines(ps_help, "setup.ps1 -Help")
 
 if sys.platform == "win32":
     print("SKIP: install.sh is the Mac installer - setup.ps1 was checked statically above")
@@ -109,11 +195,58 @@ try:
               + ("" if not calls.exists() else f" (called: {calls.read_text().strip()!r})"))
 
     say("1. --help and -h")
+    # the flags the parser accepts, read from install.sh's own case statement (case_flags above): "-h|--help" split
+    # into its spellings, the catch-all "*" left out. A line it cannot read fails here, quoted.
+    sh = (REPO / "install.sh").read_text(encoding="utf-8")
+    try:
+        accepted = case_flags(sh)
+    except Unparsed as e:
+        check(False, f"install.sh's option loop has a line the drift check cannot read: {str(e).strip()!r}")
+    check(len(accepted) >= 10 and "-h" in accepted and "--isolated" in accepted,
+          f"read the accepted flags from install.sh's case statement ({accepted})")
+    # the reader on altered copies of the script (in memory only, nothing is run): a new arm in another spelling must
+    # show up (so the table check below would fail), a heredoc line must not, and an arm it cannot read must raise
+    loop_at = sh.index("while [[ $# -gt 0 ]]")   # the option loop's own "*)", not need_value()'s earlier one
+    catch_all = loop_at + re.search(r"^\s*\*\)", sh[loop_at:], re.M).start()
+    def with_arm(text):
+        return sh[:catch_all] + text + sh[catch_all:]
+    got = case_flags(with_arm("        --future | -f) shift ;;\n"))
+    check(got == accepted + ["--future", "-f"], f"fixture: a spaced alternation '--future | -f)' is read ({got[-2:]})")
+    got = case_flags(with_arm("        (--paren) shift ;;\n"))
+    check(got[-1] == "--paren", "fixture: '(--paren)' is read")
+    got = case_flags(with_arm("        --demo)\n            cat <<'EOF'\n        pretend) not a flag\nEOF\n            shift ;;\n"))
+    check(got == accepted + ["--demo"] and "pretend" not in got,
+          "fixture: an indented 'pretend)' inside a heredoc is not collected; the arm around it is")
+    got = case_flags(with_arm("        esac-extra) shift ;;\n"))
+    check(got == accepted + ["esac-extra"], "fixture: an arm named 'esac-extra)' is read as an arm, not the end")
+    # "esac # end of options" is a plain esac to bash (a comment starts at a word), so it ends the loop's case too
+    loop_esac = loop_at + re.search(r"^\s*esac\s*$", sh[loop_at:], re.M).end()
+    got = case_flags(sh[:loop_esac] + " # end of options" + sh[loop_esac:])
+    check(got == accepted, "fixture: 'esac # end of options' ends the case like a bare 'esac'")
+    # "EOF " and "  EOF" do not end a <<-EOF heredoc (bash strips tabs only), so "x ;;" and "pretend2)" are still
+    # heredoc text; a reader that ended it early would collect "pretend2" or trip over the real closing line
+    got = case_flags(with_arm("        --demo2)\n            cat <<-EOF\nEOF \n  EOF\nx ;;\n        pretend2) shift ;;\n"
+                              "\t\tEOF\n            shift ;;\n"))
+    check(got == accepted + ["--demo2"],
+          "fixture: a heredoc ends only at its exact word ('EOF ' and '  EOF' do not end '<<-EOF'; tabs do)")
+    nested = "        --nested)\n            case \"$2\" in\n                a) x=1 ;;\n            esac\n            shift ;;\n"
+    for bad, what in (('        "--quoted") shift ;;\n', None), ("        --glob*) shift ;;\n", None),
+                      (nested, '            case "$2" in'), ('        --one) case "$2" in a) ;; esac; shift ;;\n', None)):
+        want = (what or bad).strip()
+        try:
+            got = case_flags(with_arm(bad))
+            check(False, f"fixture: {want!r} should fail loudly, not be read (got {got})")
+        except Unparsed as e:
+            check(str(e).strip() == want, f"fixture: {want!r} fails the check, with the line quoted")
     for flag in ("--help", "-h", "--no-launch --help"):
         r = run(*flag.split())
         check(r.returncode == 0 and r.stdout.startswith("usage: bash install.sh") and "--isolated" in r.stdout
               and "--dest DIR" in r.stdout and "set -e" not in r.stdout, f"{flag}: exit 0, usage and the flag list")
         check("Checking Python" not in r.stdout and "Installing Open Loops" not in r.stdout, f"{flag}: no install started")
+        check(sorted(table_flags(r.stdout)) == sorted(accepted),
+              f"{flag}: the table lists every flag the parser accepts, and no other ({table_flags(r.stdout)})")
+        plain_lines(r.stdout, flag)
+        check("OPENLOOPS_DEST" in r.stdout and "OPENLOOPS_ISOLATED" in r.stdout, f"{flag}: the two environment settings")
         untouched(flag)
 
     say("2. unknown options")

@@ -15,7 +15,8 @@ pretend Open Loops servers listed in a file, and says nothing is running anywher
         unchanged; its job (found by parsing the plist) unloaded first, then registered for the new place at
         the saved time; the #25 sentence; no deletion advice, no staging folder, no marker file.
      b. rerun: nothing copied again, even if the old copy changed since; an update keeps every personal file.
-     c. symbolic links in the old folder are skipped and listed, never followed.
+     c. symbolic links in the old folder are skipped and listed, never followed; the sentences are plain and
+        singular or plural as the count says; five named on screen, a sixth as "and 1 more", all in the log (#60).
      d. a job that is loaded and will not unload: refused, nothing copied.
      e. lsof missing, or lsof failing: refused, nothing copied.
      f. servers: only one that says "app": "openloops" with the old root is asked to quit (8767 here, not 8765);
@@ -23,6 +24,9 @@ pretend Open Loops servers listed in a file, and says nothing is running anywher
      g. something still working inside the old folder: refused, then copied once it has stopped.
      h. ports outside 1024-65535 refused before anything is written.
   5. register-task.sh --dest DIR writes a job for DIR.
+  6. The install folder is named once on screen (#60), for a default install, --no-app, --isolated and --no-launch,
+     both fresh and as an in-place update run from the installed copy's own install.sh. A stub nohup means the
+     default run starts no server; the default place is under the throwaway HOME.
 """
 import json, os, plistlib, shutil, socket, stat, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
@@ -125,11 +129,12 @@ def snapshot(root):
     return {f: (root / f).read_bytes() for f in PERSONAL}
 
 
-def install(home, *args, extra_env=None):
+def install(home, *args, extra_env=None, script=None):
+    """install.sh (or `script`, an installed copy's own install.sh for an in-place update) in a throwaway HOME."""
     env = {k: v for k, v in os.environ.items() if k not in ("OPENLOOPS_PORT", "OPENLOOPS_DEST")}
     env.update(HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}", BROWSER="/usr/bin/true")
     env.update(extra_env or {})
-    return subprocess.run(["bash", str(REPO / "install.sh"), *args], env=env, capture_output=True, text=True,
+    return subprocess.run(["bash", str(script or REPO / "install.sh"), *args], env=env, capture_output=True, text=True,
                           timeout=180, stdin=subprocess.DEVNULL)
 
 
@@ -284,14 +289,46 @@ try:
     os.symlink(old / "config.json", old / "state" / "grok-home" / "notes.md")   # not one of agent.py's three: generic wording
     new = home / "Library" / "Application Support" / "OpenLoops"
     r = install(home, "--no-app", "--no-launch", "--no-task")
-    check(r.returncode == 0 and "Left out 3 shortcut(s)" in r.stdout and "private/hosts-link" in r.stdout
-          and ".grok/etc-link" in r.stdout and "state/grok-home/notes.md" in r.stdout,
+    # #60: plain words. The others by their path in the old folder, "shortcuts" spelt out (no "shortcut(s)"), and
+    # that they stay where they were; the Grok ones as "your Grok sign-in" with a file count, no file names or "link(s)"
+    check(r.returncode == 0 and "Left out 3 shortcuts: " in r.stdout and "private/hosts-link" in r.stdout
+          and ".grok/etc-link" in r.stdout and "state/grok-home/notes.md" in r.stdout
+          and "Open Loops did not copy them; they are still at their old places." in r.stdout
+          and "(s)" not in r.stdout and "by hand" not in r.stdout,
           "the other links reported by their path, the unrelated one under grok-home among them")
-    check("Left out 3 link(s) to your Grok sign-in (auth.json, trusted_folders.toml, trusted_folders.toml.lock)" in r.stdout
-          and "signing in again inside the app" in r.stdout, "the grok-home links named, with the easy fix")
+    check("Left out your Grok sign-in (3 files). Nothing of yours is lost: if Grok asks you to sign in, sign in again "
+          "inside the app." in r.stdout and "auth.json" not in r.stdout,
+          "the grok-home links as 'your Grok sign-in (3 files)', with the easy fix")
     check(not os.path.lexists(new / "private" / "hosts-link") and not os.path.lexists(new / ".grok" / "etc-link")
           and not (new / ".grok" / "etc-link" / "hosts").exists(), "neither copied nor followed")
     check((new / "private" / "notes.md").read_text() == "mine\n", "the real files next to them were copied")
+    # one of each: the singular wording, never "1 shortcuts" or "(1 files)" (#60)
+    home = tmp / "home3c"
+    old = old_install(home, "Single")
+    os.symlink("/etc/hosts", old / "private" / "hosts-link")
+    (old / "state" / "grok-home").mkdir(parents=True, exist_ok=True)
+    os.symlink(home / ".grok" / "auth.json", old / "state" / "grok-home" / "auth.json")
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 0 and "Left out 1 shortcut: private/hosts-link. Open Loops did not copy it; it is still at "
+          "its old place." in r.stdout and "Left out your Grok sign-in (1 file)." in r.stdout,
+          f"one link of each kind: singular sentences ({r.stdout[-400:]!r})")
+    # the on-screen cut-off (#60 review): five shortcuts are all named; a sixth becomes "and 1 more", and the
+    # install log still lists every one of them
+    for count, tail in ((5, ""), (6, " and 1 more")):
+        home = tmp / f"home3-{count}"
+        old = old_install(home, "Many")
+        names = [f"private/link{i}" for i in range(count)]
+        for n in names:
+            os.symlink("/etc/hosts", old / n)
+        r = install(home, "--no-app", "--no-launch", "--no-task")
+        line = next((ln.strip() for ln in r.stdout.splitlines() if "shortcuts:" in ln), "")
+        shown = line.split("shortcuts: ", 1)[1].split(". Open Loops", 1)[0] if line else ""
+        listed = shown.split(" and ")[0].split(", ") if shown else []
+        logged = (home / "Library" / "Logs" / "OpenLoops" / "install.log").read_text()
+        check(r.returncode == 0 and line.startswith(f"Left out {count} shortcuts: ") and len(listed) == 5
+              and set(listed) <= set(names) and len(set(listed)) == 5 and shown.endswith(tail or listed[-1])
+              and (tail or " more" not in line) and all(n in logged for n in names),
+              f"{count} shortcuts: five named on screen{tail or ''}, all {count} in the install log ({line!r})")
 
     say("4d. the old job is loaded and will not unload: refused")
     home = tmp / "home6"
@@ -531,6 +568,37 @@ try:
     r = install(home, "--no-app", "--no-launch", "--no-task")
     check(r.returncode == 0 and snapshot(home / "Library" / "Application Support" / "OpenLoops") == before and old.exists(),
           "run again once it has stopped: copied, old folder still there")
+
+    say("6. the install folder is named once on screen, fresh and in place (#60)")
+    # A bin in front of the usual stubs: nohup logs and starts nothing, so the default run's "Opening Open Loops"
+    # step starts no server (on 8765 or anywhere); killall, defaults and osascript fail loudly if anything reaches
+    # for the real Dock or a dialog. The default place is under the throwaway HOME; launchctl is the stub above.
+    quiet = tmp / "bin-quiet"
+    quiet.mkdir()
+    nohup_log = tmp / "nohup.log"
+    script(quiet / "nohup", f'#!/bin/bash\necho "$*" >> "{nohup_log}"\nexit 0\n')
+    for tool in ("killall", "defaults", "osascript"):
+        script(quiet / tool, f'#!/bin/bash\necho "{tool} $*" >> "{nohup_log}.bad"\nexit 99\n')
+    qenv = {"PATH": f"{quiet}:{fakebin}:{os.environ['PATH']}"}
+    for n, (label, flags) in enumerate((("default", []), ("--no-app", ["--no-app", "--no-task"]),
+                                        ("--isolated", ["--isolated"]), ("--no-launch", ["--no-launch"]))):
+        home = tmp / f"home-once{n}"
+        home.mkdir()
+        dest = home / "Library" / "Application Support" / "OpenLoops"
+        if label == "--isolated":
+            dest = home / "OpenLoops-test"
+            flags = flags + ["--dest", str(dest)]
+        for how, scr in (("fresh", None), ("in place", dest / "install.sh")):
+            r = install(home, *flags, "--name", "Once", extra_env=qenv, script=scr)
+            said = r.stdout.count(str(dest))
+            check(r.returncode == 0 and said == 1 and r.stdout.rstrip().endswith("Done."),
+                  f"{label}, {how}: the folder is named once ({said}x) and it ends with \"Done.\""
+                  + ("" if r.returncode == 0 and said == 1 else f" ({(r.stdout + r.stderr)[-700:]!r})"))
+            if how == "in place":
+                check("Already installed" in r.stdout, f"{label}, in place: took the in-place update path")
+    check(not Path(f"{nohup_log}.bad").exists(), "nothing reached for the Dock or a dialog")
+    check(nohup_log.exists() and len(nohup_log.read_text().splitlines()) == 6,
+          "every run but the two --no-launch ones reached the start step, and the stub nohup started nothing")
 
     say("5. register-task.sh --dest")
     home = tmp / "home3"

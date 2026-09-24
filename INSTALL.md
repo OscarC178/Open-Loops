@@ -225,7 +225,10 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
      there. The old folder is never moved, changed or deleted; Open Loops simply stops using it. Before copying,
      the installer pauses the old morning refresh and makes sure the old copy is not running; if it can't be sure,
      it stops and says what to do. Every copied file is checked byte for byte, and shortcuts (symbolic links) are
-     left out and listed. If the new place already has a list, nothing is copied again. See gotcha 8 for why.
+     left out. On screen, the Grok sign-in links are named together as "your Grok sign-in" with a file count, and
+     up to five other shortcuts are named by their path in the old folder (then "and N more"); the full list is in
+     `~/Library/Logs/OpenLoops/install.log`. If the new place already has a list, nothing is copied again. See
+     gotcha 8 for why.
      With Grok, open Grok once in the new folder and trust it.
 
    Neither script installs an AI (Claude, Codex or Grok); if none is found they say so in one line and carry on.
