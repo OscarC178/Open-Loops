@@ -24,11 +24,12 @@ slack@claude-plugins-official`, `claude mcp login <server>`), your browser opens
 `claude mcp list`, not from a trial prompt. What each command printed is in `state/connect-<step>.log`. If a button
 doesn't do it, *Open Claude (advanced)* opens a terminal running `claude`, where `/mcp` lists every connection.
 If you reload the page while a sign-in waits for *Allow*, the row's spinner comes back, and so does the *Allow*
-pop-up unless you had closed it for that sign-in. On a Mac the sign-in link comes back too; on Windows the command
-runs in a window of its own and Open Loops never sees the link. If a later Claude Code renames a server, it is still
-found when its name keeps the usual shape (`plugin:…` or `claude.ai …`, naming the service), and jobs and sign-in use
-the name `claude mcp list` prints. A name Open Loops can't use (shell characters, or over 100 characters) shows as a
-red row saying so, never as a tick.
+pop-up unless you closed it, in that browser tab, while that same sign-in was waiting (a later sign-in opens it
+again). A sign-in started for an AI you have since changed away from is not picked up. On a Mac the sign-in link
+comes back too; on Windows the command runs in a window of its own and Open Loops never sees the link.
+If a later Claude Code renames a server, it is still found when its name keeps the usual shape (`plugin:…` or
+`claude.ai …`, naming the service), and jobs and sign-in use the name `claude mcp list` prints. A name Open Loops
+can't use (shell characters, or over 100 characters) shows as a red row saying so, never as a tick.
 Open Loops stores no tokens for this: the sign-ins stay wherever the Claude CLI keeps them.
 A second Claude account needs its own Claude settings folder; for a second Slack workspace or Gmail inbox, see [More than one account](#8-more-than-one-account-work--personal).
 
