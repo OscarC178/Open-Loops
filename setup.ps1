@@ -207,8 +207,16 @@ if ($NoApp) {
     Ok "Skipped the Desktop and Start menu icons ($(if ($Isolated) { 'test copy' } else { '-NoApp' })). How to start this copy is at the end."
 } else {
     $ws = New-Object -ComObject WScript.Shell
-    $desktopLnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "Open Loops.lnk"
-    $openedBefore = if (Test-Path -LiteralPath $desktopLnk) { OtherCopy $ws.CreateShortcut($desktopLnk).WorkingDirectory } else { "" }
+    # both icons are looked at: one of them may be missing, or point at a copy the other does not (review of #70)
+    $openedBefore = @()
+    foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
+        $lnk = Join-Path $folder "Open Loops.lnk"
+        if (Test-Path -LiteralPath $lnk) {
+            $was = OtherCopy $ws.CreateShortcut($lnk).WorkingDirectory
+            if ($was -and ($openedBefore -notcontains $was)) { $openedBefore += $was }
+        }
+    }
+    $openedBefore = $openedBefore -join " and "
     foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
         $s = $ws.CreateShortcut((Join-Path $folder "Open Loops.lnk"))
         $s.TargetPath = $pyw; $s.Arguments = "-m openloops.app"; $s.WorkingDirectory = $Dest
