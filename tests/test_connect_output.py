@@ -159,4 +159,14 @@ with tempfile.TemporaryDirectory(prefix="openloops-raw-") as td:
     check(log.read_text(encoding="utf-8").strip().splitlines()[-1] == messages.say("signin_file_left"),
           "...in one plain-words line from messages.py, at the end of the step's log (the Console shows it)")
 
+# ---------------------------------------------------------------- output that is not UTF-8
+say("6. sign-in output that is not UTF-8 (a cp1252 console) still reads, and its link survives")
+o = app.SigninOutput()
+o.feed(b"Couldn\x92t authenticate: Jos\xe9\n")            # cp1252 bytes, invalid as UTF-8
+o.feed(b"Visit \xff\xfe " + LINK.encode() + b" \x81\n")   # stray bytes either side of the link
+text = o.text()
+check(o.url == LINK, f"the link is found whole between the stray bytes ({o.url!r})")
+check("Couldn\ufffdt authenticate: Jos\ufffd\n" in text and NOTE in text and "SECRET" not in text,
+      "the rest reads with a replacement character where a byte is not UTF-8, the link still redacted")
+
 say("all ok")

@@ -86,6 +86,10 @@ try:
     s = doctor.schedule_step(logs, root)
     check(s["ok"] is True and s["kind"] == "started" and "Thu 24 Sep at 09:15" in s["title"] and not s["fix"],
           "a start line after the failures: green, 'started' with the start line's own time")
+    touch(err, blocked + "openloops-refresh started 2026-09-04T07:05:00+0100 " + str(root) + "\n")
+    s = doctor.schedule_step(logs, root)
+    check(s["kind"] == "started" and "Fri 4 Sep at 07:05" in s["title"] and "04 Sep" not in s["title"],
+          f"a single-digit day has no leading zero, on every platform (no %-d, which Windows refuses): {s['title']!r}")
     touch(err, started + blocked)
     check(doctor.schedule_step(logs, root)["kind"] == "blocked", "a failure after a start: red again (order decides)")
 
@@ -107,6 +111,13 @@ try:
     s = doctor.schedule_step(logs, root)
     check(s is not None and s["kind"] == "failed" and s["title"] == doctor.SCHEDULE_MSG["failed"]["title"],
           "another start failure: red row, the general wording")
+    prefixed = f"/bin/bash: line 1: {root}/scripts/run-refresh.sh: Permission denied\n"   # bash's own prefix before the path
+    touch(err, started + prefixed)
+    s = doctor.schedule_step(logs, root)
+    check(s is not None and s["kind"] == "failed" and "Permission denied" in s["detail"],
+          "review of #70: a failure with a prefix before the path ('line 1: ') is still matched to this install")
+    touch(err, f"/bin/bash: line 1: {other}/scripts/run-refresh.sh: Permission denied\n")
+    check(doctor.schedule_step(logs, root) is None, "...and a prefixed line about another install still is not")
     touch(err, blocked * 3 + missing)
     s = doctor.schedule_step(logs, root)
     check(s["kind"] == "failed" and "No such file" in s["detail"], "older privacy lines, newer other failure: the LATEST decides")

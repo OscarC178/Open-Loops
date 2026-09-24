@@ -509,7 +509,10 @@ SCHEDULE_MSG = {
 }
 # where "the latest installer" is: the page shows it as a button under the red row (the installer moves old installs)
 DOWNLOAD_URL = "https://github.com/OscarC178/Open-Loops/releases/latest"
-RUN_REFRESH_RE = re.compile(r":\s(.+?/scripts/run-refresh\.sh)")  # any folder, a drive letter's colon included
+# The script's path after ": ": absolute, from / or a drive letter (C:\ or C:/, a Windows test's temp folder), and
+# never across another colon, so a prefix such as bash's "line 1: " before the path is not taken as part of it
+# (review of #70: `.+?` swallowed it and the line no longer matched this install).
+RUN_REFRESH_RE = re.compile(r":\s((?:[A-Za-z]:[\\/]|/)[^:]*?[\\/]scripts[\\/]run-refresh\.sh)")
 
 
 STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written by scripts/run-refresh.sh
