@@ -774,14 +774,19 @@ async function connectStop(step,run_){const c=CONN[step];if(!c||!c.busy||c.stopp
 // Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
 // row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload. It writes only to
 // the row it was started for (#67 review): once that row is replaced (a new run, a Stop's answer) or removed (a change
-// of AI), the watcher stops, touching nothing.
+// of AI), the watcher stops, touching nothing. When the row takes another run (adoption, from the watcher's own poll or
+// from a Stop's 409: the row object stays, its run changes), the watcher follows it: that run is the one it watches
+// from then on, with a time limit of its own, taken up before the limit is tested so the old run's deadline never ends it.
 async function connectWatch(step,row){const inst=step==='install',mine=CONN[step],ours=()=>!!mine&&CONN[step]===mine;let run=(mine&&mine.run)||'';
  try{   // finally: this run is over, forget a pop-up closed for it (only it)
  let t0=Date.now();
- while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
+ const follow=()=>{if(ours()&&mine.run!==run){run=mine.run;t0=Date.now()}};   // the row took another run: watch that one, afresh
+ for(;;){follow();if(Date.now()-t0>=(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS))break;
+  await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   if(!ours())return;
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
   if(!ours())return;
+  if(mine.run!==run)continue;   // adopted while asking (a Stop's 409): this answer may be about the old run
   // #67 review: another run holds the step now (the one shown ended, another tab started one): watch that one instead,
   // with its own time limit, so the row's Stop and link are for the run that is really waiting
   if(!inst&&s.running&&run&&s.run_id&&s.run_id!==run&&connectAdopt(step,s)){run=mine.run;t0=Date.now();continue}
@@ -801,7 +806,7 @@ async function connectWatch(step,row){const inst=step==='install',mine=CONN[step
   if(CONN[step]!==after)return;   // changed meanwhile: not this watcher's to say more
   if(s.rc===0&&!inst&&DOC&&DOC.steps&&DOC.steps.some(x=>!x.ok&&x.connect===step)){CONN[step]={msg:msg('connect_no_change',{party:PARTY(step)})};repaint()}   // finished fine, row still red: say so
   return}
- if(!ours())return;
+ if(!ours()||mine.run!==run)return;
  CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(mine.agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
  finally{if(run)allowClosedEnd(step,run);if(!liveRun(step,run))runOver(step,run)}}   // over, unless the row still waits on it
 
