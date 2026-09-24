@@ -510,14 +510,15 @@ def find_chrome():
     if hasattr(os, "getuid"):  # the real home, not this test's temp HOME; pwd is not a Windows module (#27 review)
         import pwd  # noqa: E402
         home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    else:  # Windows: a temp folder here too, but Chrome's own spots below come from folders isolation leaves alone
-        home = Path.home()
+    else:  # Windows: Path.home() is this test's temp USERPROFILE by now; the real one was noted before isolation
+        home = Path(REAL_PROFILE) if REAL_PROFILE else Path.home()
     names = [os.environ.get("CHROME_BIN") or ""] + [shutil.which(n) or "" for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")]
     names += ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"]
     for pf in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")):
         if pf:  # Windows: Chrome's usual folders (per-machine and per-user)
             names.append(str(Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe"))
-    names += [str(x) for x in sorted((home / ".agent-browser" / "browsers").glob("**/Google Chrome for Testing"))]
+    browsers = home / ".agent-browser" / "browsers"  # Chrome for Testing, as agent-browser installs it
+    names += [str(x) for x in sorted(browsers.glob("**/Google Chrome for Testing")) + sorted(browsers.glob("**/chrome.exe"))]
     return next((n for n in names if n and Path(n).is_file() and os.access(n, os.X_OK)), "")
 chrome = find_chrome()
 if not chrome:
