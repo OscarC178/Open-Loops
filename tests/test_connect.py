@@ -634,7 +634,7 @@ try:
     code, out = api("/api/connect/miro/stop", {"run_id": rid})
     s = api("/api/connect/miro")[1]
     # tab_opened (third review of #70): the fake browser was handed the link when the CLI printed it
-    check(code == 200 and out == {"ok": True, "running": False, "run_id": rid, "tab_opened": True} and time.time() - t < 8,
+    check(code == 200 and out == {"ok": True, "running": False, "run_id": rid, "tab_opened": "yes"} and time.time() - t < 8,
           f"POST /api/connect/miro/stop answers once the run has ended, saying the sign-in tab had opened ({code}, {out})")
     check(not waiting() and s["running"] is False and s.get("stopped") is True and s["last"] == "stopped: Stop this sign-in was pressed",
           f"...the fake claude child is gone, and the status shows running false, stopped, and why in its last line ({s})")

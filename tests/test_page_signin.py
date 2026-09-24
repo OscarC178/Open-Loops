@@ -164,14 +164,14 @@ check(out["own"] == "https://example.invalid/r2", "...and R2's own link is")
 check(out["said"] == "", f"a Check again started for R3's pop-up does not put its sentence in R4's ({out['said']!r})")
 # ---------------------------------------------------------------- 6. the Stop toast says whether a tab had opened
 say("6. third review of #70: the Stop toast names the tab that had already opened, and only then")
-for tab in (True, False):
+for tab, said in (("yes", "connect_stopped_tab"), ("maybe", "connect_stopped_maybe_tab"), ("no", "connect_stopped")):
     out = node(f"""
  CONN.slack={{busy:true,msg:'Waiting',run:'R1'}};
  const p=connectStop('slack');await flush();
- await answer('{STOP}',true,200,{{ok:true,running:false,run_id:'R1',tab_opened:{str(tab).lower()}}});await p;
+ await answer('{STOP}',true,200,{{ok:true,running:false,run_id:'R1',tab_opened:'{tab}'}});await p;
  out.toasts=TOASTS.slice();""")
-    want = messages.say("connect_stopped_tab" if tab else "connect_stopped", party="Slack")
-    check(out["toasts"] == [want], f"tab_opened {str(tab).lower()}: the toast is {want!r} ({out['toasts']})")
+    want = messages.say(said, party="Slack")
+    check(out["toasts"] == [want], f"tab_opened {tab}: the toast is {said} ({out['toasts']})")
 # ---------------------------------------------------------------- 7. a sign-in refused for want of a private file
 say("7. third review of #70: a run ended with reason private_file shows signin_private_failed on its row, toasted once")
 out = node("""

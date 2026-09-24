@@ -220,6 +220,11 @@ FAILURES = {
         "what": "Open Loops stopped waiting for the {party} sign-in.",
         "fix": "A sign-in tab had already opened in your browser; you can close it, and press the button again whenever you are ready.",
         "button": None},
+    # fourth review of #70: the same, when the browser was still being asked to open the link as the Stop answered
+    "connect_stopped_maybe_tab": {
+        "what": "Open Loops stopped waiting for the {party} sign-in.",
+        "fix": "A sign-in tab may have opened in your browser; if it did, you can close it, and press the button again whenever you are ready.",
+        "button": None},
     # #67: Stop pressed on a row whose run had already ended, with another run of that step started since (another tab)
     "connect_stop_other": {
         "what": "That sign-in had already ended, and another one has started since, so Open Loops left it running.",

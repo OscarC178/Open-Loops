@@ -175,7 +175,48 @@ with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
     seen["t"].join(5)
     check(seen["stop"][0] == "stopped" and seen["at_reply"].get("opening") is False and seen["at_reply"].get("link_opened") is True,
           "Stop during the browser call: it waits for the call to return, then sees the tab recorded as opened")
-    check(seen["stop"][2] is True, "...and its reply says a tab had opened (tab_opened), so the toast can say so")
+    check(seen["stop"][2] == "yes", "...and its reply says a tab had opened (tab_opened yes), so the toast can say so")
+
+    # fourth review: a browser call that outlasts the Stop's wait and then fails is "maybe" while it runs, never "yes"
+    wait0, app.STOP_OPENING_WAIT_S = app.STOP_OPENING_WAIT_S, 0.3   # the wait shortened; the call takes longer
+    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R3"}
+    seen.clear()
+
+    def slower_false(url, *a, **k):
+        t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R3")))
+        t.start()
+        t.join(5)                     # the Stop's wait runs out while this call is still under way
+        seen["during"] = app._tab_state(me)
+        return False                  # ...and then the browser says it could not open the link
+    real_open, app.webbrowser.open = app.webbrowser.open, slower_false
+    try:
+        app._output_handler(me, ARGV, log, "")(printed)
+    finally:
+        app.webbrowser.open, app.STOP_OPENING_WAIT_S = real_open, wait0
+    check(seen["stop"][2] == "maybe" and seen["during"] == "maybe" and app._tab_state(me) == "no" and not me.get("link_opened"),
+          f"a call still under way when the Stop's wait ends is 'maybe'; once it returns False, 'no', never 'yes' ({seen['stop'][2]}, {app._tab_state(me)})")
+
+    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R4"}   # ...and a call that raises: "no"
+    seen.clear()
+
+    def raising(url, *a, **k):
+        t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R4")))
+        t.start()
+        for _ in range(100):
+            if me.get("stopped"):
+                break
+            time.sleep(0.01)
+        seen["t"] = t
+        raise OSError("no browser")
+    real_open, app.webbrowser.open = app.webbrowser.open, raising
+    try:
+        app._output_handler(me, ARGV, log, "")(printed)
+    except OSError:
+        pass
+    finally:
+        app.webbrowser.open = real_open
+    seen["t"].join(5)
+    check(seen["stop"][2] == "no" and app._tab_state(me) == "no", f"a browser call that raises during a Stop: 'no' ({seen['stop'][2]})")
 
     app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R2"}   # a Stop before the last check
     n = len(opened)
@@ -184,8 +225,8 @@ with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
         app._output_handler(me, ARGV, log, "")(printed)
     finally:
         app._before_open = None
-    check(seen["early"][0] == "stopped" and seen["early"][2] is False and len(opened) == n,
-          "Stop before the last check: tab_opened false, and no tab opened")
+    check(seen["early"][0] == "stopped" and seen["early"][2] == "no" and len(opened) == n,
+          "Stop before the last check: tab_opened no, and no tab opened")
     app.connects.pop("miro", None)
     opened.clear()
     opened.clear()

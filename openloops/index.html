@@ -769,7 +769,9 @@ function connectAdopt(step,s){const c=CONN[step];if(!c||!c.busy||!s||!s.run_id||
 async function connectStop(step,run_){const c=CONN[step];if(!c||!c.busy||c.stopping||!c.run||(run_&&run_!==c.run))return;const run=c.run;c.stopping=true;repaint();allowPaint();
  try{const r=await api('/api/connect/'+step+'/stop',{run_id:run});clog('setup: '+step+(r.ok?' stopped':' was not running'));
   if(!liveRun(step,run))return;   // the row has moved on (another run, a new press, a change of AI): not this answer's
-  if(r.ok)toast(r.tab_opened?msg('connect_stopped_tab',{party:PARTY(step)}):msg('connect_stopped',{party:PARTY(step)}));   // a tab had opened: it can be closed
+  // tab_opened: "yes" a tab opened (it can be closed), "maybe" the browser was still being asked, "no" none
+  if(r.ok)toast(r.tab_opened==='yes'?msg('connect_stopped_tab',{party:PARTY(step)})
+   :r.tab_opened==='maybe'?msg('connect_stopped_maybe_tab',{party:PARTY(step)}):msg('connect_stopped',{party:PARTY(step)}));
   if(r.running){CONN[step].stopping=false;repaint();allowPaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
   connectStopped(step,run)}
  catch(e){if(!liveRun(step,run))return;   // as above: a late failure or 409 for a run the row no longer shows says nothing

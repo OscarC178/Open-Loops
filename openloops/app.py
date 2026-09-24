@@ -393,7 +393,7 @@ STOP_OPENING_WAIT_S = 2  # how long a Stop waits for a browser call already unde
 
 def stop_connect(step, run_id):
     """#67: the row's "Stop this sign-in": stop that one step's run, the one the row shows (run_id) -> (why, record,
-    tab_opened). tab_opened (third review of #70): a sign-in tab had opened, or was opening, in the browser for it.
+    tab). tab: _tab_state once the bounded wait below is over (the API reads it again when it replies).
     why: "stopped", "not running" (it had already ended) or "other run" (it ended and another run of the step started
     since, perhaps in another tab: that one is never stopped for it). record: the run's own connects entry, so a caller
     waiting for it to end watches that run, not whatever holds the step by then. The run is marked "stopped" under the
@@ -403,9 +403,9 @@ def stop_connect(step, run_id):
     with connect_lock:
         c = connects.get(step)
         if not c or c.get("run_id") != run_id:
-            return ("other run" if c and c.get("running") else "not running"), c, False
+            return ("other run" if c and c.get("running") else "not running"), c, "no"
         if not c.get("running"):
-            return "not running", c, False
+            return "not running", c, "no"
         c["stopped"] = True  # under connect_lock: _link_found's last check sees it unless "opening" is already set
         p = connect_procs.get(step)
     if p is not None:
@@ -413,9 +413,16 @@ def stop_connect(step, run_id):
     end = time.time() + STOP_OPENING_WAIT_S  # a browser call under way: let it finish (bounded), so the reply is true
     while c.get("opening") and time.time() < end:  # read without the lock; _link_found clears it under the lock
         time.sleep(0.05)
-    with connect_lock:  # third review of #70: the reply says whether a sign-in tab had opened (or is opening) anyway
-        tab = bool(c.get("link_opened") or c.get("opening"))
-    return "stopped", c, tab
+    return "stopped", c, _tab_state(c)
+
+
+def _tab_state(c):
+    """Whether a run's sign-in tab opened in the browser, as far as the app can know it now -> "yes" (the browser call
+    returned success: link_opened), "maybe" (the call is still under way: it may yet open a tab, or fail) or "no".
+    Fourth review of #70: read when the Stop's reply is built, never earlier, so a call that finishes (or fails)
+    during the reply's own wait is reported as it ended; only "yes" claims a tab."""
+    with connect_lock:
+        return "yes" if c.get("link_opened") else "maybe" if c.get("opening") else "no"
 
 
 def _launch(step, *args, **kw):
@@ -1169,7 +1176,7 @@ class H(BaseHTTPRequestHandler):
             rid = str(body.get("run_id") or "")
             if not rid:  # the page sends the run it shows; nothing else is stopped on its behalf
                 return self._json({"ok": False, "error": "no run_id"}, 400)
-            why, c, tab = stop_connect(step, rid)
+            why, c, _ = stop_connect(step, rid)
             if why == "other run":  # the run the row showed is over, and another has started since: left alone
                 # ...with the run that holds the step now, so the row can show it and a second Stop targets it
                 return self._json({"ok": False, "error": why, "running": True, "said": messages.say("connect_stop_other"),
@@ -1177,9 +1184,9 @@ class H(BaseHTTPRequestHandler):
             end = time.time() + 8  # kill_tree waits up to 3 s, the worker's reap up to 5 s: answer once it has ended
             while why == "stopped" and c.get("running") and time.time() < end:  # this run's own record, not the step's
                 time.sleep(0.1)
-            # tab_opened: a sign-in tab had already opened (or was opening) in the browser; the toast says it can be closed
+            # tab_opened: "yes" / "maybe" / "no" (_tab_state), read now, after the wait above; the toast words each
             return self._json({"ok": why == "stopped", "running": bool(c and c.get("running")), "run_id": (c or {}).get("run_id", ""),
-                               **({"tab_opened": tab} if why == "stopped" else {"error": why})})
+                               **({"tab_opened": _tab_state(c)} if why == "stopped" else {"error": why})})
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
