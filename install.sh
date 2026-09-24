@@ -58,7 +58,8 @@ Options:
   --no-app       do not put Open Loops.app on the Desktop or in Applications
   --no-task      leave this Mac's weekday morning refresh as it is
   --no-launch    do not start Open Loops at the end
-  --isolated     a test copy: --no-app, --no-task, and it never scans by itself
+  --isolated     test copy: --no-app --no-task, no auto scans; it picks no
+                 folder, so add --dest DIR or it installs over your usual copy
   -h, --help     show this list and install nothing
 
 OPENLOOPS_DEST=DIR in the environment does the same as --dest.

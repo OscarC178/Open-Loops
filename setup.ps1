@@ -50,7 +50,8 @@ Options:
   -NoApp        no Open Loops icon on the Desktop or in the Start menu
   -NoTask       leave your weekday morning refresh as it is
   -NoLaunch     do not start Open Loops at the end
-  -Isolated     a test copy: -NoApp, -NoTask, and it never scans by itself
+  -Isolated     test copy: -NoApp -NoTask, no auto scans; it picks no
+                folder, so add -Dest DIR or it installs over your usual copy
   -Help         show this list and install nothing
 
 $env:OPENLOOPS_DEST = "DIR" does the same as -Dest.
