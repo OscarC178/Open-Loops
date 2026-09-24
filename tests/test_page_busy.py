@@ -75,7 +75,7 @@ global.fetch=(u,o)=>{const q=ON[u]&&ON[u].shift(),mode=q?q.mode:REPLY;return new
  res({ok:true,status:200,json:async()=>u==='/api/state'?JSON.parse(JSON.stringify(STATE)):{ok:true}})},q?q.ms:DELAY[u]||0))};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 """
-BASE = [grab("const esc="), grab("const MSG="), grab("const ACT_FAILED="), grab("const fill="), grab("function msg("),
+BASE = [grab("const esc="), grab("const MSG="), grab("const LABEL="), grab("const ACT_FAILED="), grab("const fill="), grab("function msg("),
         grab("const errSaid="), cut("const api=async", "// The page could not talk to the app"), grab("const appDown="),
         cut("async function loadState(", "async function loadCfg(")]
 
@@ -132,6 +132,18 @@ if NODE:
         r = out["r"]
         check(r["banner"] == want_banner and r["looped"] == 1 and r["loads"] == (2 if mode == "busy" else 1),
               f"first load answered {mode}: banner {want_banner}, " + ("tried once more, " if mode == "busy" else "") + f"then the poll loop ({r})")
+
+    # #67 (Codex check on #66): a first load that failed (not busy) put the banner up without setting offline, so a
+    # later busy poll, which clears the banner only when coming back from offline, left it up. The real first load
+    # and the real poll loop: the first load's request not answered, the loop's first poll (straight after) busy.
+    out = node(loop_parts + ["let SAID=[];const _bn=banner;banner=m=>{if(m)SAID.push(m);_bn(m)};",   # every banner raised
+                             "REPLY='busy';ON['/api/state']=[{ms:0,mode:'down'}];", cut("// Busy saving at the first load", "</script>")], """
+      await sleep(300);out.r={said:SAID.slice(),banner:$('#banner').style.display,offline,next:NEXT.pop()};""")
+    r = out["r"]
+    check(len(r["said"]) == 1 and r["said"][0].startswith(messages.part("server_offline", "what")),
+          f"#67: a first load the app did not answer puts the 'isn't running' banner up ({r['said']})")
+    check({k: r[k] for k in ("banner", "offline", "next")} == {"banner": "none", "offline": False, "next": 4000},
+          f"#67: ...and counts as offline, so the busy poll that follows clears that banner at the usual pace ({r})")
 
     # ------------------------------------------------------------ 2. a card click (#64)
     say("2. a failed click says what it could not do; a slow one says Saving…")

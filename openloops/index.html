@@ -479,7 +479,8 @@ window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e
 const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
 // under 600 px wide three toasts took about 40% of the screen (#56): two there
 const toastMax=()=>typeof innerWidth==='number'&&innerWidth<600?2:TOAST_MAX;
-function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
+function toast(msg,opt){opt=opt||{};if(!opt.quiet)clog((opt.err?'error: ':'')+msg);   // quiet: the caller logged its own line (#67)
+ const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
  // The header grows by the toast; with the page scrolled, the browser's scroll anchoring would keep the rows where they
  // were, i.e. under the grown header. Off for this one layout, the rows move down with it and stay in view (#52 review).
@@ -522,7 +523,14 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
 async function loadState(){const my=++ST_SEQ,r=await api('/api/state');if(my<ST_DONE)return;ST_DONE=my;S=r.state;const jobs=r.jobs||{};
  for(const k of Object.keys(PENDING_START)){const t=PENDING_START[k],j=jobs[k]||{};
   if((my>t.req&&(j.running||(j.seq||0)>t.seq||(j.finished_at&&Date.parse(j.finished_at)>t.at)))||Date.now()-t.at>15000)delete PENDING_START[k];else jobs[k]=Object.assign({},j,{running:true})}
- J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||''}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
+ J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||'';conBoundary(INST)}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
+// #67: the Console is kept across reloads and restarts, so its "no answer" lines from while the app was not running
+// stayed until Clear. The first answer from a new start of the app (its /api/state "instance", new at every start)
+// adds one line, "— Open Loops started —": what is above it is from before. Nothing is deleted. Once per instance:
+// remembered in this browser, and in memory when the browser keeps nothing.
+const CON_INST='ol.console.instance';let conInstSeen='';
+function conBoundary(inst){if(!inst||inst===conInstSeen)return;conInstSeen=inst;let was='';try{was=localStorage.getItem(CON_INST)||''}catch(e){}
+ if(was===inst)return;try{localStorage.setItem(CON_INST,inst)}catch(e){}clog(LABEL.console_started)}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;
@@ -1224,7 +1232,7 @@ function paintVoice(){if(V&&haveVoice()){$('#voice_meta').textContent='learned '
 async function saveCfg(){
  // #62: as the set-up page's picker, no change of AI while a sign-in or install runs: that run is the old AI's. Nothing
  // is saved; the form keeps its edits, so Save works once the sign-in is over.
- const lock=C&&$('#cfg_agent').value!==(C.agent||'claude')?aiLockSaid(false):'';if(lock){$('#cfg_msg').textContent='not saved: '+lock;toast(lock,{err:true});return false}
+ const lock=C&&$('#cfg_agent').value!==(C.agent||'claude')?aiLockSaid(false):'';if(lock){$('#cfg_msg').textContent='not saved: '+lock;clog('not saved: '+lock);toast(lock,{err:true,quiet:true});return false}   // #67: a note, not an error
  try{const tone={};document.querySelectorAll('[data-tone]').forEach(t=>tone[t.dataset.tone]=t.value);
  // people: radios in the table win; the JSON box is the fallback for adding/removing entries
  let people=JSON.parse($('#cfg_people').value);Object.keys(C.people||{}).forEach((n,i)=>{const v=document.querySelector(`input[name="pp${i}"]:checked`);if(v&&people[n])people[n].level=v.value});
@@ -1361,7 +1369,9 @@ cfgRestore();
 $('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';
 $('#cfg_agent').setAttribute('aria-label','Your AI');
 clog('page opened '+location.host+' · page '+PAGE);conPaint();
-// Busy saving at the first load (#66 review): no banner; try the first load again once, then the poll loop carries on
-(async()=>{for(let i=0;i<2;i++){try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm();break}
- catch(e){if(!appBusy(e)){appDown(e);break}}}loop()})();
+// Busy saving at the first load (#66 review): no banner; try the first load again once, then the poll loop carries on.
+// Any other failure counts as offline, as in loop() (#67), so whatever answers next, busy included, clears its banner.
+async function pageStart(){for(let i=0;i<2;i++){try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm();break}
+ catch(e){if(!appBusy(e)){offline=true;appDown(e);break}}}loop()}
+pageStart();
 </script></body></html>

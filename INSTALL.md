@@ -367,7 +367,9 @@ switch).
   **priority** select (high / normal / low, guessed by the refresh, yours once you change it) and lists can
   be sorted oldest-first or by priority.
 - A **Console** section sits at the bottom of both tabs: a timestamped record of checks, jobs and errors, with
-  *Copy*, *Copy all* (adds build, port, last check and job output from `/api/diag`) and *Clear*.
+  *Copy*, *Copy all* (adds build, port, the chosen AI and its model, last check and job output from `/api/diag`) and
+  *Clear*. Each time Open Loops starts it adds one line, *— Open Loops started —*: lines above it (a "no answer" from
+  while it was closed, say) are from before.
 - **draft chase** → warm, seniority-aware nudge appears as a draft in the same Slack DM / email thread. The card then shows *"✎ chase drafted <time>"* so you don't draft twice.
 - **done / snooze / reopen** are local only, and each one shows a toast with **Undo** for a few seconds. Snooze offers
   tomorrow / 2 days / next Monday / a week or a date. Recently-closed loops are still watched for 5 days and reopen if the

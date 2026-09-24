@@ -453,6 +453,9 @@ check(messages.LABELS["stop_signin"] in messages.say("ai_change_signin") and "qu
       and not re.search(r"""['"`>]Stop this sign-in""", (REPO / "openloops" / "index.html").read_text(encoding="utf-8"))
       and "esc(c.stopping?LABEL.stopping:LABEL.stop_signin)" in html,
       "#67: the picker's reason names the row's Stop button, not quitting; the page takes the button's name from messages.py")
+check("function toast(msg,opt){opt=opt||{};if(!opt.quiet)clog((opt.err?'error: ':'')+msg);" in html
+      and "clog('not saved: '+lock);toast(lock,{err:true,quiet:true})" in html,
+      "#67: Settings' refused Save writes its own 'not saved: …' Console line, and its toast adds no 'error: …' line")
 check(all("quit" not in messages.say(k) and "Stop" not in messages.say(k) for k in ("ai_change_install", "ai_change_plugin")),
       "#67: an install is left to finish: its reason says wait, offers no Stop and no quit")
 check(cache == "no-store", "the page is served with Cache-Control: no-store, so a cached copy never keeps old wording")

@@ -1253,8 +1253,10 @@ if NODE:
         shutil.rmtree(tmp, ignore_errors=True)
 
     # 7m. #67: Stop this sign-in. A Slack sign-in pressed on the page waits (the fake `claude mcp login` on a terminal);
-    # its row offers Stop next to the fallback link, and the picker's reason says to press it. Stop posts to the app, which kills the fake child: the row is back to its button,
+    # its row offers Stop next to the fallback link, and the picker's reason says to press it. Settings' refused Save is
+    # a Console note, not an error. Stop posts to the app, which kills the fake child: the row is back to its button,
     # the pop-up closed, that run's closed-pop-up note gone, the picker free, and the watcher ends without a failure.
+    # Then the Console's restart mark (once per app start, old lines kept). The first load's failure: test_page_busy.py.
     tmp = setup_install("openloops-setup-stop-")
     (tmp / "bin" / "signin_secs").write_text("600")   # waits until stopped (or the app quits), never on a timer
     srv, port = start_app(tmp, setup_env(tmp))
@@ -1269,6 +1271,8 @@ if NODE:
  out.wait={stop:rows.includes(`<button onclick="connectStop('slack')">${LABEL.stop_signin}</button>`),link:rows.includes('Open the sign-in page'),
   why:$('#su_ai_why').textContent,locked:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length,
   steps:$('#setup_steps').innerHTML.includes("connectStop('slack')"),miro:rows.includes("connectStop('miro')")};
+ // Settings refuses a change of AI while it waits: the Console says "not saved: …", never "error: …"
+ form('codex');const con0=CON.length;await saveCfg();out.refused=CON.slice(con0);
  const n=CALLS.length;await connectStop('slack');
  out.stopped={calls:CALLS.slice(n),busy:!!(CONN.slack&&CONN.slack.busy),msg:(CONN.slack||{}).msg||'',open:$('#allow_dlg').open,
   note:SS['ol.allowDismissed'],rows:$('#su_src_rows').innerHTML,why:$('#su_ai_why').style.display,
@@ -1276,13 +1280,19 @@ if NODE:
  await Promise.race([w,sleep(8000).then(()=>{throw new Error('the watcher did not end after Stop')})]);
  out.after={msg:(CONN.slack||{}).msg||'',busy:!!(CONN.slack&&CONN.slack.busy),failed:CON.some(l=>l.startsWith('setup: slack finished'))};
  out.status=await (await realFetch(BASE+'/api/connect/slack')).json();
-""", tmp)
+ // the Console's restart mark: once per app start, whatever polls in between; a new start adds one after the old lines
+ await loadState();await loadState();out.once=[started,CON.filter(l=>l===LABEL.console_started).length];
+ CON.push('no answer from /api/state: fetch failed');const st=await api('/api/state');
+ FAKE['/api/state']=[{},Object.assign({},st,{instance:'another-start'})];await loadState();delete FAKE['/api/state'];
+ out.restart=CON.slice(-2);await loadState();out.back=CON[CON.length-1];""", tmp)
         check(out["note"] is True, "the pop-up closed for this run is remembered for it, as before (#27)")
         wt = out["wait"]
         check(wt["stop"] and wt["link"] and wt["steps"] and not wt["miro"],
               f"#67: the waiting Slack row offers {messages.LABELS['stop_signin']!r} next to the fallback link (in the checklist too); a row not waiting does not ({wt})")
         check(wt["why"] == messages.say("ai_change_signin") and wt["why"].endswith("or press Stop this sign-in on its row.") and wt["locked"] == 3,
               f"#67: the greyed-out picker's reason says to finish it or press Stop on its row ({wt['why']!r})")
+        check(out["refused"] == ["not saved: " + messages.say("ai_change_signin")],
+              f"#67: Settings' refused Save is a Console note (not saved: …), with no error: line ({out['refused']})")
         so = out["stopped"]
         check(so["calls"] == ["/api/connect/slack/stop {}"] and so["con"] == ["setup: slack stopped"],
               f"#67: Stop posts to /api/connect/slack/stop, once ({so['calls']})")
@@ -1295,6 +1305,10 @@ if NODE:
               f"the row's watcher ends on the stopped run without calling it failed ({out['after']})")
         check(out["status"]["running"] is False and out["status"].get("stopped") is True and not waiting(),
               f"the app says the run is over (stopped), and the fake sign-in's process is gone ({out['status'].get('running')}, {out['status'].get('stopped')})")
+        check(out["once"] == [1, 1], f"#67: the Console's restart mark is written once for this app start, however often it polls ({out['once']})")
+        check(out["restart"] == ["no answer from /api/state: fetch failed", messages.LABELS["console_started"]]
+              and out["back"] == messages.LABELS["console_started"],
+              f"#67: a new start of the app (another instance) adds the mark after the old 'no answer' lines, which are kept ({out['restart']})")
     finally:
         quit_app(port, srv)
         stop(srv)
