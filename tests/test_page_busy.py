@@ -265,10 +265,17 @@ const saved=()=>JSON.parse(store['ol.console']||'[]'),marks=l=>l.filter(x=>x.inc
       vm.runInContext("conBoundary('new-instance-1')",A);                       // A hears from the new start first
       vm.runInContext("conBoundary('new-instance-1');clog('B polled')",B);     // then B, which saves its own copy
       out.afterB=saved();vm.runInContext("clog('A polled')",A);out.afterA=saved();
-      const C=tab();vm.runInContext("conBoundary('new-instance-1')",C);out.reload=saved();\n""")   # C: a reload, which must add no second mark
+      const C=tab();vm.runInContext("conBoundary('new-instance-1')",C);out.reload=saved();
+      vm.runInContext("for(let i=0;i<450;i++)clog('poll '+i)",C);out.capped=saved();   // past CON_MAX: the mark must not go
+      const D=tab();vm.runInContext("conBoundary('new-instance-1')",D);out.capReload=saved();\n""")   # C: a reload, which must add no second mark
     for k in ("afterB", "afterA", "reload"):
         got = out[k]
         check(sum("Open Loops started" in x for x in got) == 1 and got[0].endswith("fetch failed")
               and any(x.endswith(messages.LABELS["console_started"] + " (new-inst)") for x in got),
               f"#67 review: two tabs saving their own Console copies across a restart: the saved Console keeps one mark, after the old lines ({k}: {got})")
+    for k in ("capped", "capReload"):
+        got = out[k]
+        check(len(got) == 400 and sum("Open Loops started" in x for x in got) == 1
+              and got[0].endswith(messages.LABELS["console_started"] + " (new-inst)") and got[-1].endswith("poll 449"),
+              f"#67 review: 450 more lines trim the Console to 400 but keep the restart mark at its head, so a reload adds no second one ({k}: {got[:2]}, {len(got)})")
 say("all passed")

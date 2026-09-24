@@ -463,7 +463,11 @@ const errSaid=e=>(e&&e.local&&e.message)||(e&&e.body&&(e.body.said||e.body.error
 const CON_KEY='ol.console',CON_MAX=400;let CON=[];
 try{CON=JSON.parse(localStorage.getItem(CON_KEY)||'[]');if(!Array.isArray(CON))CON=[]}catch(e){CON=[]}
 const stamp=(d=new Date())=>{const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`};   // local time, as the rest of the page (#34)
-function clog(msg){const line=stamp()+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);if(CON.length>CON_MAX)CON=CON.slice(-CON_MAX);
+// Trimmed to CON_MAX lines, but never past the last restart mark (review of #68): dropped, a reload would find no mark
+// for the running start and announce it again. The mark then heads the kept lines, which all come after it.
+function clog(msg){const line=stamp()+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);
+ if(CON.length>CON_MAX){let m=-1;for(let i=CON.length-1;i>=0;i--)if(CON[i].includes(LABEL.console_started)){m=i;break}
+  const mark=m>=0&&m<CON.length-CON_MAX?CON[m]:'';CON=CON.slice(-CON_MAX);if(mark)CON[0]=mark}
  try{localStorage.setItem(CON_KEY,JSON.stringify(CON))}catch(e){}conPaint()}
 function conPaint(){const p=$('#con');if(!p)return;p.textContent=CON.join('\n')||'(nothing yet)';p.scrollTop=p.scrollHeight;
  $('#con_meta').textContent=CON.length?`${CON.length} line${CON.length===1?'':'s'} · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
