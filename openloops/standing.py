@@ -164,7 +164,9 @@ def touch_seen(state, items):
     """Record first-seen / wording-changed in state.json['vault_seen']. Returns flags + dirty."""
     now = datetime.now().astimezone().isoformat(timespec="minutes")
     today = now[:10]
-    seen = dict(state.get("vault_seen") or {})
+    # a copy of each record too, not just of the map: the records are changed in place below, and the map as it was
+    # read must stay as it was, so merge_seen() can tell what this read changed (#61)
+    seen = {k: dict(v) for k, v in (state.get("vault_seen") or {}).items() if isinstance(v, dict)}
     flags, dirty = {}, False
     live = set()
     for it in items:
@@ -199,6 +201,40 @@ def touch_seen(state, items):
     else:
         state.setdefault("vault_seen", seen)
     return flags, dirty
+
+
+def merge_seen(fresh, before, after):
+    """Apply one read's vault_seen changes onto fresh, the state.json just read under the lock, key by key (#61).
+
+    before: the map as that read found it; after: the map touch_seen() made of it. A poll reads the to-do file outside
+    the lock, so another poll (or a job's write) may have saved state.json since: fresh's map is never replaced by
+    this read's whole copy, and a change is applied to a key only if nobody else changed that key meanwhile, i.e.
+    fresh still holds the record this read started from (review of #66):
+      - added here (not in before): added if fresh has no record for it; one there already (another poll recorded
+        it first) is kept as it is, its first_seen and changed_at included;
+      - reworded here: fp / changed_at / action taken only if fresh still equals before[k]; else fresh is kept;
+      - left the open list here (closed, snoozed or deleted): removed only if fresh still equals before[k]; a record
+        another poll re-added or reworded since is kept.
+    A conflict keeps fresh, the newer save; the next poll reads the file again and records whatever is still
+    different, so nothing is lost for longer than one poll. -> True if fresh changed (it then needs saving)."""
+    cur = {k: dict(v) for k, v in (fresh.get("vault_seen") or {}).items() if isinstance(v, dict)}
+    changed = "vault_seen" not in fresh
+    for k, rec in after.items():
+        if before.get(k) == rec:
+            continue   # untouched by this read
+        if k not in before:
+            if k not in cur:
+                cur[k] = dict(rec)
+                changed = True
+        elif cur.get(k) == before[k]:
+            cur[k] = dict(cur[k], fp=rec.get("fp"), changed_at=rec.get("changed_at"), action=rec.get("action"))
+            changed = True
+    for k in before:
+        if k not in after and k in cur and cur[k] == before[k]:
+            del cur[k]
+            changed = True
+    fresh["vault_seen"] = cur
+    return changed
 
 
 def as_loops(state=None):

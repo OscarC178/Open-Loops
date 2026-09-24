@@ -270,7 +270,7 @@ try:
         t1 = time.time()
         code, r = api("/api/action", {"action": "note", "id": "L1", "notes": "later"}, timeout=30)
         took = time.time() - t1
-    check(code == 503 and r.get("error") == _m.say("app_busy") and 9 <= took < 15,
+    check(code == 503 and r.get("error") == _m.say("app_busy") and r.get("code") == "app_busy" and 9 <= took < 15,
           f"a click that cannot get the lock within 10 s gets the plain busy sentence ({code}, {took:.1f} s, {r})")
     code, r = api("/api/cursor/forget", {})
     check(code == 200 and r["forgot"] == [] and r["since"] == "", "...and with nothing unreadable, nothing changes, and it says so (not the History sentence)")

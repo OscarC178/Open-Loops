@@ -11,6 +11,55 @@ from pathlib import Path
 from . import messages
 from .paths import PKG, ROOT
 from .store import LockTimeout, _locked, isolated, load_cfg, norm_date, read_json, update_json, write_json
+
+# ---- the command line (#64): checked before anything below runs, so `--help` or a typo writes, checks and opens
+# nothing. Everything this module does at import (config.json / state.json created, the port read from config.json)
+# comes after this check; the imports above only define things. Keep HELP in step with the flags read below
+# (_port_arg, --stop, --now, --no-browser): tests/test_app_help.py checks that each one has a row.
+_PY = "python" if sys.platform == "win32" else "python3"
+USAGE = f"usage: {_PY} -m openloops.app [options]"
+HELP = """
+Options:
+  --port N        the port to answer on (default 8765, or this copy's own)
+  --no-browser    start without opening the page in your browser
+  --stop          ask the Open Loops already running to quit
+  --now           with --stop: stop a running scan too, not wait for it
+  -h, --help      show this list and start nothing
+"""
+
+
+def check_args(argv):
+    """The app's options, read before it does anything: -> None to carry on. `-h` / `--help` prints the list and exits 0;
+    an option it does not know, or `--port` without a number, prints one line saying which plus the usage line on
+    stderr and exits 1 (it used to be ignored and the app started, opening the browser)."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(USAGE + "\n" + HELP.rstrip("\n"))
+            sys.exit(0)
+        if a in ("--no-browser", "--stop", "--now"):
+            i += 1
+            continue
+        if a == "--port" or a.startswith("--port="):
+            val = a.split("=", 1)[1] if "=" in a else (argv[i + 1] if i + 1 < len(argv) else "")
+            # ASCII digits only: str.isdigit() also passes "²", which int() cannot read (review of #66); and a port
+            # the app can listen on, as config.json's "port" is checked
+            if not (re.fullmatch(r"[0-9]{1,5}", val) and 1024 <= int(val) <= 65535):
+                _bad_option("--port needs a number from 1024 to 65535, for example: --port 8790")
+            i += 1 if "=" in a else 2
+            continue
+        _bad_option(f"unknown option: {a}")
+
+
+def _bad_option(line):
+    """One line saying what was wrong, the usage line, where to look; exit 1 before anything is read or started."""
+    print(f"  {line}\n  {USAGE}\n  ({_PY} -m openloops.app --help lists what each option does)", file=sys.stderr)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    check_args(sys.argv[1:])
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
@@ -546,7 +595,9 @@ def test_copy():
 def index_bytes(table=None):
     """index.html with the page's copy of messages.py filled in, for this platform and this install (a test copy gets
     its own "not running" fix, #50), escaped for an inline <script>."""
-    return INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
+    return (INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
+            # a failed card click's verb ("Couldn't snooze that", #64)
+            .replace(b"/*OL_ACTION_FAILED*/{}", messages.page_action_failed_json().encode("utf-8"), 1))
 
 
 class H(BaseHTTPRequestHandler):
@@ -573,14 +624,16 @@ class H(BaseHTTPRequestHandler):
             self._get()
         except LockTimeout as e:   # a writer held state.json past the deadline: say so, plainly, rather than hang
             print(f"busy: {e}", file=sys.stderr)
-            self._json({"error": messages.say("app_busy")}, 503)
+            # "code": what the page tells apart by (#66 review), never the sentence, which may be reworded
+            self._json({"error": messages.say("app_busy"), "code": "app_busy"}, 503)
 
     def do_POST(self):
         try:
             self._post()
         except LockTimeout as e:
             print(f"busy: {e}", file=sys.stderr)
-            self._json({"error": messages.say("app_busy")}, 503)
+            # "code": what the page tells apart by (#66 review), never the sentence, which may be reworded
+            self._json({"error": messages.say("app_busy"), "code": "app_busy"}, 503)
 
     def _get(self):
         if self.path.split("?")[0] in ("/", "/index.html"):
@@ -595,14 +648,16 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/api/state":
             from . import standing
             # the to-do file can live on a synced or mounted folder: read it outside the lock, on a plain read of
-            # state.json; only the vault_seen it changed is then written, under the lock, onto a fresh read
+            # state.json; only the vault_seen keys this read changed are then applied, under the lock, onto a fresh
+            # read (#61): two overlapping polls each keep the other's first_seen / changed_at
             s = dict(load())
+            seen_before = s.get("vault_seen") or {}
             vault_loops, dirty = standing.as_loops(s)
             if dirty:
                 with state_lock():
                     fresh = load()
-                    fresh["vault_seen"] = s.get("vault_seen") or {}
-                    save(fresh)
+                    if standing.merge_seen(fresh, seen_before, s.get("vault_seen") or {}):
+                        save(fresh)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
                         "pages": len(pages), "quitting": quit_requested,   # who is holding the server up

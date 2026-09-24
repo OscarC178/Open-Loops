@@ -55,6 +55,23 @@ for fid, m in FAILURES.items():
         check(not bad, f"{fid}.{part}: no jargon, paths or US spelling (found {bad})")
         check(text.endswith(".") and ". " not in text.replace("(Windows: PowerShell).", ""), f"{fid}.{part}: one sentence")
         check(text[0].isupper() or text[0] == "{", f"{fid}.{part}: starts like a sentence")
+
+
+def action_line_bad(text):
+    """What is wrong with one messages.ACTION_FAILED line (#64): the page adds ": <why>", so it is a verb phrase that
+    starts "Couldn't", with no end punctuation, and the same plain-words rules as the table above. -> [problems]."""
+    bad = [w for w in FORBIDDEN if w in text] + [w for w in US if w in text.lower()]
+    if not text.startswith("Couldn't "):
+        bad.append("does not start with Couldn't")
+    if text.rstrip() != text or text[-1:] in ".:;,!?…":
+        bad.append("ends in punctuation or a space")
+    return bad
+
+
+for bad_line in ("Couldn't save stdout", "Snoozed failed", "Couldn't snooze that.", "Couldn't snooze that:", "Couldn't color it"):
+    check(action_line_bad(bad_line), f"the ACTION_FAILED lint refuses {bad_line!r}")
+for k, v in messages.ACTION_FAILED.items():
+    check(not action_line_bad(v), f"ACTION_FAILED[{k}]: plain words, a verb phrase starting Couldn't (found {action_line_bad(v)})")
 check("privacy settings" in FAILURES["schedule_blocked"]["what"] and "Google" in FAILURES["gmail_signin"]["fix"]
       and "Slack" in FAILURES["slack_signin"]["fix"] and "Claude" in FAILURES["signin_expired"]["what"],
       "failures name who is involved: your Mac's privacy settings, Google, Slack, Claude")

@@ -741,7 +741,7 @@ if NODE:
         check(v["ai"]["state"] == "Needs you" and ">Install Claude</button>" in v["ai"]["rows"] and "Show the exact command" in v["ai"]["rows"]
               and v["ai"]["act"] == "", f"'Your AI' needs you, with Install Claude (its command one click away) as its one button ({v['ai']['state']})")
         check(v["pick"].count('role="radio"') == 3 and 'aria-checked="true" tabindex="0" data-fk="ai-claude" onclick="chooseAI(\'claude\')"' in v["pick"]
-              and all(x in v["pick"] for x in ("ChatGPT (Codex)", "Miro only if you added a Miro server", "Free gets Gmail and Slack isn&#39;t confirmed", "Google Cloud set-up", "paid Claude plan")),
+              and all(x in v["pick"] for x in ("ChatGPT (Codex)", "Miro isn&#39;t available with Codex unless you added a Miro server to Codex yourself.", "Free gets Gmail and Slack isn&#39;t confirmed", "Google Cloud set-up", "paid Claude plan")),
               "three choices, Claude picked, each saying what it needs and what it can't do")
         check(v["src"]["state"] == "Not started" and messages.say("needs_install", ai="Claude") in v["src"]["rows"]
               and "<button" not in v["src"]["rows"] and v["src"]["act"] == "",

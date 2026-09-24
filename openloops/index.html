@@ -27,6 +27,8 @@ dialog{border:1px solid var(--line);border-radius:10px;padding:0;background:var(
 dialog::backdrop{background:rgba(0,0,0,.45)}dialog .box{margin:0;border:0}dialog label{display:block;margin-top:10px;font-size:12px;color:var(--mut)}
 dialog input,dialog textarea{width:100%;margin-top:4px}dialog .quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .card.busy{opacity:.5;pointer-events:none}
+/* a click still waiting after a second (the app may be holding its save lock for up to 10 s, #64): say so on the card */
+.card.saving>.acts::before{content:'Saving…';font-size:12px;color:var(--ink);align-self:center;margin-right:6px}
 /* radio/checkbox labels are real targets too (people picks, settings toggles) */
 label:has(>input[type=radio]),label:has(>input[type=checkbox]){display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 6px;border-radius:6px;cursor:pointer}
 label:has(>input:checked){background:var(--bg)}
@@ -347,7 +349,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="high">high (recommended with Sonnet)</option><option value="xhigh">xhigh</option><option value="max">max</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
    <div class="sub" id="cfg_model_note">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at high or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
   </div>
-  <div class="sub" id="cfg_codex_note" style="margin-top:8px;display:none"><b>Before you schedule a daily refresh:</b> Codex runs on your ChatGPT plan, which only allows so much Codex use every 5 hours and every week, shared with ChatGPT's other Codex tools. Every scan, refresh and chase uses some of it. If it runs out, Open Loops can't read anything until it comes back. Gmail and Slack are the ones connected in your ChatGPT account (chatgpt.com/apps), and Miro isn't available with Codex.</div>
+  <div class="sub" id="cfg_codex_note" style="margin-top:8px;display:none"><b>Before you schedule a daily refresh:</b> Codex runs on your ChatGPT plan, which only allows so much Codex use every 5 hours and every week, shared with ChatGPT's other Codex tools. Every scan, refresh and chase uses some of it. If it runs out, Open Loops can't read anything until it comes back. Gmail and Slack are the ones connected in your ChatGPT account (chatgpt.com/apps). <span id="cfg_codex_miro"></span></div>
   <div class="sub" id="cfg_slack_src" style="margin-top:6px"></div>
   <div id="cfg_slack_wrap" style="margin-top:10px">
    <label><input type="checkbox" id="cfg_use_slack"> Use Slack</label>
@@ -436,6 +438,8 @@ const PAGE=Math.random().toString(36).slice(2)+Date.now().toString(36);let stopp
 // messages.py's table of failures, for this platform: app.py fills it in as it serves the page (#25). msg(id, {ai:…}) is
 // "<what happened> <what to do>". Kept on the page, so it can still say "not running" once the server has gone.
 const MSG=/*OL_MESSAGES*/{};
+// A card click the app could not save: "Couldn't snooze that: <why>" (messages.py ACTION_FAILED, #64)
+const ACT_FAILED=/*OL_ACTION_FAILED*/{};
 const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
 function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
 function msgFollow(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_follow&&f&&f.row?' '+fill(m.fix_follow,f):''):''}   // "what" + "follow the <row> row": for a row with no button
@@ -541,7 +545,7 @@ const MODELS={
   model:[['gpt-5.6-sol','GPT-5.6 Sol (recommended)'],['gpt-6-astra','GPT-6 Astra'],['',"Codex's default"]],
   effort:[['low','low (recommended)'],['medium','medium'],['high','high'],['xhigh','xhigh'],['',"Codex's default"]],
   note:'Codex only. Which OpenAI model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. GPT-5.6 Sol at low does the job and uses the least of your ChatGPT plan\'s Codex allowance; higher effort uses more. "Codex\'s default" is Codex\'s own built-in choice: Open Loops runs Codex with settings of its own, not the ones in your Codex app.'}};
-function modelUI(a){const m=MODELS[a];$('#cfg_model_wrap').style.display=m?'':'none';$('#cfg_codex_note').style.display=a==='codex'?'':'none';if(!m)return;
+function modelUI(a){const m=MODELS[a];$('#cfg_model_wrap').style.display=m?'':'none';$('#cfg_codex_note').style.display=a==='codex'?'':'none';$('#cfg_codex_miro').textContent=CODEX_MIRO;if(!m)return;
  const pick=(i,list)=>{const v=C&&C[m.keys[i]]!==undefined?String(C[m.keys[i]]):m.def[i];   // a hand-typed model id keeps its own option
   return [list.some(o=>o[0]===v)?list:list.concat([[v,v]]),v]};
  [['#cfg_model',0,m.model],['#cfg_effort',1,m.effort]].forEach(([id,i,list])=>{const [opts,v]=pick(i,list);$(id).innerHTML=opts.map(([x,t])=>`<option value="${esc(x)}">${esc(t)}</option>`).join('');$(id).value=v});
@@ -788,9 +792,13 @@ paintConnect=function(){paintConnectBase();
 // Three cards over the same connection check as the checklist (DOC.steps): each shows its rows (checkRow), its state
 // and one action. Up on first run while connecting and while the first scan waits for its press; from ⚙ Settings →
 // Set-up any time after (SETUP_OPEN), so a broken connection is fixed from the same place.
+// Codex and Miro, said once (#64): the Miro row's sentence, which the picker and the Settings note repeat word for word
+const CODEX_MIRO=(MSG.codex_no_miro&&MSG.codex_no_miro.what)||'';
+// Check again with Codex chosen: its check takes about half a minute (#64); said next to the button while it runs
+const codexWait=a=>suBusy==='check'&&a==='codex'&&MSG.codex_checking?` <span class="sub">${esc(MSG.codex_checking.fix)}</span>`:'';
 const AI_CHOICES=[   // what each needs and costs, and what it cannot do (#26, INSTALL.md "More than one account")
  ['claude','Claude','Needs a paid Claude plan. Slack, Gmail and Miro each connect by clicking Allow in your browser; one Slack and one Gmail per Claude account.'],
- ['codex','ChatGPT (Codex)','Needs a ChatGPT account: Codex comes with Free and paid plans, but whether Free gets Gmail and Slack isn\'t confirmed. Every scan uses some of its Codex allowance. Gmail and Slack are the ones your ChatGPT account connected; Miro only if you added a Miro server to Codex yourself.'],
+ ['codex','ChatGPT (Codex)','Needs a ChatGPT account: Codex comes with Free and paid plans, but whether Free gets Gmail and Slack isn\'t confirmed. Every scan uses some of its Codex allowance. Gmail and Slack are the ones your ChatGPT account connected. '+CODEX_MIRO],
  ['grok','Grok','Needs a Grok account. Gmail needs a one-off Google Cloud set-up of your own (INSTALL.md says how); Slack is off unless you turn it on.']];
 const SU_STATE={todo:'Not started',progress:'In progress',done:'Done',needs:'Needs you',unchecked:'Not checked'};
 // Windows: the connection check has no morning-refresh row there (doctor.py reads the Mac's only), so it is never "Done"
@@ -836,11 +844,11 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  // #62: greyed out because something is running: say why, under the picker (not while it is changing: the rows say that)
  const why=!suBusy&&!stale&&anyRun?aiLockSaid(true):'';$('#su_ai_why').textContent=why;$('#su_ai_why').style.display=why?'':'none';
  const ai=stale?[]:suRows(SU_AI),aiFirst=(ai.find(s=>!s.ok&&s.connect)||{}).connect;
- paintRows($('#su_ai_rows'),stale?[`<div class="sub" style="padding:6px 0"><span class="spin"></span>Checking ${esc(aiName(a))} on this computer…</div>`]:ai.map(s=>checkRow(s,s.connect===aiFirst)));
+ paintRows($('#su_ai_rows'),stale?[`<div class="sub" style="padding:6px 0"><span class="spin"></span>${a==='codex'?esc(msg('codex_checking')):`Checking ${esc(aiName(a))} on this computer…`}</div>`]:ai.map(s=>checkRow(s,s.connect===aiFirst)));
  const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
  const openAgent=a==='grok'&&ai.length===2&&ai[0].ok&&!ai[1].ok;   // Grok signs in in its own window
  setHTML($('#su_ai_act'),stale||rowBtn(ai)?'':openAgent?`<button class="primary" onclick="suOpenAgent()">Open ${esc(agentLabel())}</button>`
-  :`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
+  :`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>${codexWait(a)}`);
  suPill('#su_ai_state',suState('ai',st));
  // 2. your sources: one row each, one Connect each; one is enough
  $('#su_src_help').textContent=a==='grok'?'Gmail alone is enough (Slack only if you turn it on). Each row says the one-off step it needs.'
@@ -848,7 +856,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :' Each Connect opens your browser, where you click Allow.');
  const src=stale?[]:suRows(SU_SRC),srcFirst=srcReady()?'':(src.find(s=>!s.ok&&s.connect)||{}).connect;   // once one is connected, the rest are extras, not the next step
  paintRows($('#su_src_rows'),src.map(s=>checkRow(s,s.connect===srcFirst)));
- setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
+ setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>${codexWait(a)}`);
  suPill('#su_src_state',suState('src',st));
  // 3. your schedule: the morning time, whether the morning refresh started (Mac, doctor.py "schedule"), and last the first scan
  $('#su_time').innerHTML=ISO?esc(msg('sched_test_copy'))
@@ -1014,7 +1022,7 @@ function priSel(l){const id=esc(l.id);return `<div class="sub" title="${l.priori
 function card(l,dim){const w=workdays(l.asked_at);const sn=l.snooze_until&&l.snooze_until>TODAY;
  const vault=l.channel==='vault';
  const note=l.channel==='note'||(l.manual&&!vault);
- return `<div class="card ${dim||sn?'snoozed':''}"><div class="dot ${col(l)}"></div>
+ return `<div class="card ${dim||sn?'snoozed':''}${actCls(l.id)}"><div class="dot ${col(l)}"></div>
  <div><div class="who">${esc(l.owner || (note?'note':''))}</div><div class="sub">${vault?esc(l.vault_id||l.notes||''):note?(l.owner?'note':''):`${esc(l.channel)} · ${w}wd`}${l.chases?` · chased ${l.chases}x`:''}${l.last_chase_at?(l.last_chase_mode==='send'?`<br><b style="color:var(--g)">➤ chase sent ${fmt(l.last_chase_at)}</b>`:`<br><b style="color:var(--a)" title="a draft is waiting in Slack/Gmail - check it before drafting again">✎ chase drafted ${fmt(l.last_chase_at)}</b>`):''}${sn?` · snoozed → ${esc(l.snooze_until)}`:''}${vault&&l.vault_flag?` · <span class="pill">${esc(l.vault_flag)}</span>`:''}</div>${l.status!=='done'?priSel(l):''}</div>
  <div><div>${esc(l.ask)}</div><div class="sub">${vault?`from ${esc(l.source||'your to-do file')} · added ${fmt(l.asked_at)}${l.vault_changed_at?` · wording changed ${fmt(l.vault_changed_at)}`:''}`:note?`added ${fmt(l.asked_at)}`:`asked ${fmt(l.asked_at)}`}${l.last_reply_at?` · they: <i>"${esc((l.reply_snippet||'').slice(0,100))}"</i> ${fmt(l.last_reply_at)}`:vault||note?'':l.inbound?` · you haven't replied yet`:` · they haven't replied yet`}${l.link?` · <a href="${esc(l.link)}" target="_blank" rel="noopener">open</a>`:''}${!vault&&l.notes?`<br>${linkify(l.notes)}`:''}${(l.links||[]).length?`<br>${l.links.map(x=>`<a class="chip" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.url)}"><span>${esc(x.label||host(x.url))}</span><button type="button" aria-label="remove link" title="remove link" onclick="event.preventDefault();dropLink('${esc(l.id)}','${esc(x.url)}')">×</button></a>`).join('')}`:''}</div></div>
  <div class="acts" data-id="${esc(l.id)}">${(()=>{
@@ -1045,10 +1053,22 @@ const who=l=>l?((l.owner?l.owner+' — ':'')+(l.ask||'')).slice(0,60):'';
 // every card action: card dims at once (pending), then a toast says what happened; done/snooze/reopen offer Undo
 const UNDO={done:'reopen',reopen:'done',snooze:'unsnooze',unsnooze:'snooze',auto_off:'auto_on',auto_on:'auto_off'};
 const SAID={priority:'Priority set',done:'Marked done',reopen:'Reopened',snooze:'Snoozed',unsnooze:'Unsnoozed',note:'Note saved',add_link:'Link added',drop_link:'Link removed',auto_off:'Auto-chase off for',auto_on:'Auto-chase on for'};
-async function act(id,action,extra,quiet){const l=S&&S.loops.find(x=>x.id===id);const card=document.querySelector(`.acts[data-id="${CSS.escape(id)}"]`);if(card)card.closest('.card').classList.add('busy');
- try{await api('/api/action',Object.assign({id,action},extra||{}))}
- catch(e){if(card)card.closest('.card').classList.remove('busy');toast((SAID[action]||action)+' failed: '+errSaid(e),{err:true});throw e}
- await loadState();renderLists();
+// Card clicks still waiting for the app, by card id (#64, review of #66): how many, and whether "Saving…" is due. The
+// lists are drawn afresh on every refresh, so a card takes its busy / saving look from here (actCls, in the card's
+// markup) and never only from an element a redraw may already have replaced. Cleared when the last click on it is over.
+const PENDING_ACT=new Map();
+const actCls=id=>{const p=PENDING_ACT.get(id);return p?' busy'+(p.saving?' saving':''):''};
+function actPaint(id){const a=document.querySelector(`.acts[data-id="${CSS.escape(id)}"]`),c=a&&a.closest('.card');if(!c)return;
+ const p=PENDING_ACT.get(id);c.classList.toggle('busy',!!p);c.classList.toggle('saving',!!(p&&p.saving))}
+async function act(id,action,extra,quiet){const l=S&&S.loops.find(x=>x.id===id);
+ const p=PENDING_ACT.get(id)||{n:0,saving:false};p.n++;PENDING_ACT.set(id,p);actPaint(id);   // dims at once
+ // no answer after a second: "Saving…" on the card until there is one (the app waits up to 10 s for its lock, #64)
+ const slow=setTimeout(()=>{if(PENDING_ACT.get(id)===p){p.saving=true;actPaint(id)}},1000);
+ try{
+  try{await api('/api/action',Object.assign({id,action},extra||{}))}
+  catch(e){toast((ACT_FAILED[action]||ACT_FAILED.other||"Couldn't save that")+': '+errSaid(e),{err:true});throw e}
+  await loadState();renderLists();
+ }finally{clearTimeout(slow);if(--p.n<=0)PENDING_ACT.delete(id);actPaint(id)}   // also when the refresh after it fails
  if(quiet)return;const undoTo=UNDO[action];
  if(undoTo)toast(`${SAID[action]}: ${who(l)}${action==='snooze'?' until '+extra.until:''}`,{undo:()=>act(id,undoTo,undoTo==='snooze'?{until:l.snooze_until||extra.until}:null,true)});
  else toast(`${SAID[action]||action}: ${who(l)}`)}
@@ -1288,6 +1308,10 @@ function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.
  else if(k==='people')toast('People suggested - pick their seniority');}}
 // One pass at a time, whoever asks (timer, a job start, the tab coming back, Start over): a call during a pass only
 // asks for one more pass once it is done (review of #48, P2 2).
+// The app answered, but was busy saving (503 with code app_busy, a job or a repair holding state.json, #61): not
+// "down". The last state stays up, no banner, and the next poll comes at the usual pace; api() has already put the
+// one Console line for it. After a failed poll it means the app is back: the offline banner and backoff go.
+const appBusy=e=>!!(e&&e.status===503&&e.body&&e.body.code==='app_busy');
 async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inLoop=true;try{
   await loadState();
   for(const k of Object.keys(J))if(J[k].running&&!runSeen.has(k))clog(k+' started');runSeen=new Set(Object.keys(J).filter(k=>J[k].running));
@@ -1300,7 +1324,7 @@ async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inL
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
   await tick();banner('');if(offline)reattached=false;   // #27: on load, and once back after the banner, one sweep at a time until one completes
   reattachSweep();offline=false;   // #62: and again once the AI has changed
- }catch(e){offline=true;appDown(e)}   // not answering: no fast polls until it does (below)
+ }catch(e){if(!appBusy(e)){offline=true;appDown(e)}else if(offline){offline=false;reattached=false;banner('')}}   // not answering: no fast polls until it does (below); busy: back, one sweep once a poll gets through
  inLoop=false;if(stopped)return;if(pendingLoop){pendingLoop=false;return loop()}   // asked for during this pass: once more, now
  const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
  loopT=setTimeout(loop,offline?60000:Object.keys(WATCH).length?1500:(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
@@ -1321,5 +1345,7 @@ cfgRestore();
 $('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';
 $('#cfg_agent').setAttribute('aria-label','Your AI');
 clog('page opened '+location.host+' · page '+PAGE);conPaint();
-(async()=>{try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm()}catch(e){appDown(e)}loop()})();
+// Busy saving at the first load (#66 review): no banner; try the first load again once, then the poll loop carries on
+(async()=>{for(let i=0;i<2;i++){try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm();break}
+ catch(e){if(!appBusy(e)){appDown(e);break}}}loop()})();
 </script></body></html>

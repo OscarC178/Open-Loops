@@ -128,7 +128,7 @@ The full developer guide (two copies / two ports, making a change, where things 
 
 | Path | What it does |
 |---|---|
-| `openloops/app.py` | the page at http://localhost:8765 (`python -m openloops.app`; `--port N` to choose, `--stop` quits a running one, as does closing the tab) |
+| `openloops/app.py` | the page at http://localhost:8765 (`python -m openloops.app`; `--port N` to choose, `--stop` quits a running one, as does closing the tab; `--help` lists the options and starts nothing) |
 | `package.json`, `scripts/loops.mjs` | `npm run dev` / `stop` / `prod` / `test` / `doctor` / `refresh` / `setup` for a checkout (no npm packages) |
 | `openloops/refresh.py` | finds new asks, checks open threads for replies (`--slack-only` for a quick Slack pass) |
 | `openloops/chase.py` · `autochase.py` | drafts (or, if you tick the boxes, sends) a nudge; the optional timer |

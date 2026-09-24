@@ -1,6 +1,9 @@
 """Standing-items.md round-trip: list, compulsory closure, vault cards on Home.
 
     python3 tests/test_standing.py    # fast; no Slack/Gmail. Temp vault + temp install.
+
+Last, #61: two overlapping /api/state polls each apply only their own vault_seen changes (standing.merge_seen), so
+neither loses the other's first_seen / changed_at.
 """
 import json, shutil, time, urllib.error, urllib.request
 
@@ -108,4 +111,110 @@ finally:
     stop(srv)
     shutil.rmtree(tmp, ignore_errors=True)
 
+
+# ---------------------------------------------------------------- #61: two overlapping polls, key by key
+# Two polls read state.json (no lock) and the to-do file, then save under the lock one after the other. Poll A saw
+# the file with A6 only, poll B a moment later with A6 and a new A10 (and A7 reworded); both started from the same
+# state.json. The old handler saved each poll's whole map, so the second save dropped the first one's keys.
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from openloops import standing  # noqa: E402  (pure functions only: nothing here reads or writes a file)
+
+item = lambda i, action, added="2026-09-20": {"id": i, "project": "P", "action": action, "added": added}
+cp = lambda x: json.loads(json.dumps(x))
+old = {"fp": standing._fp(item("A7", "Encode one Harbor eval")), "first_seen": "2026-09-01T09:00+01:00", "changed_at": None,
+       "action": "Encode one Harbor eval"}
+start = {"vault_seen": {"A7": dict(old)}}
+poll_a, poll_b = cp(start), cp(start)
+before_a, before_b = dict(poll_a["vault_seen"]), dict(poll_b["vault_seen"])
+standing.touch_seen(poll_a, [item("A6", "Run the skill audit"), item("A7", "Encode one Harbor eval")])
+poll_a["vault_seen"]["A6"]["first_seen"] = "2026-09-24T10:00+01:00"   # A came first: its time for A6 must stay
+standing.touch_seen(poll_b, [item("A6", "Run the skill audit"), item("A7", "Encode TWO Harbor evals"), item("A10", "Chase the invoice")])
+poll_b["vault_seen"]["A6"]["first_seen"] = "2026-09-24T10:01+01:00"
+check(before_a == start["vault_seen"] and before_a["A7"] == old, "touch_seen leaves the map it was given as it was (it changes a copy)")
+fresh = cp(start)   # state.json as the first save finds it
+check(standing.merge_seen(fresh, before_a, poll_a["vault_seen"]), "poll A's merge changes state.json")
+check(standing.merge_seen(fresh, before_b, poll_b["vault_seen"]), "poll B's merge, on the file A saved, changes it too")
+seen = fresh["vault_seen"]
+check(set(seen) == {"A6", "A7", "A10"}, f"both polls' keys are kept ({sorted(seen)})")
+check(seen["A6"]["first_seen"] == "2026-09-24T10:00+01:00", "A6 keeps the first_seen of the poll that saw it first")
+check(seen["A7"]["first_seen"] == old["first_seen"] and seen["A7"]["changed_at"] and seen["A7"]["action"] == "Encode TWO Harbor evals",
+      "A7 keeps its first_seen and takes B's changed_at for the new wording")
+check(seen["A10"]["first_seen"] and seen["A10"]["action"] == "Chase the invoice", "A10, seen by B only, is added")
+# the other order: B saves first, then A (which read the file before A10 existed and before A7 changed)
+fresh2 = cp(start)
+standing.merge_seen(fresh2, before_b, poll_b["vault_seen"])
+standing.merge_seen(fresh2, before_a, poll_a["vault_seen"])
+check(set(fresh2["vault_seen"]) == {"A6", "A7", "A10"} and fresh2["vault_seen"]["A7"]["changed_at"]
+      and fresh2["vault_seen"]["A6"]["first_seen"] == "2026-09-24T10:01+01:00",
+      "the other order keeps both too: A cannot drop A10 or undo B's changed_at, and B's first_seen for A6 stays")
+
+
+def two_polls(start, items_a, items_b, when_a, when_b):
+    """Two polls from the same state.json, reading the file as items_a / items_b -> (before, after) for each; the
+    times each records are when_a / when_b, so the test can tell whose record survived."""
+    out = []
+    for items, when in ((items_a, when_a), (items_b, when_b)):
+        st = cp(start)
+        b0 = dict(st["vault_seen"])
+        standing.touch_seen(st, items)
+        for k, rec in st["vault_seen"].items():   # stamp what this poll wrote with its own time
+            if b0.get(k) != rec:
+                rec.update({f: when for f in ("first_seen", "changed_at") if rec.get(f) and (k not in b0 or f == "changed_at")})
+        out.append((b0, st["vault_seen"]))
+    return out
+
+
+def both_orders(start, a, b):
+    """fresh after A then B, and after B then A."""
+    ab, ba = cp(start), cp(start)
+    standing.merge_seen(ab, *a); standing.merge_seen(ab, *b)
+    standing.merge_seen(ba, *b); standing.merge_seen(ba, *a)
+    return ab["vault_seen"], ba["vault_seen"]
+
+
+# review of #66: a poll that saw A7 leave (closed) and one that saw it back, reworded, afterwards
+a, b = two_polls(start, [], [item("A7", "Encode TWO Harbor evals")], "T1", "T2")
+ab, ba = both_orders(start, a, b)
+check("A7" not in ab, "closed then back: the close saved first wins that save; the poll that saw it back does not "
+      "resurrect it from a record that was deleted meanwhile (the next poll records it again)")
+check(ba.get("A7", {}).get("changed_at") == "T2" and ba["A7"]["first_seen"] == old["first_seen"],
+      f"back then closed, saved in that order: the stale close does not delete the newer record ({ba.get('A7')})")
+nxt = {"vault_seen": ab}
+standing.touch_seen(nxt, [item("A7", "Encode TWO Harbor evals")])
+check("A7" in nxt["vault_seen"], "...and the next poll after the close records A7 again")
+# a key another poll re-added after this poll's snapshot lost it: never deleted by the stale poll
+a, b = two_polls({"vault_seen": {"A7": dict(old)}}, [], [item("A7", "Encode one Harbor eval")], "T1", "T2")
+fresh3 = {"vault_seen": {"A7": dict(old, first_seen="T9")}}   # re-added by a third poll with its own first_seen
+standing.merge_seen(fresh3, *a)
+check(fresh3["vault_seen"].get("A7", {}).get("first_seen") == "T9", "a record re-added since this poll's snapshot is not deleted by it")
+# two successive rewords: A saw wording 2, B saw wording 3 (the newer), from the same state
+a, b = two_polls(start, [item("A7", "wording 2")], [item("A7", "wording 3")], "T1", "T2")
+ab, ba = both_orders(start, a, b)
+check(ab["A7"]["action"] == "wording 2" and ab["A7"]["changed_at"] == "T1",
+      "rewords saved A then B: B finds A7 changed since its snapshot and keeps A's record, not overwrite it blindly")
+check(ba["A7"]["action"] == "wording 3" and ba["A7"]["changed_at"] == "T2",
+      "rewords saved B then A: the older wording (A's) never overwrites the newer one")
+nxt = {"vault_seen": cp(ab)}
+_, dirty = standing.touch_seen(nxt, [item("A7", "wording 3")])
+check(dirty and nxt["vault_seen"]["A7"]["action"] == "wording 3", "...and the next poll records the newest wording")
+# "added here" never clears a concurrent changed_at: A saw A8 new; meanwhile B added it and C reworded it
+fresh4 = {"vault_seen": {"A8": {"fp": "x", "first_seen": "T0", "changed_at": "T5", "action": "newer"}}}
+b0 = {}
+st = {"vault_seen": {}}
+standing.touch_seen(st, [item("A8", "older")])
+standing.merge_seen(fresh4, b0, st["vault_seen"])
+check(fresh4["vault_seen"]["A8"] == {"fp": "x", "first_seen": "T0", "changed_at": "T5", "action": "newer"},
+      "a key this poll saw as new but another poll recorded (and reworded) first is kept whole, changed_at included")
+gone = {"vault_seen": {"A6": dict(old, fp="x"), "A7": dict(old)}}
+b0 = dict(gone["vault_seen"])
+standing.touch_seen(gone, [item("A7", "Encode one Harbor eval")])
+fresh5 = {"vault_seen": {"A6": dict(old, fp="x"), "A7": dict(old), "A11": dict(old, fp="y")}}   # A11: another poll's
+standing.merge_seen(fresh5, b0, gone["vault_seen"])
+check(set(fresh5["vault_seen"]) >= {"A7", "A11"} and "A6" not in fresh5["vault_seen"],
+      "a key this poll saw leave, unchanged since, is removed; one it never saw (another poll's) is left alone")
+app_src = (Path(__file__).resolve().parent.parent / "openloops" / "app.py").read_text(encoding="utf-8")
+check("standing.merge_seen(fresh, seen_before" in app_src and 'fresh["vault_seen"] = s.get(' not in app_src,
+      "/api/state merges per key under the lock, never saves the pre-lock map whole")
 say("all passed")
