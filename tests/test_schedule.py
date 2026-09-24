@@ -118,6 +118,16 @@ try:
           "review of #70: a failure with a prefix before the path ('line 1: ') is still matched to this install")
     touch(err, f"/bin/bash: line 1: {other}/scripts/run-refresh.sh: Permission denied\n")
     check(doctor.schedule_step(logs, root) is None, "...and a prefixed line about another install still is not")
+    for ln in ("/bin/bash: /Users/test/A:B/scripts/run-refresh.sh: Operation not permitted",
+               "/bin/bash: line 1: /Users/test/A:B/scripts/run-refresh.sh: Permission denied"):
+        m = doctor.RUN_REFRESH_RE.search(ln)
+        check(m and m.group(1) == "/Users/test/A:B/scripts/run-refresh.sh",
+              f"second review of #70: a colon inside a folder name is kept in the path, the prefix still left out ({ln[:24]}...)")
+    if sys.platform != "win32":   # a folder name with a colon in it cannot exist on Windows
+        colon = tmp / "A:B" / "OpenLoops"
+        touch(colon / "state" / "logs" / "launchd.err.log", f"/bin/bash: line 1: {colon}/scripts/run-refresh.sh: Permission denied\n")
+        s = doctor.schedule_step(colon / "state" / "logs", colon)
+        check(s is not None and s["kind"] == "failed", "...and such an install's own failure is matched to it")
     touch(err, blocked * 3 + missing)
     s = doctor.schedule_step(logs, root)
     check(s["kind"] == "failed" and "No such file" in s["detail"], "older privacy lines, newer other failure: the LATEST decides")
