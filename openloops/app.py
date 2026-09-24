@@ -283,6 +283,85 @@ URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 # challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
 REDACT_RE = re.compile(r"(https://[^\s?\x1b\x07]+)\?[^\s\x1b\x07]+")
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
+CONNECT_KEEP = 64000  # characters of a step's output its log keeps (the newest); a line longer than this is cut
+
+
+class SigninOutput:
+    """A setup step's output, fed in pieces of any size as it arrives -> the text for its log (every link without
+    its query) and the sign-in link once it has arrived whole. Pure Python over bytes and str: no files, no
+    processes, the same on every platform, so tests/test_connect_output.py runs it anywhere.
+
+    Review of #70: the Windows runner used to read only the last 64 KB of its output file on each poll, so a link
+    followed by more than that before the next poll was never seen, and the tail of its query could reach the log
+    with the https:// that the redaction looks for cut off. Now every byte is looked at once, in order:
+    - only whole lines are decoded, stripped of escape codes and redacted; the bytes after the last newline wait in
+      `carry` (memory only, never written) until the rest arrives, so a link, an escape code or a UTF-8 character
+      split between two reads is read whole;
+    - `kept` holds redacted text only, trimmed to its newest CONNECT_KEEP characters at a line break;
+    - a line with no end is not held for ever: past `limit` bytes it is cut at its last space (a link has none,
+      so a link is never split), or, with no space at all, dropped up to its newline (`skip`), so no part of it,
+      query included, is ever written without the start that would have got it redacted."""
+    NOTE = "(rest of the link not saved)"
+
+    def __init__(self, limit=CONNECT_KEEP):
+        self.limit, self.kept, self.carry, self.url, self.skip = limit, "", b"", "", False
+
+    @staticmethod
+    def redact(text):
+        return REDACT_RE.sub(r"\1?" + SigninOutput.NOTE, text)
+
+    @staticmethod
+    def _clean(raw):
+        # errors="replace": output that is not UTF-8 (a cp1252 console, say) still reads, a stray character aside;
+        # a sign-in link is ASCII, so it survives whatever the rest is in
+        return ANSI_RE.sub("", raw.decode("utf-8", "replace"))
+
+    def _look(self, text, whole):
+        """Note the first link in text if it is complete: followed by whitespace, or ending a whole line."""
+        u = None if self.url else URL_RE.search(text)
+        if u and (text[u.end():u.end() + 1].isspace() or (whole and u.end() == len(text))):
+            self.url = u.group(0)
+
+    def _take(self, raw, end):
+        """One whole line (or a piece cut at a space) -> kept, redacted."""
+        text = self._clean(raw)
+        self._look(text, True)
+        self.kept += self.redact(text) + end
+
+    def feed(self, chunk):
+        """The next bytes of output, as they came."""
+        data = self.carry + chunk
+        if self.skip:  # the rest of an over-long line with no space in it: dropped up to its newline
+            nl = data.find(b"\n")
+            if nl < 0:
+                self.carry = b""
+                return
+            data, self.skip = data[nl + 1:], False
+        *lines, self.carry = data.split(b"\n")
+        for ln in lines:
+            self._take(ln, "\n")
+        if len(self.carry) > self.limit:
+            cut = max(self.carry.rfind(b" "), self.carry.rfind(b"\t"))
+            if cut >= 0:
+                piece, self.carry = self.carry[:cut + 1], self.carry[cut + 1:]
+                self._take(piece, "")
+            else:
+                self.carry, self.skip = b"", True
+                self.kept += "(a very long line not saved)\n"
+        if len(self.kept) > self.limit:  # the newest lines; kept is redacted already, so any cut is safe
+            nl = self.kept.find("\n", len(self.kept) - self.limit)
+            self.kept = self.kept[nl + 1:] if nl >= 0 else self.kept[-self.limit:]
+        self._look(self._partial(), False)  # a link on the line still arriving counts once whitespace follows it
+
+    def _partial(self):
+        """The line still arriving, as text: an unfinished escape code at its end left out."""
+        return self._clean(self.carry).split("\x1b")[0]
+
+    def text(self):
+        """The log's text now: the kept lines, then the line still arriving, redacted like the rest."""
+        return self.kept + self.redact(self._partial())
+
+
 connects = {}  # step -> {"running", "rc", "url", "started", "agent", "run_id"}
 # run_id (#27): one id per run, uuid4 hex, returned by the POST that starts it and by every GET. It is what the page
 # keys a run on (a closed Allow pop-up is remembered for one run_id); "started" is for display only (to the second).
@@ -379,16 +458,18 @@ def _connect_one(step, argv, log, deadline):
     shown = subprocess.list2cmdline(argv) if WIN else " ".join(shlex.quote(a) for a in argv)
     before = log.read_text(encoding="utf-8") + "$ " + shown + "\n"
 
-    def saw(raw):
-        """The command's output so far (bytes, the last 64 KB) -> the log rewritten from it, the sign-in link kept
-        and opened once. The whole buffer each time: an escape code or the link can straddle two reads."""
-        text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
-        log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
-        u = URL_RE.search(text)
-        if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
-            connects[step]["url"] = u.group(0)
+    out = SigninOutput()
+
+    def saw(chunk):
+        """The command's NEW output (bytes, as read) -> the log rewritten (the kept lines, links without their
+        query), the sign-in link kept and opened once. SigninOutput carries a link or escape code split between
+        two reads over to the next, so each byte is handed over once, never the whole output again."""
+        out.feed(chunk)
+        log.write_text(before + out.text(), encoding="utf-8")
+        if out.url and not connects[step].get("url"):  # the whole link is in
+            connects[step]["url"] = out.url
             if "--no-browser" in argv:
-                webbrowser.open(u.group(0))
+                webbrowser.open(out.url)
 
     if WIN:
         return _connect_one_win(step, argv, log, deadline, saw)
@@ -401,7 +482,7 @@ def _connect_one(step, argv, log, deadline):
     if p is None:  # Open Loops is closing
         os.close(m)
         return -1
-    raw, tail, rc = b"", "", -1
+    tail, rc = "", -1
     try:
         while True:
             if time.time() > deadline:
@@ -415,8 +496,7 @@ def _connect_one(step, argv, log, deadline):
                     chunk = b""
                 if not chunk:
                     break
-                raw = (raw + chunk)[-64000:]
-                saw(raw)
+                saw(chunk)
             elif p.poll() is not None:
                 break
     finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
@@ -428,11 +508,27 @@ def _connect_one(step, argv, log, deadline):
     return rc
 
 
+def _read_on(path, offset, saw):
+    """Hand saw() what path holds past offset, a MB at a time -> the new offset. A file not there yet (or not
+    readable just now) is read next time from the same place. Platform-independent, for the tests."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            while chunk := f.read(1 << 20):
+                offset += len(chunk)
+                saw(chunk)
+    except OSError:
+        pass
+    return offset
+
+
 def _connect_one_win(step, argv, log, deadline, saw):
     """_connect_one on Windows (#27): the command in a hidden console (a real terminal for the CLI, no window to
     close), its output redirected by cmd.exe to state/connect-<step>.out, which is read every quarter second and
-    handed to saw() (the log, the link). The .out file holds the link query and all while the command runs, as
-    the console window did before; it is removed once the command has ended."""
+    handed to saw() (the log, the link). Each poll reads on from where the last one stopped (review of #70: a
+    snapshot of the file's last 64 KB could skip a link altogether), a MB at a time. The .out file holds the link
+    query and all while the command runs, as the console window did before; it is removed once the command has
+    ended."""
     out = log.with_suffix(".out")
     try:
         out.unlink()
@@ -444,16 +540,11 @@ def _connect_one_win(step, argv, log, deadline, saw):
                 creationflags=subprocess.CREATE_NO_WINDOW)
     if p is None:  # Open Loops is closing, or this run was stopped from its row
         return -1
-    tail, rc = "", -1
+    offset, tail, rc = 0, "", -1  # offset: how much of the .out file saw() has been given
     try:
         while True:
             ended = p.poll() is not None  # looked at before the read, so the last lines are never missed
-            try:
-                with out.open("rb") as f:  # only the last 64 KB is read, however much the CLI has written
-                    f.seek(max(0, f.seek(0, 2) - 64000))
-                    saw(f.read())
-            except OSError:  # not created yet
-                pass
+            offset = _read_on(out, offset, saw)
             if ended:
                 break
             if time.time() > deadline:
