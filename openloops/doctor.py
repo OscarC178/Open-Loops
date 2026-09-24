@@ -53,14 +53,16 @@ def route(svc, servers):
     """Which way Claude reaches one service -> (source, state, name): source is a key of agent.CLAUDE_SERVERS[svc]
     ("plugin", "connector", "server"), state as parse_mcp_list, name the server exactly as listed (what
     `claude mcp login` needs, even if a later Claude Code renames it). ("", "", "") when no such server is set up.
-    A connected route beats one that needs signing in; otherwise the plugin wins, as the jobs expect."""
+    A name Open Loops can use (agent.usable_name) beats one it cannot, whatever its state (#27: an unusable plugin name
+    must not hide a working connector); then a connected route beats one that needs signing in; otherwise the plugin
+    wins, as the jobs expect. So an unusable name is only chosen, and reported unsupported, when no usable one is set up."""
     names = agent.CLAUDE_SERVERS[svc]
     found = []
     for name, state in servers.items():
         src = agent._route_of(name, svc)  # exact name, or for a server renamed by a later Claude Code its shape
         if src in names:
             found.append((src, state, name))
-    found.sort(key=lambda f: (f[1] != "connected", list(names).index(f[0])))
+    found.sort(key=lambda f: (not agent.usable_name(f[2]), f[1] != "connected", list(names).index(f[0])))
     return found[0] if found else ("", "", "")
 
 
@@ -129,8 +131,16 @@ def claude_steps(steps):
         if rc != 0:  # the listing failed (timeout, CLI error), perhaps part-way: a service it did not print may
             # still be set up, so it is "unknown", not "missing". Services it did print keep what it said about them.
             unlisted = (txt.strip().splitlines() or ["exit code " + str(rc)])[-1][:200]  # Console / diag only
-    (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (route(k, servers) for k in ("slack", "gmail", "miro"))
+    routes = {k: route(k, servers) for k in ("slack", "gmail", "miro")}
+    # #27: jobs derive their tool ids from the listed name (agent.server_name / tool_prefix). A name Open Loops will
+    # not use (agent.usable_name) would leave them on today's name, allowing tools that server does not have, so the
+    # row says so in red ("unsupported") instead of ticking it; the name is the row's developer detail, never in the sentence.
+    odd = {k: nm for k, (_, _, nm) in routes.items() if nm and not agent.usable_name(nm)}
+    for k in odd:
+        routes[k] = (routes[k][0], "unsupported", "")
+    (slack_source, s_st, s_nm), (_, g_st, g_nm), (miro_source, m_st, m_nm) = (routes[k] for k in ("slack", "gmail", "miro"))
     names = {k: n for k, n in (("slack", s_nm), ("gmail", g_nm), ("miro", m_nm)) if n}  # for agent.login_cmd
+    names.update({k: "" for k in odd})   # "": forget a name saved by an earlier check, so jobs cannot fall back to it (#27)
     slack, gmail, miro = s_st == "connected", g_st == "connected", m_st == "connected"
     # the step that blocks every source row: installing Claude, else signing in (#25: not "Sign in" before it exists)
     first = say("needs_install", ai="Claude") if not have else say("needs_signin", ai="Claude")
@@ -142,6 +152,9 @@ def claude_steps(steps):
                 r["fix"] = first
             elif unlisted and not state:  # no button: installing would not fix a listing that did not finish
                 r["fix"], r["detail"] = say("listing_failed"), unlisted  # what the CLI said: Console / diag, not the sentence
+            elif state == "unsupported":  # no button: signing in to it again would not change its name (#27)
+                r["fix"], r["detail"] = say("server_unsupported", service=service), "listed as " + odd[id_][:200]
+                r["alert"] = True   # red on the page (checkRow), not an optional row's grey "nothing to do yet" dash
             elif not state:
                 r["fix"], r["connect"] = fix_missing
             else:
@@ -471,13 +484,14 @@ def codex_steps(steps, recheck=False):
 def _save(updates, names=None):
     """Write doctor's own keys into config.json as it is now, under its cross-process lock: a check can take minutes
     (claude mcp list, the Slack-id prompt), and Settings saved meanwhile must survive. names (service -> server
-    name) are merged into the claude_servers the file holds now, not the copy read at the start."""
+    name) are merged into the claude_servers the file holds now, not the copy read at the start; a name of "" removes
+    that service's entry (its listed name was rejected, so an older saved one must not be used either, #27)."""
     from .store import update_json
 
     def mutate(cfg):
         new = dict(updates)
         if names:
-            new["claude_servers"] = {**(cfg.get("claude_servers") or {}), **names}
+            new["claude_servers"] = {k: v for k, v in {**(cfg.get("claude_servers") or {}), **names}.items() if v}
         if all(cfg.get(k) == v for k, v in new.items()):
             return False  # already so: leave the file alone
         cfg.update(new)

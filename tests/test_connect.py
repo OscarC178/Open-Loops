@@ -62,6 +62,13 @@ check(doctor.route("miro", {"miro": "connected"}) == ("server", "connected", "mi
 check(doctor.route("slack", {"plugin:slack-v2:slack": "auth"}) == ("plugin", "auth", "plugin:slack-v2:slack"), "a renamed plugin still reads as the plugin route, name kept")
 check(doctor.route("slack", {"my-slack": "connected"}) == ("", "", ""), "an unknown server named like slack is not guessed at")
 check(doctor.route("gmail", {}) == ("", "", ""), "no server -> no route")
+# #27: an unusable name (shell characters) never hides a usable route, connected or not
+check(doctor.route("slack", {"plugin:slack:x & bad": "connected", "claude.ai Slack": "connected"}) == ("connector", "connected", "claude.ai Slack"),
+      "an unusable plugin name and a usable connector, both connected: the connector is chosen")
+check(doctor.route("slack", {"plugin:slack:x & bad": "connected", "claude.ai Slack": "auth"}) == ("connector", "auth", "claude.ai Slack"),
+      "...and one that only needs signing in still beats the unusable name (its Connect button can fix it)")
+check(doctor.route("slack", {"plugin:slack:x & bad": "connected"}) == ("plugin", "connected", "plugin:slack:x & bad"),
+      "...an unusable name is chosen only when nothing usable is set up (the doctor then reports it unsupported)")
 
 # ---------------------------------------------------------------- doctor rows when the listing fails
 _real = (doctor.run, doctor.shutil.which)
@@ -192,6 +199,76 @@ got = agent._qualify(["slack.search_users", "miro.*"])
 check(got == ["mcp__plugin_slack-v2_slack__slack_search_users", "mcp__plugin_miro-next_miro"],
       f"a renamed server's tools are allowed under its own name, as it is signed in to (got {got})")
 cfg.pop("claude_servers")
+
+# #27, end to end: a fake `claude mcp list` from a later Claude Code that renamed its servers. The doctor ticks them,
+# saves the names it saw, and the jobs' tool ids and the sign-in follow those names. A listed name Open Loops will not
+# use (shell characters) is a red "unsupported" row with no button, never a green tick with today's tool ids behind it.
+RENAMED = ("Checking MCP server health…\n\n"
+           "plugin:slack-next:slack: https://mcp.slack.com/mcp (HTTP) - ✔ Connected\n"
+           "claude.ai Gmail Next: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected\n"
+           "plugin:miro:x & calc.exe: https://mcp.miro.com/ (HTTP) - ✔ Connected\n")
+_real = (doctor.run, doctor.shutil.which)
+doctor.shutil.which = lambda _: "/usr/local/bin/claude"
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version"
+                                       else (0, '{"loggedIn": true}') if args[1] == "auth" else (0, RENAMED))
+steps = []
+email, slack_ok, gmail_ok, s_src, miro_ok, m_src, names = doctor.claude_steps(steps)
+rows = {r["id"]: r for r in steps}
+doctor.run, doctor.shutil.which = _real
+check(rows["slack"]["ok"] and rows["gmail"]["ok"] and slack_ok and gmail_ok and s_src == "plugin",
+      "renamed Slack plugin and Gmail connector: both ticked, on their usual routes")
+check(names == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Next", "miro": ""},
+      f"...the names saved for the jobs are the ones listed; the unusable Miro name is not saved, and marks Miro's for removal (got {names})")
+check(not rows["miro"]["ok"] and not miro_ok and "connect" not in rows["miro"]
+      and rows["miro"]["fix"] == messages.say("server_unsupported", service="Miro")
+      and rows["miro"]["detail"] == "listed as plugin:miro:x & calc.exe" and "calc" not in rows["miro"]["fix"],
+      "a connected server under a name Open Loops won't use: unsupported in plain words, no button; the name goes to the Console only")
+# ...and it renders red: the page's own checkRow(), cut from index.html, run in node on the doctor's row
+NODE = shutil.which("node")
+if NODE:
+    page = (REPO / "openloops" / "index.html").read_text(encoding="utf-8").splitlines()
+    grab = lambda start: next(l for l in page if l.startswith(start))
+    js = "\n".join([grab("const esc="), "function connectBtn(){return ''}", grab("const checkRow="),
+                    f"console.log(checkRow({json.dumps(rows['miro'])}))"])
+    html = subprocess.run([NODE, "-e", js], capture_output=True, text=True, timeout=60).stdout
+    check('style="color:var(--r)" title="needs attention"' in html and "nothing to do here yet" not in html,
+          "the unsupported row renders as the red 'needs attention' cross, not the grey optional dash")
+elif os.environ.get("GITHUB_ACTIONS"):
+    raise SystemExit("FAIL: node is not on PATH in CI, so the unsupported row's rendering was not tested")
+else:
+    say("SKIP the unsupported row's rendering: node not installed")
+# persisted as doctor.main() does, through _save() into a real config.json that holds names from an earlier check
+_cfgdir = Path(tempfile.mkdtemp(prefix="openloops-doctor-names-"))
+_real_cfg, doctor.CONFIG = doctor.CONFIG, _cfgdir / "config.json"
+doctor.CONFIG.write_text(json.dumps({"agent": "claude", "miro_source": "plugin", "claude_servers":
+                                     {"miro": "plugin:miro-old:miro", "slack": "plugin:slack-old:slack"}}), encoding="utf-8")
+doctor._save({"slack_source": s_src, "miro_source": m_src}, names)
+cfg.clear()
+cfg.update(json.loads(doctor.CONFIG.read_text(encoding="utf-8")))
+doctor.CONFIG = _real_cfg
+shutil.rmtree(_cfgdir, ignore_errors=True)
+check(cfg["claude_servers"] == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Next"},
+      f"saved: the new names replace the old, and Miro's older saved name is removed, not kept (got {cfg['claude_servers']})")
+check(agent._qualify(["miro.*"]) == ["mcp__plugin_miro_miro"] and agent.login_cmd("miro")[0][3] == "plugin:miro:miro",
+      "...so Miro's jobs and sign-in cannot fall back to the stale saved name")
+got = agent._qualify(["slack.search_users", "gmail.search_threads"])
+check(got == ["mcp__plugin_slack-next_slack__slack_search_users", "mcp__claude_ai_Gmail_Next__search_threads"],
+      f"...and the jobs allow the renamed servers' own tool ids (got {got})")
+check(agent.login_cmd("slack")[0][3] == "plugin:slack-next:slack" and agent.login_cmd("gmail")[0][3] == "claude.ai Gmail Next",
+      "...and sign in to them by the same names")
+check(agent.usable_name("plugin:slack:slack") and agent.usable_name("claude.ai Gmail") and not agent.usable_name("")
+      and not agent.usable_name("a;b") and not agent.usable_name("x" * 101), "usable_name: plain names only, 1-100 characters")
+doctor.shutil.which = lambda _: "/usr/local/bin/claude"
+doctor.run = lambda args, timeout=60: ((0, "2.1.0 (Claude Code)") if args[1] == "--version" else (0, '{"loggedIn": true}') if args[1] == "auth"
+                                       else (0, "plugin:slack:x & bad: https://mcp.slack.com/mcp (HTTP) - ✔ Connected\n"
+                                                "claude.ai Slack: https://mcp.slack.com - ✔ Connected\n"))
+steps = []
+_, slack_ok, _, s_src, _, _, names = doctor.claude_steps(steps)
+doctor.run, doctor.shutil.which = _real
+check(slack_ok and s_src == "connector" and names.get("slack") == "claude.ai Slack" and steps[2]["ok"],
+      f"the doctor, both listed: Slack ticked via the usable connector, not reported unsupported (got {s_src}, {names})")
+for k in ("slack_source", "miro_source", "claude_servers"):
+    cfg.pop(k, None)
 agent.WIN = True
 check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail"]], "Windows: no --no-browser (the CLI opens the browser)")
 agent.WIN = sys.platform == "win32"
@@ -264,14 +341,14 @@ if which == "rollback":  # setup fails after the step is claimed: the claim must
     assert not ok and why.startswith("could not start gmail"), (ok, why)
     assert app.connects["gmail"]["running"] is False, app.connects
     log.rmdir()
-    agent.login_cmd = lambda step: [["true"]]
+    agent.login_cmd = lambda step, *a: [["true"]]
     ok, why = app.run_connect("gmail")
     assert ok, "still wedged after a failed start: " + why
     assert settle("gmail")
 if which == "quit":
     # Quit lands while a worker is still getting ready: the worker must not start its command afterwards
     ready = threading.Event()
-    agent.login_cmd = lambda step: (ready.wait(5), [["sleep", "30"]])[1]
+    agent.login_cmd = lambda step, *a: (ready.wait(5), [["sleep", "30"]])[1]
     ok, why = app.run_connect("miro")
     assert ok, why
     app.quit_requested = True
@@ -283,7 +360,7 @@ if which == "quit":
     assert not ok and "closing" in why, (ok, why)
     app.quit_requested = False
     # a child that closed its terminal but lives on stays visible to Quit until it has been waited for
-    agent.login_cmd = lambda step: [["sh", "-c", "exec >/dev/null 2>&1 </dev/null; sleep 30"]]
+    agent.login_cmd = lambda step, *a: [["sh", "-c", "exec >/dev/null 2>&1 </dev/null; sleep 30"]]
     ok, why = app.run_connect("miro")
     assert ok, why
     time.sleep(1.5)
@@ -291,6 +368,22 @@ if which == "quit":
     t = time.time()
     app.stop_connects()
     assert settle("miro", 10) and time.time() - t < 3, "Quit did not stop the child"
+if which == "agent_race":
+    # #27: Settings switch the AI to Codex after the press is recorded but before its worker has built the command.
+    # The run must be recorded and run for the same AI (the one read at the press), never labelled Claude, run as Codex.
+    cfg = {"agent": "claude"}
+    agent._cfg = lambda: cfg
+    launched = []
+    app._connect_one = lambda step, argv, log, deadline: (launched.append(argv), 0)[1]   # nothing really runs
+    real_url = agent.connect_url
+    def switched(step, agent_name=None):   # the worker's first read: the switch lands just before it
+        cfg["agent"] = "codex"
+        return real_url(step, agent_name)
+    agent.connect_url = switched
+    ok, why = app.run_connect("login")
+    assert ok, why
+    assert settle("login")
+    assert app.connects["login"]["agent"] == "claude" and launched == [["claude", "auth", "login"]], (app.connects["login"], launched)
 print("HARNESS OK " + which)
 '''
 
@@ -339,6 +432,8 @@ env = isolated_env(tmp, PATH=str(tmp / "bin") + os.pathsep + os.environ.get("PAT
                    BROWSER=str(tmp / "bin" / "browser"))
 out = harness("rollback")
 check(out.endswith("HARNESS OK rollback"), f"a setup step whose start fails is not left 'already running' ({out[-300:]})")
+out = harness("agent_race")
+check(out.endswith("HARNESS OK agent_race"), f"the AI is read once at the press: a switch before the worker starts cannot run Codex under a Claude label ({out[-300:]})")
 out = harness("quit")
 check(out.endswith("HARNESS OK quit"), f"Quit owns every setup-step process, however late it starts or ends ({out[-300:]})")
 
@@ -355,10 +450,13 @@ try:
 
     # Miro on the "server" route: mcp login on a pseudo-terminal, link read from the output and opened once
     code, out = api("/api/connect/miro", {})
-    check(code == 200 and out == {"started": True}, "POST /api/connect/miro answers at once with started")
+    check(code == 200 and out.get("started") is True and set(out) == {"started", "run_id"}, "POST /api/connect/miro answers at once with started (and its run_id)")
+    rid = out.get("run_id", "")
     code, out = api("/api/connect/miro", {})
     check(out.get("started") is False and out.get("error") == "already running" and out.get("said") == messages.say("connect_busy"),
           "a second click while it runs starts nothing, and says why in a sentence")
+    check(len(rid) == 32 and out.get("run_id") == rid and api("/api/connect/miro")[1].get("run_id") == rid,
+          "#27: the POST that starts a run returns its run_id, and the second click and the status return the same one")
     s = wait_step("miro")
     link = "https://example.invalid/authorize?state=abc&redirect_uri=http%3A%2F%2Flocalhost%3A51580%2Fcallback"
     check(s["rc"] == 0, f"mcp login exited 0 on a terminal (got rc={s['rc']}, last={s['last']!r})")
@@ -372,7 +470,8 @@ try:
           "the log keeps the link's address but not its query")
 
     # install: marketplace already known -> install only, no browser
-    api("/api/connect/slack_install", {})
+    rid2 = api("/api/connect/slack_install", {})[1].get("run_id", "")
+    check(len(rid2) == 32 and rid2 != rid, "each run has an id of its own")
     s = wait_step("slack_install")
     check(s["rc"] == 0 and "plugin | install | slack@claude-plugins-official" in calls()
           and not any(c.startswith("plugin | marketplace | add") for c in calls()), "Slack plugin installed without re-adding the marketplace")

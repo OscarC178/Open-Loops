@@ -89,12 +89,14 @@ def display_name(agent=None):
     return {"claude": "Claude", "grok": "Grok", "codex": "Codex"}.get(n, n.capitalize())
 
 
-def cli():
-    """Path or command for the agent's CLI (also used to open its sign-in terminal)."""
-    if name() == "grok":
+def cli(agent_name=None):
+    """Path or command for the agent's CLI (also used to open its sign-in terminal); agent_name: that AI, not the
+    configured one (a setup step already under way, #27)."""
+    who = agent_name or name()
+    if who == "grok":
         # grok installs to ~/.grok/bin, which Finder/launchd PATHs usually lack
         return shutil.which("grok") or str(Path.home() / ".grok" / "bin" / "grok")
-    if name() == "codex":
+    if who == "codex":
         # Homebrew, the install script (~/.local/bin, Windows %LOCALAPPDATA%), Codex's own folder or the desktop app:
         # a Finder- or launchd-started app has none of them on PATH
         home = Path.home()
@@ -878,14 +880,14 @@ CODEX_CONNECT_STEPS = ("login", "gmail", "slack")
 CODEX_APPS_URL = "https://chatgpt.com/apps"
 
 
-def connect_steps():
-    """The setup steps the checklist's buttons can start for the selected AI (none for Grok)."""
-    return {"claude": CONNECT_STEPS, "codex": CODEX_CONNECT_STEPS}.get(name(), ())
+def connect_steps(agent_name=None):
+    """The setup steps the checklist's buttons can start for the selected AI, or agent_name's (none for Grok)."""
+    return {"claude": CONNECT_STEPS, "codex": CODEX_CONNECT_STEPS}.get(agent_name or name(), ())
 
 
-def connect_url(step):
-    """A setup step that is a page to open rather than a command to run -> its URL, else None."""
-    return CODEX_APPS_URL if name() == "codex" and step in ("gmail", "slack") else None
+def connect_url(step, agent_name=None):
+    """A setup step that is a page to open rather than a command to run -> its URL, else None. agent_name: as login_cmd."""
+    return CODEX_APPS_URL if (agent_name or name()) == "codex" and step in ("gmail", "slack") else None
 
 
 _MARKETPLACE = "claude-plugins-official"  # where the Slack plugin lives
@@ -902,17 +904,20 @@ def _has_marketplace():
         return False  # adding it again is harmless; failing to add it breaks the install
 
 
-def login_cmd(step):
+def login_cmd(step, agent_name=None):
     """The commands for one Claude setup step, run in order -> [argv, ...], or None (unknown step, or not Claude).
     Codex has one command step, sign in (`codex login`, which opens the browser itself).
 
     Each opens the browser at most once and needs nothing typed: the user only clicks Allow. `mcp login`
     gets --no-browser off Windows because app.py runs it on a pseudo-terminal, reads the sign-in link it
     prints and opens that itself (the CLI refuses to wait for the browser when stdin is not a terminal).
-    On Windows app.py gives it a console window of its own instead, and the CLI opens the browser."""
-    if name() == "codex":  # the browser flow; Gmail / Slack are pages to open (connect_url), not commands
-        return [[cli(), "login"]] if step == "login" else None
-    if name() != "claude" or step not in CONNECT_STEPS:
+    On Windows app.py gives it a console window of its own instead, and the CLI opens the browser.
+    agent_name: the AI app.py read once when the step was pressed, so the run is labelled and run for the same AI
+    even if Settings change before its worker starts (#27); default the configured one."""
+    who = agent_name or name()
+    if who == "codex":  # the browser flow; Gmail / Slack are pages to open (connect_url), not commands
+        return [[cli(who), "login"]] if step == "login" else None
+    if who != "claude" or step not in CONNECT_STEPS:
         return None
     if step == "login":
         return [["claude", "auth", "login"]]
@@ -929,9 +934,17 @@ def server_name(svc):
     come from here, so a renamed server is never signed in to while jobs allow tools it does not have."""
     src = {"slack": slack_source, "miro": miro_source}.get(svc, lambda: "connector")()
     seen = str((_cfg().get("claude_servers") or {}).get(svc) or "")
-    if seen and re.fullmatch(r"[\w .:@/-]{1,100}", seen) and _route_of(seen, svc) == src:
+    if usable_name(seen) and _route_of(seen, svc) == src:
         return seen
     return CLAUDE_SERVERS[svc][src]
+
+
+def usable_name(server):
+    """Whether a server name `claude mcp list` printed is one Open Loops will sign in to and derive tool ids from: a
+    plain name of letters, digits, spaces and . : @ / - _ (Windows passes it through cmd.exe, so nothing a shell
+    reads). doctor.py reports a listed server whose name fails this as unsupported (#27), rather than ticking a row
+    whose jobs would fall back to today's name and allow tools that server does not have."""
+    return bool(re.fullmatch(r"[\w .:@/-]{1,100}", server or ""))
 
 
 def tool_prefix(server):

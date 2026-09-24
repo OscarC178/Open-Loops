@@ -224,7 +224,9 @@ URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 # challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
 REDACT_RE = re.compile(r"(https://[^\s?\x1b\x07]+)\?[^\s\x1b\x07]+")
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
-connects = {}  # step -> {"running", "rc", "url", "started"}
+connects = {}  # step -> {"running", "rc", "url", "started", "agent", "run_id"}
+# run_id (#27): one id per run, uuid4 hex, returned by the POST that starts it and by every GET. It is what the page
+# keys a run on (a closed Allow pop-up is remembered for one run_id); "started" is for display only (to the second).
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
 connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
 
@@ -338,27 +340,30 @@ def _connect_one(step, argv, log, deadline):
 def run_connect(step):
     """Start a Claude or Codex setup step in the background -> (started, error). One run per step at a time."""
     from . import agent
-    if step not in agent.connect_steps():
-        return False, "no such setup step for " + agent.display_name()
+    who = agent.name()   # read once (#27): the run is recorded, checked and run for this AI, whatever Settings say later
+    if step not in agent.connect_steps(who):
+        return False, "no such setup step for " + agent.display_name(who)
     with connect_lock:  # check and claim in one go
         if quit_requested:
             return False, "Open Loops is closing"
         if (connects.get(step) or {}).get("running"):
             return False, "already running"
-        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds")}
+        # "agent": the AI this run is for (#27), so a page reloaded after the AI was changed does not pick it up as the new one's
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
+                          "agent": who, "run_id": uuid.uuid4().hex}
     log = connect_log(step)
 
     def go():
         rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
-            url = agent.connect_url(step)
+            url = agent.connect_url(step, who)
             if url:  # a page to open, not a command: done once the browser has it; the user presses Check again after
                 with open(log, "a", encoding="utf-8") as f:
                     f.write(f"opened {url} in the browser\n")
                 connects[step].update(url=url, opened=True)
                 rc = 0 if webbrowser.open(url) else 1
                 return
-            for argv in agent.login_cmd(step) or []:
+            for argv in agent.login_cmd(step, who) or []:
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
                     break
@@ -423,7 +428,7 @@ def run_install(body):
             return False, "already running", 200
         connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
                           "why": "", "agent": ic["agent"], "command": ic["command"], "command_id": ic["id"],
-                          "vendor": ic.get("vendor", "")}
+                          "vendor": ic.get("vendor", ""), "run_id": uuid.uuid4().hex}
     log = connect_log(step)
 
     def go():
@@ -742,12 +747,14 @@ class H(BaseHTTPRequestHandler):
             busy = (connects.get(agent.INSTALL_STEP) or {}).get("agent") or agent.name()
             said = (messages.say("ai_changed") if why == "changed" else messages.say("app_updated") if why == "updated"
                     else messages.say("install_busy", ai=agent.display_name(busy)) if why == "already running" else "")
-            return self._json({"started": started, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
+            rid = (connects.get(agent.INSTALL_STEP) or {}).get("run_id", "") if started or why == "already running" else ""
+            return self._json({"started": started, "run_id": rid, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
             said = messages.say("connect_busy") if why == "already running" else ""
-            return self._json({"started": started, **({"error": why} if why else {}), **({"said": said} if said else {})},
+            rid = (connects.get(step) or {}).get("run_id", "") if started or why == "already running" else ""  # #27: which run
+            return self._json({"started": started, "run_id": rid, **({"error": why} if why else {}), **({"said": said} if said else {})},
                               200 if started or why == "already running" else 400)
         if self.path == "/api/open-claude":  # the fallback: a terminal running the agent, for anything the buttons can't do
             # opens a terminal running the configured agent so the user can sign in / connect

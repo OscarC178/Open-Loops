@@ -27,7 +27,8 @@ So a pass means the served page, the app and the jobs agree, not that a copy of 
      Install Claude as the one button; from a doctor payload with mixed states each card shows Not started / In
      progress / Done / Needs you; choosing an AI POSTs it to /api/config and re-checks; Connect opens the pop-up, which
      shows the sign-in link and closes itself on the poll after the row turns green; the first-scan box is the last
-     step and nothing starts by itself; once set up, ⚙ Settings → Set-up brings the view back.
+     step and nothing starts by itself; once set up, ⚙ Settings → Set-up brings the view back. After a reload (#27) a
+     sign-in the app is still running gets its spinner, link and pop-up back; a finished one leaves the row as it is.
 Node is required in CI (as test_messages.py); locally without node parts 1-3, 7 and the page half of 5 are skipped.
 """
 import json, os, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
@@ -138,6 +139,7 @@ def page_js(port, session, scenario, tmp):
         "function renderLists(){}function paintVoice(){}function banner(){}function appDown(e){CON.push('appDown '+e)}",
         "function paintSchedule(){}function schedBad(){return false}function paintConnect(){}function paintDaylog(){}function paintRm(){}function paintSetup(){}",
         "async function loadDaylog(){}async function loadRm(){}function agentUI(){}const PAGE='t';let stopped=false;",
+        "async function connectReattach(){return true}",   # the Setup-buttons section is not cut in here (#27 is tested in 7k)
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
@@ -589,7 +591,18 @@ def real_clis_ran(tmp):
     return [f"{k}={v}" for k, v in found.items() if not (v and str(v).startswith(str(tmp / "bin")))]
 
 
-def setup_js(port, scenario, tmp):
+def quit_app(port, srv, secs=10):
+    """Quit an app through /api/quit, as its Settings button does: that stops any setup step it is running (its fake
+    `claude mcp login` included), which terminating the server may not. Best effort; stop() still follows."""
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/quit", data=b"{}", method="POST",
+                                                      headers={"Content-Type": "application/json"}), timeout=5).read()
+        srv.wait(secs)
+    except Exception:
+        pass
+
+
+def setup_js(port, scenario, tmp, session=None):
     """The served page's Set-up view with everything it calls (stage machine, tick, checklist rows and buttons,
     connectStep, doctor), a stub DOM whose elements keep what they are given, talking to the real app on `port`."""
     html = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read().decode("utf-8")
@@ -597,7 +610,7 @@ def setup_js(port, scenario, tmp):
     grab = lambda start: next(l for l in lines if l.startswith(start))
     cut = lambda a, b: html[html.index(a):html.index(b, html.index(a))]
     parts = [
-        f"const BASE='http://127.0.0.1:{port}';const SS={{}};const BIN={json.dumps(str(tmp / 'bin'))};",
+        f"const BASE='http://127.0.0.1:{port}';const SS={json.dumps(session or {})};const BIN={json.dumps(str(tmp / 'bin'))};",
         "const fs=require('fs');const seen=()=>{const f=BIN+'/prompts.txt';return fs.existsSync(f)?fs.readFileSync(f,'utf8').split(/\\s+/).filter(Boolean):[]};",
         "const sessionStorage={getItem:k=>k in SS?SS[k]:null,setItem:(k,v)=>{SS[k]=String(v)},removeItem:k=>{delete SS[k]}};",
         "const els={};const mk=id=>({id,style:{},dataset:{},textContent:'',innerHTML:'',disabled:false,title:'',open:false,className:'',kids:[],"
@@ -769,7 +782,7 @@ if NODE:
  let n=CALLS.length;await chooseAI('codex');out.codex={calls:CALLS.slice(n),agent:C.agent,doc:DOC.agent,v:view()};
  out.cfgCodex=JSON.parse(fs.readFileSync(BIN+'/../config.json','utf8')).agent;
  n=CALLS.length;await chooseAI('claude');out.claude={calls:CALLS.slice(n),doc:DOC.agent,v:view()};
- n=CALLS.length;const p=connectStep('slack');
+ n=CALLS.length;const p=connectStep('slack');await until(()=>$('#allow_dlg').open,5000);   // once the app has named the run
  out.pressed={open:$('#allow_dlg').open,title:$('#allow_title').textContent,sub:$('#allow_sub').textContent,src:$('#su_src_state').textContent};
  await until(()=>$('#allow_link').innerHTML.includes('example.invalid'),15000);
  out.link={html:$('#allow_link').innerHTML,open:$('#allow_dlg').open,check:$('#allow_check').style.display};
@@ -826,7 +839,7 @@ if NODE:
     try:
         out = setup_js(port, """
  FAKE['/api/connect/gmail']=[{started:true},{running:false,rc:1,url:'https://chatgpt.com/apps',opened:true,last:'',step:'gmail'}];   // the page did not open
- await boot();await tick();const p=connectStep('gmail');out.opened={open:$('#allow_dlg').open,title:$('#allow_title').textContent};
+ await boot();await tick();const p=connectStep('gmail');await until(()=>$('#allow_dlg').open,5000);out.opened={open:$('#allow_dlg').open,title:$('#allow_title').textContent};
  await until(()=>$('#allow_msg').textContent!==''&&$('#allow_link').innerHTML.includes('chatgpt.com'),15000);
  out.fail={msg:$('#allow_msg').textContent,link:$('#allow_link').innerHTML,check:$('#allow_check').style.display};await p;
  await allowCheck();out.checked={msg:$('#allow_msg').textContent,open:$('#allow_dlg').open};""", tmp)
@@ -945,6 +958,129 @@ if NODE:
         check(out["ended"]["running"] is False and out["ended"]["pending"] is False and (out["ended"]["seq"] or 0) >= 1,
               f"once an answer shows the job ended after the start, it is no longer running ({out['ended']})")
     finally:
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7k. #27: the page reloads while a sign-in is waiting in the browser. The app started it for an earlier load of the
+    # page (a POST this page never made); the new page's first poll asks the app, finds it running and shows the spinner,
+    # the fallback link and the Allow pop-up again; a step that has finished leaves its row as the check paints it.
+    # After the offline banner clears it asks again, without watching the same run twice. Closing the pop-up is
+    # remembered for that run: a second reload (a new page, with this tab's sessionStorage) brings back the busy row but
+    # not the pop-up. Then Allow finishes it.
+    tmp = setup_install("openloops-setup-reattach-")
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ await boot();await tick();
+ await realFetch(BASE+'/api/connect/slack',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // pressed on the page before the reload
+ let link='';for(let i=0;i<150&&!link;i++){const s=await (await realFetch(BASE+'/api/connect/slack')).json();link=s.url||'';if(!link)await sleep(100)}
+ if(!link)throw new Error('the fake sign-in never printed its link');
+ FAKE['/api/connect/gmail']=[{},{running:false,rc:1,url:'',step:'gmail',last:'Login cancelled'}];   // ran and finished before the reload
+ out.before={slack:CONN.slack||null,open:$('#allow_dlg').open};
+ const real=connectReattach;let n=0,sweep=null;connectReattach=()=>{n++;return sweep=real()};   // sweep: the latest one, to wait for
+ await loop();await until(()=>CONN.slack&&CONN.slack.busy,10000);out.first=await sweep;   // the page load's first pass, answered in full
+ out.after={n,busy:CONN.slack.busy,url:CONN.slack.url,msg:CONN.slack.msg,gmail:CONN.gmail===undefined,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,
+  link:$('#allow_link').innerHTML,rows:$('#su_src_rows').innerHTML,state:$('#su_src_state').textContent};
+ await loop();out.n2=n;offline=true;await loop();await until(()=>n===2,5000);out.second=await sweep;out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
+ allowDismiss();out.dismissed={open:$('#allow_dlg').open,busy:CONN.slack.busy,run:CONN.slack.run};out.SS=SS;
+ // review of #58: an answer that arrives while the AI is being changed, or after it changed, restores nothing
+ const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login',agent:'claude',run_id:'r-login-1'};
+ const quiet=()=>({busy:!!(CONN.login&&CONN.login.busy),open:$('#allow_dlg').open});
+ HOLD['/api/connect/login']={body:run};let sw=real();await until(()=>HOLD['/api/connect/login'].release,5000);
+ aiSwitching='codex';HOLD['/api/connect/login'].release();out.gated={ok:await sw,...quiet()};aiSwitching='';
+ HOLD['/api/connect/login']={body:run};sw=real();await until(()=>HOLD['/api/connect/login'].release,5000);
+ C.agent='codex';HOLD['/api/connect/login'].release();out.changed={ok:await sw,...quiet()};C.agent='claude';
+ aiSwitching='codex';out.during=await real();aiSwitching='';
+ // review of #58: one step's status fails and another never answers; the rest still restore, and the sweep ends in time
+ FAIL_GET.add('/api/connect/install');HANG.add('/api/connect/slack_install');REATTACH_MS=1500;
+ FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/authorize?state=miro',started:'2026-09-24T10:01:00',step:'miro',agent:'claude',run_id:'r-miro-1'}];
+ const t2=Date.now();out.sweep={ok:await real(),ms:Date.now()-t2,miro:!!(CONN.miro&&CONN.miro.busy),url:CONN.miro&&CONN.miro.url};REATTACH_MS=15000;""", tmp)
+        check(out["before"] == {"slack": None, "open": False}, "a fresh page knows nothing of the sign-in the app is running")
+        a = out["after"]
+        check(a["n"] == 1 and a["busy"] is True and a["url"] == "https://example.invalid/authorize?state=abc"
+              and a["msg"] == "Waiting for you in the browser: click Allow there.",
+              f"its first poll asks the app, which says Slack's sign-in is still running: the row is busy again, with the run's link ({a})")
+        check('<span class="spin"></span>Waiting for you in the browser' in a["rows"] and "Open the sign-in page" in a["rows"]
+              and "connectStep('slack')" not in a["rows"] and a["state"] == "In progress",
+              "...the Slack row shows the spinner and the fallback link instead of its button; the card says in progress")
+        check(a["open"] and a["step"] == "slack" and "example.invalid/authorize" in a["link"],
+              "...and the Allow pop-up is back, with the sign-in link in case no tab opened")
+        check(out["first"] is True and a["gmail"], "a step that finished before the reload leaves its row as the check paints it (no spinner, no old message)")
+        check(out["n2"] == 1 and out["n3"] == 2 and out["second"] is True and out["picked"] == 1,
+              f"later polls do not ask again; once the offline banner clears they do, without watching the same run twice ({out['n2']}, {out['n3']}, {out['picked']})")
+        ds = out["dismissed"]
+        gone = json.loads(out["SS"].get("ol.allowDismissed") or "{}")
+        check(not ds["open"] and ds["busy"] and ds["run"] and gone == {"slack": ds["run"]},
+              f"Close on the pop-up: closed, the row still busy, and that run remembered for this tab ({gone})")
+        check(out["gated"] == {"ok": False, "busy": False, "open": False} and out["changed"] == {"ok": False, "busy": False, "open": False}
+              and out["during"] is False,
+              f"a reattach answer arriving during an AI change, or after one, restores no busy row and no pop-up, and is asked again later ({out['gated']}, {out['changed']})")
+        sw = out["sweep"]
+        check(sw["ok"] is False and sw["miro"] and sw["url"] == "https://example.invalid/authorize?state=miro" and 1400 <= sw["ms"] < 5000,
+              f"one step's status failing and another's never answering stop neither the rest (Miro restored) nor the sweep's deadline ({sw})")
+        out = setup_js(port, """
+ await boot();await tick();await loop();await until(()=>CONN.slack&&CONN.slack.busy,10000);
+ out.again={busy:CONN.slack.busy,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML};
+ fs.writeFileSync(BIN+'/allow','');await until(()=>!(CONN.slack&&CONN.slack.busy)&&DOC.steps.find(x=>x.id==='slack').ok,30000);
+ out.done={ok:DOC.steps.find(x=>x.id==='slack').ok,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML,gone:SS['ol.allowDismissed']};
+ // run ids (review of #58): every fake run below starts in the same second, so only the id tells them apart
+ const G=()=>JSON.parse(SS['ol.allowDismissed']||'{}'),S='2026-09-24T12:00:00';
+ const run=(step,id,running,extra)=>[{},Object.assign({running,rc:running?null:0,url:'https://example.invalid/'+step,started:S,step,agent:'claude'},id?{run_id:id}:{},extra||{})];
+ // (a) + (c): A's pop-up closed, the page reloads, B (same second, another id) is running: B's pop-up opens
+ CONN.gmail={busy:true,msg:'x',run:'gA'};allowOpen('gmail','gA');allowDismiss();delete CONN.gmail;out.noteA=G().gmail;
+ FAKE['/api/connect/gmail']=run('gmail','gB',true);await connectReattach();
+ out.a={open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,run:ALLOW&&ALLOW.run,busy:CONN.gmail.busy};
+ allowDismiss();out.noteB=G().gmail;
+ // ...and the same run after another reload stays closed
+ delete CONN.gmail;await connectReattach();out.sameRun={open:$('#allow_dlg').open,busy:CONN.gmail.busy};
+ // (b): run A's watcher ends while B's note is kept: A's cleanup removes only A's own note, never B's
+ allowGoneSet('miro','mB');CONN.miro={busy:true,msg:'x',run:'mA'};FAKE['/api/connect/miro']=run('miro','mA',false);
+ await connectWatch('miro',{});out.b={miro:G().miro};
+ allowGoneSet('miro','mA');CONN.miro={busy:true,msg:'x',run:'mA'};await connectWatch('miro',{});out.bOwn=G().miro===undefined;
+ // (d): a running status from an older app, with no run_id: skipped, like a run with no agent
+ delete CONN.login;FAKE['/api/connect/login']=run('login','',true);await connectReattach();
+ out.d={busy:!!(CONN.login&&CONN.login.busy),open:$('#allow_dlg').open,said:CON.filter(l=>l.includes('login is running with no run id')).length};
+""", tmp, session=out["SS"])
+        ag = out["again"]
+        check(ag["busy"] and not ag["open"] and '<span class="spin"></span>' in ag["rows"] and "Open the sign-in page" in ag["rows"],
+              "a reload after closing the pop-up: the row is busy again with its link, but the pop-up stays closed for that run")
+        d = out["done"]
+        check(d["ok"] is True and not d["open"] and "spin" not in d["rows"] and d["gone"] == "{}",
+              "clicking Allow finishes it as if pressed on this page: the row turns green, and the closed pop-up's note goes with the run")
+        check(out["noteA"] == "gA" and out["a"] == {"open": True, "step": "gmail", "run": "gB", "busy": True},
+              f"(a) A's pop-up closed, then a reload finds B running: B is another run (same second, other id) and its pop-up opens ({out['a']})")
+        check(out["noteB"] == "gB" and out["sameRun"] == {"open": False, "busy": True},
+              "(c) runs started in the same second stay distinct: B's own close is kept for B, and a reload during B stays closed")
+        check(out["b"] == {"miro": "mB"} and out["bOwn"],
+              f"(b) run A's watcher ending removes only A's note: B's survives, A's own goes ({out['b']})")
+        check(out["d"] == {"busy": False, "open": False, "said": 1},
+              f"(d) a running status with no run_id (an older Open Loops) is not picked up, like one with no agent ({out['d']})")
+    finally:
+        quit_app(port, srv)   # a failure part-way can leave the fake sign-in waiting: the app's own quit stops it
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7l. #27 review: a Claude sign-in still running when the AI is changed to Codex. Once Codex's check is in, a sweep
+    # (a reload, the offline banner clearing) must not show that run as Codex's: no busy row, no pop-up. Back on Claude
+    # it is Claude's again.
+    tmp = setup_install("openloops-setup-reattach-ai-")
+    srv, port = start_app(tmp, setup_env(tmp))
+    try:
+        out = setup_js(port, """
+ await boot();await tick();
+ await realFetch(BASE+'/api/connect/slack',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // pressed for Claude before the reload
+ let st={};for(let i=0;i<150&&!st.url;i++){st=await (await realFetch(BASE+'/api/connect/slack')).json();if(!st.url)await sleep(100)}
+ if(!st.url)throw new Error('the fake sign-in never printed its link');out.status={agent:st.agent,running:st.running};
+ await chooseAI('codex');out.switched={agent:C.agent,doc:DOC.agent,pend:aiPending()};
+ out.sweep=await connectReattach();out.codex={busy:!!(CONN.slack&&CONN.slack.busy),open:$('#allow_dlg').open,said:CON.filter(l=>l.includes('running for Claude')).length};
+ await chooseAI('claude');out.back=await connectReattach();out.claude={busy:!!(CONN.slack&&CONN.slack.busy),open:$('#allow_dlg').open};""", tmp)
+        check(out["status"] == {"agent": "claude", "running": True}, f"the app's status says which AI a running sign-in is for ({out['status']})")
+        check(out["switched"] == {"agent": "codex", "doc": "codex", "pend": False}, "the change to Codex is saved and checked")
+        check(out["sweep"] is True and out["codex"] == {"busy": False, "open": False, "said": 1},
+              f"a sweep after it does not pick up Claude's sign-in as Codex's: no busy row, no pop-up, a Console line ({out['codex']})")
+        check(out["back"] is True and out["claude"] == {"busy": True, "open": True}, "back on Claude, the same run is picked up again")
+    finally:
+        quit_app(port, srv)
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
 

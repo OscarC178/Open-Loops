@@ -273,7 +273,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   <div class="sub" id="allow_msg" style="margin-top:8px"></div>
   <div style="margin-top:14px;display:flex;gap:8px">
    <button class="primary" id="allow_check" onclick="allowCheck()" style="display:none">Check again</button>
-   <button type="button" onclick="allowClose()">Close</button>
+   <button type="button" onclick="allowDismiss()">Close</button>
   </div>
 </div></dialog>
 
@@ -645,15 +645,25 @@ function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!
  return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
 const CMD_OPEN={};   // which rows have "Show the exact command" open: the rows are repainted on every tick
 const PARTY=step=>({login:(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),slack:'Slack',slack_install:'Slack',gmail:'Google',miro:'Miro'})[step]||agentLabel();   // who the sign-in is with
+const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
+// what a busy row says while its step runs (a = the AI an install is for)
+const connectWaitSaid=(step,a)=>step==='install'?installing(a):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.';
 async function connectStep(step){
  const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
- const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
- CONN[step]={busy:true,msg:inst?installing(row.agent):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.',
-  ...(inst?{agent:row.agent,command:row.command}:{})};repaint();
- try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});clog('setup: '+step+(r.started?' started':' already running'));if(!r.started&&r.said){CONN[step].msg=r.said;repaint()}}
+ CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
+ let rid='';   // the run's id (#27), from the app's answer: the run it started, or the one already running
+ try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});rid=r.run_id||'';if(CONN[step])CONN[step].run=rid;
+  clog('setup: '+step+(r.started?' started':' already running'));if(!r.started&&r.said){CONN[step].msg=r.said;repaint()}}
  catch(e){const changed=inst&&e.status===409;   // the app says which: the AI changed in Settings, or Open Loops was updated
   CONN[step]={msg:changed?((e.body&&e.body.said)||msg('app_updated'))
    :inst?msg('install_start',{ai:aiName(row.agent)}):msg('connect_start_failed')};repaint();if(changed)doctor(true);return}
+ // a step that waits for Allow in the browser opens the pop-up (the Set-up cards' and the checklist's buttons alike), once
+ // the app has said which run it is, so a closed pop-up is remembered for that run and no other
+ if(ALLOW_ROW[step]&&CONN[step]&&CONN[step].busy)allowOpen(step,rid);
+ return connectWatch(step,row)}
+// Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
+// row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload.
+async function connectWatch(step,row){const inst=step==='install',run=(CONN[step]&&CONN[step].run)||'';try{   // finally: this run is over, forget a pop-up closed for it (only it)
  const t0=Date.now();
  while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
@@ -672,6 +682,34 @@ async function connectStep(step){
   if(s.rc===0&&!inst&&DOC&&DOC.steps&&DOC.steps.some(x=>!x.ok&&x.connect===step)){CONN[step]={msg:msg('connect_no_change',{party:PARTY(step)})};repaint()}   // finished fine, row still red: say so
   return}
  CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(CONN[step].agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
+ finally{if(run)allowClosedEnd(step,run)}}
+
+// #27: the page reloaded (or the app came back after the "not running" banner) while a step was still running: ask the
+// app about each step and pick up any still running, as if its button had just been pressed here. One GET per step:
+// app.py has no "all steps" call, and six answers from this computer cost nothing. They go out together, each on its
+// own (one failing or never answering does not stop the others), and the sweep ends by REATTACH_MS whatever happens.
+// -> true only when every step answered; false and the poll loop sweeps again (a step restored meanwhile is skipped).
+const CONNECT_ALL=['install','login','slack_install','slack','gmail','miro'];   // app.py agent.CONNECT_STEPS + INSTALL_STEP
+// Never while the AI is being changed (the cards hide the old AI's rows then), nor with an answer that arrives after a
+// change; and a run the app says was started for another AI (its "agent") is not this one's.
+const aiGate=()=>suBusy==='agent'||aiPending();
+let REATTACH_MS=15000;
+async function connectReattach(){if(aiGate())return false;const was=(C&&C.agent)||'claude';
+ const ac=typeof AbortController!=='undefined'?new AbortController():null;let dl;
+ const limit=new Promise(ok=>{dl=setTimeout(()=>{if(ac)ac.abort();ok(null)},REATTACH_MS)});   // null: no answer in time
+ const one=async step=>{if(CONN[step]&&CONN[step].busy)return true;   // this page is watching it already
+  let s;try{s=await Promise.race([api('/api/connect/'+step,null,ac&&ac.signal),limit])}catch(e){clog('setup: '+step+' status not read: '+e.message);return false}
+  if(!s)return false;
+  if(aiGate()||((C&&C.agent)||'claude')!==was)return false;   // the AI changed meanwhile: not this AI's run; asked again later
+  if(!s.running){if(s.run_id)allowClosedEnd(step,s.run_id);return true}   // finished (or never ran): the row stays as the check paints it
+  if(CONN[step]&&CONN[step].busy)return true;
+  if(s.agent!==was){clog('setup: '+step+' is running for '+aiName(s.agent)+', not picked up');return true}   // started for another AI: not this one's row
+  if(!s.run_id){clog('setup: '+step+' is running with no run id (an older Open Loops), not picked up');return true}   // no identity: not guessed at
+  const inst=step==='install';clog('setup: '+step+' still running, picked up again');
+  CONN[step]={busy:true,msg:connectWaitSaid(step,s.agent),url:s.url||'',run:s.run_id,...(inst?{agent:s.agent,command:s.command}:{})};repaint();
+  if(ALLOW_ROW[step]&&!ALLOW&&!allowClosedFor(step,s.run_id))allowOpen(step,s.run_id);   // the pop-up with the fallback link, as the press opens it, unless closed for this run
+  connectWatch(step,inst?{agent:s.agent}:{}).catch(e=>clog('setup: '+step+': '+e));return true};
+ try{return (await Promise.all(CONNECT_ALL.map(one))).every(Boolean)}finally{clearTimeout(dl)}}
 
 // The Mac's weekday morning refresh did not start (doctor.py "schedule" row, #24). The checklist is only up while setting
 // up, so once set up the same row shows here, above everything: what happened, what to do, and the download page.
@@ -799,7 +837,8 @@ function setupEmbed(){$('#su_all_body').appendChild($('#st_connect'));$('#su_sta
 // there Check again asks (each check uses a little of the ChatGPT plan), rather than asking every 3 s.
 const ALLOW_ROW={login:'login',slack:'slack',gmail:'gmail',miro:'miro'};   // step -> the row that turns green
 let ALLOW=null,allowT=null;
-function allowOpen(step){ALLOW={step,url:''};clearInterval(allowT);allowT=setInterval(allowPoll,3000);
+function allowOpen(step,run){ALLOW={step,url:'',run:run||''};   // run: the app's run_id for the run it waits on (#27)
+ clearInterval(allowT);allowT=setInterval(allowPoll,3000);
  const page=pageStep(step);
  $('#allow_title').textContent=page?`Connect ${SRC_NAME[step]} on the ChatGPT page that just opened, then come back`:'Click Allow in the tab that just opened, then come back';
  $('#allow_sub').textContent=page?'ChatGPT keeps that connection. Back here, press Check again.':`This closes by itself once ${PARTY(step)} has said yes.`;
@@ -815,6 +854,18 @@ async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&
  if(!a.url){try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&s.url)a.url=s.url}catch(e){}}   // the fallback link, from the run's own status
  allowPaint()}
 function allowClose(){const a=ALLOW;ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close();if(a)allowFocus(a.step)}
+// #27: the person closed the pop-up (Close, or Escape) while its step still runs: remember that run for this tab, as
+// {step: run_id} (the app's id for the run, which the pop-up got from the POST that started it or from the status a
+// reload read), so a reload shows the row's spinner and link again but not the pop-up. Nothing is compared but the id,
+// and nothing is removed but a note for the exact run that ended: another run, even one started in the same second, is
+// never taken for it. A pop-up with no run id (an older app) is not remembered.
+const ALLOW_GONE='ol.allowDismissed';
+function allowGone(){try{return JSON.parse(sessionStorage.getItem(ALLOW_GONE)||'{}')||{}}catch(e){return {}}}
+function allowGoneSet(step,v){try{const g=allowGone();if(v)g[step]=v;else delete g[step];sessionStorage.setItem(ALLOW_GONE,JSON.stringify(g))}catch(e){}}
+function allowForget(a){if(a.run&&(CONN[a.step]||{}).busy)allowGoneSet(a.step,a.run)}
+const allowClosedFor=(step,run)=>!!run&&allowGone()[step]===run;   // the pop-up was closed for exactly this run
+function allowClosedEnd(step,run){if(allowClosedFor(step,run))allowGoneSet(step,'')}   // only this run's note
+function allowDismiss(){if(ALLOW)allowForget(ALLOW);allowClose()}
 // after the pop-up: focus back on that step's Connect / Sign in button, or on its card once the row has gone green
 function allowFocus(step){if(typeof document==='undefined'||!document.querySelector)return;
  const b=document.querySelector(`#setup button[onclick="connectStep('${step}')"]`),t=b||document.querySelector(step==='login'?'#su_ai':'#su_src');if(t&&t.focus)t.focus()}
@@ -823,9 +874,6 @@ async function allowCheck(){const a=ALLOW,b=$('#allow_check');if(!a)return;b.dis
  const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
  if(ALLOW===a&&!(row&&row.ok))a.said=DOC&&DOC.error?msg('check_failed'):(row&&row.fix)||'';   // still not ticked: the row's own sentence, here
  await allowPoll()}
-// every button that starts a browser step opens the pop-up (the Set-up cards' and the checklist's alike)
-const connectStepBase=connectStep;
-connectStep=function(step){const p=connectStepBase(step);if(ALLOW_ROW[step]&&CONN[step]&&CONN[step].busy)allowOpen(step);return p};
 // ---------- end of the Set-up view
 
 let peopleRendered='';
@@ -1121,7 +1169,7 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
   if(aiSwitching&&r.agent===aiSwitching&&C&&C.agent===aiSwitching)aiSwitching='';   // the new AI's own answer is in: however the change went, the gate lets go
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
-let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set();
+let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set(),reattached=false,reattaching=false;   // #27: a whole connectReattach() sweep has answered / one is under way
 const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job>:<seq>"): never handled twice at once
 // A job's end is noticed by its "seq" (app.py _ended: one number per job end, always going up), never by seeing it
 // running and then not (#49): a job that fails within a second is over before the next poll, and was never seen
@@ -1164,7 +1212,8 @@ async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inL
    finally{keys.forEach(x=>CLAIMED.delete(x))}}
   const st=stage();
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
-  await tick();banner('');offline=false;
+  await tick();banner('');if(offline)reattached=false;   // #27: on load, and once back after the banner, one sweep at a time until one completes
+  if(!reattached&&!reattaching){reattaching=true;connectReattach().then(ok=>{reattached=ok},()=>{}).finally(()=>{reattaching=false})}offline=false;
  }catch(e){offline=true;appDown(e)}   // not answering: no fast polls until it does (below)
  inLoop=false;if(stopped)return;if(pendingLoop){pendingLoop=false;return loop()}   // asked for during this pass: once more, now
  const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
@@ -1180,7 +1229,7 @@ async function quitApp(){const b=$('#quitbtn');b.disabled=true;try{const r=await
 // How to start it again, as the offline banner says it: the icon on an install, the command on a test copy (#50)
 function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)||'To start again, double-click the Open Loops icon.'}
 $('#quit_again').textContent=restartSaid();
-setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a)allowFocus(a.step)});
+setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a){allowForget(a);allowFocus(a.step)}});   // a (not allowClose's): Escape
 cfgRestore();
 // the to-do file example, as a path on this computer looks; and a name for the AI picker, which has no <label> of its own
 $('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';
