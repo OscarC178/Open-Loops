@@ -199,9 +199,12 @@ if ($Isolated) {
     if ($task -and ($task.Actions | Where-Object { $_.WorkingDirectory -and ([IO.Path]::GetFullPath($_.WorkingDirectory).TrimEnd('\') -eq $Dest.TrimEnd('\')) })) {
         powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -Remove | Out-Null
         Ok "Removed this copy's weekday refresh (-Isolated: it starts no scan by itself)"
+        $TaskRemoved = $true
     }
 }
-if ($NoTask) {
+if ($NoTask -and $TaskRemoved) {
+    Ok "No new weekday refresh registered (test copy)"   # the line above said what changed: not "unchanged" (review of #59)
+} elseif ($NoTask) {
     Ok "Skipped the weekday refresh ($(if ($Isolated) { 'test copy' } else { '-NoTask' })): whatever was already scheduled is unchanged"
 } else {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -At $At | Out-Null

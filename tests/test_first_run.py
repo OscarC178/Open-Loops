@@ -1168,6 +1168,7 @@ if NODE:
 say("4. install.sh --isolated, and setup.ps1 -Isolated (static)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+check("$TaskRemoved = $true" in code and 'if ($NoTask -and $TaskRemoved) {' in code, "setup.ps1: a removed task is not then called unchanged")
 check("(-NoApp)" not in code and "$(if ($Isolated) { 'test copy' } else { '-NoApp' })" in code
       and "$(if ($Isolated) { 'test copy' } else { '-NoTask' })" in code, "setup.ps1 -Isolated says 'test copy' too (review of #59)")
 check("[switch]$Isolated" in code and "if ($Isolated) { $NoApp = [switch]$true; $NoTask = [switch]$true }" in code,
@@ -1249,6 +1250,8 @@ try:
     r = install(home, "--dest", str(dest3), "--isolated", "--no-launch")
     check(r.returncode == 0 and not plist.exists() and "Removed this copy's weekday refresh" in r.stdout,
           "install.sh --isolated over it removes that copy's weekday job, so the pill is true")
+    check("No new weekday refresh registered (test copy)" in r.stdout and "is unchanged" not in r.stdout,
+          "...and does not then say the schedule is unchanged (review of #59)")
     r = install(home, "--dest", str(dest3), "--no-app", "--no-launch")
     install(home, "--dest", str(dest), "--isolated", "--no-launch")
     check(plist.exists(), "...and --isolated on another copy leaves a job that runs a different copy alone")

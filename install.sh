@@ -326,8 +326,11 @@ PYEOF
 then
     bash "$DEST/scripts/register-task.sh" --remove >/dev/null
     ok "Removed this copy's weekday refresh (--isolated: it starts no scan by itself)"
+    TASK_REMOVED=1
 fi
-if [ "$NO_TASK" -eq 1 ]; then
+if [ "$NO_TASK" -eq 1 ] && [ "${TASK_REMOVED:-0}" -eq 1 ]; then
+    ok "No new weekday refresh registered ($SKIP_TASK)"   # the line above said what changed: not "unchanged" (review of #59)
+elif [ "$NO_TASK" -eq 1 ]; then
     ok "Skipped the weekday refresh ($SKIP_TASK): whatever this Mac already had registered is unchanged"
 else
     bash "$DEST/scripts/register-task.sh" --at "$AT" --dest "$DEST"
