@@ -16,7 +16,7 @@ pretend Open Loops servers listed in a file, and says nothing is running anywher
         the saved time; the #25 sentence; no deletion advice, no staging folder, no marker file.
      b. rerun: nothing copied again, even if the old copy changed since; an update keeps every personal file.
      c. symbolic links in the old folder are skipped and listed, never followed; the sentences are plain and
-        singular or plural as the count says (#60).
+        singular or plural as the count says; five named on screen, a sixth as "and 1 more", all in the log (#60).
      d. a job that is loaded and will not unload: refused, nothing copied.
      e. lsof missing, or lsof failing: refused, nothing copied.
      f. servers: only one that says "app": "openloops" with the old root is asked to quit (8767 here, not 8765);
@@ -312,6 +312,23 @@ try:
     check(r.returncode == 0 and "Left out 1 shortcut: private/hosts-link. Open Loops did not copy it; it is still at "
           "its old place." in r.stdout and "Left out your Grok sign-in (1 file)." in r.stdout,
           f"one link of each kind: singular sentences ({r.stdout[-400:]!r})")
+    # the on-screen cut-off (#60 review): five shortcuts are all named; a sixth becomes "and 1 more", and the
+    # install log still lists every one of them
+    for count, tail in ((5, ""), (6, " and 1 more")):
+        home = tmp / f"home3-{count}"
+        old = old_install(home, "Many")
+        names = [f"private/link{i}" for i in range(count)]
+        for n in names:
+            os.symlink("/etc/hosts", old / n)
+        r = install(home, "--no-app", "--no-launch", "--no-task")
+        line = next((ln.strip() for ln in r.stdout.splitlines() if "shortcuts:" in ln), "")
+        shown = line.split("shortcuts: ", 1)[1].split(". Open Loops", 1)[0] if line else ""
+        listed = shown.split(" and ")[0].split(", ") if shown else []
+        logged = (home / "Library" / "Logs" / "OpenLoops" / "install.log").read_text()
+        check(r.returncode == 0 and line.startswith(f"Left out {count} shortcuts: ") and len(listed) == 5
+              and set(listed) <= set(names) and shown.endswith(tail or listed[-1])
+              and (tail or " more" not in line) and all(n in logged for n in names),
+              f"{count} shortcuts: five named on screen{tail or ''}, all {count} in the install log ({line!r})")
 
     say("4d. the old job is loaded and will not unload: refused")
     home = tmp / "home6"
