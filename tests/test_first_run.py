@@ -1175,6 +1175,18 @@ ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
 check('python -m openloops.app$(if ($Port) { " --port $Port" })' in code and "Start this copy with: $manual" in code,
       "setup.ps1: the printed start command carries -Port, as its launch does")
+# ...and that line as PowerShell evaluates it (review of #59): pwsh is on GitHub's Ubuntu and macOS runners; the whole
+# script needs Windows (Scheduled Tasks, shortcuts), which the test matrix does not have, so only this line is run
+pwsh = shutil.which("pwsh")
+if pwsh:
+    line = next(l.strip() for l in code.splitlines() if l.strip().startswith("$manual = "))
+    for port_, want_ in ((8790, 'cd "C:\\OL test"; python -m openloops.app --port 8790'), (0, 'cd "C:\\OL test"; python -m openloops.app')):
+        r_ = subprocess.run([pwsh, "-NoProfile", "-Command", f'$Dest = "C:\\OL test"; $Port = {port_}; $env:OPENLOOPS_PORT = "8791"; {line}; $manual'],
+                            capture_output=True, text=True, timeout=60)
+        check(r_.returncode == 0 and r_.stdout.strip() == want_,
+              f"setup.ps1's printed command, evaluated by PowerShell with -Port {port_} and OPENLOOPS_PORT=8791: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
+else:
+    say("SKIP running setup.ps1's start-command line: no pwsh here (CI's runners have it)")
 check("$TaskRemoved = $true" in code and 'if ($NoTask -and $TaskRemoved) {' in code, "setup.ps1: a removed task is not then called unchanged")
 check("(-NoApp)" not in code and "$(if ($Isolated) { 'test copy' } else { '-NoApp' })" in code
       and "$(if ($Isolated) { 'test copy' } else { '-NoTask' })" in code, "setup.ps1 -Isolated says 'test copy' too (review of #59)")
