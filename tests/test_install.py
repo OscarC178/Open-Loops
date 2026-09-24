@@ -16,7 +16,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PORT = 0  # set by start_app(): the port the app says it bound
 t0 = time.time()
-from _helpers import isolate_this_process, start_app  # noqa: E402
+from _helpers import isolate_this_process, run_node, start_app  # noqa: E402
 isolate_this_process("openloops-install-parent-")  # the in-process checks below import app: never from the checkout
 from openloops import agent, doctor  # noqa: E402
 
@@ -65,7 +65,9 @@ for ag, (url, shell, ps_url, cli, vendor) in LINES.items():
           f"{ag}: the command id differs per AI and platform")
 _root = agent.ROOT
 agent.ROOT = Path("/Users/o'brien/OpenLoops")
-check("-OutFile '/Users/o''brien/OpenLoops/state/install/claude-install.ps1'" in agent.install_cmd("claude", win=True)["steps"][0][1][-1],
+# the command holds str(Path), which Windows writes with backslashes: the expected text is built the same way
+_want = str(agent.ROOT / "state" / "install" / "claude-install.ps1").replace("'", "''")
+check(f"-OutFile '{_want}'" in agent.install_cmd("claude", win=True)["steps"][0][1][-1],
       "a quote in the folder name is doubled for PowerShell")
 agent.ROOT = _root
 check(agent.install_cmd("nope") is None, "an agent with no known installer -> None")
@@ -119,7 +121,7 @@ const idle=connectBtn(row,true);
 CONN.install={busy:true,msg:'Installing Claude.',agent:'claude',command:'claude-cmd'};
 const busy=connectBtn(row,true);
 console.log(JSON.stringify({idle,busy}));"""])
-    out = json.loads(subprocess.run([_node, "-e", js], capture_output=True, text=True, check=True).stdout)
+    out = json.loads(run_node(js, check=True).stdout)
     check("Install Grok" in out["idle"] and "Install Claude" not in out["idle"] and "grok-cmd" in out["idle"],
           "page: the button is labelled from the row's agent, not cached settings")
     check("claude-cmd" in out["busy"] and "grok-cmd" not in out["busy"], "page: while running it shows the run's own command")

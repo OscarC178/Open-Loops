@@ -69,15 +69,18 @@ import os
 def _port_arg():
     """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
     so a checkout never collides with, or is mistaken for, the installed copy on 8765; a test install
-    (`install.sh --dest … --port 8790`) keeps its port in its own config.json so every launch uses it."""
+    (`install.sh --dest … --port 8790`) keeps its port in its own config.json so every launch uses it.
+    An OPENLOOPS_PORT the app could never listen on (99999, "abc") counts as unset and the next source is used, as a
+    hand-edited config.json "port" is treated (review of #70); --port is checked by check_args before this runs."""
     a = sys.argv
     for i, x in enumerate(a):
         if x.startswith("--port="):
             return int(x.split("=", 1)[1])
         if x == "--port" and i + 1 < len(a):
             return int(a[i + 1])
-    if os.environ.get("OPENLOOPS_PORT"):
-        return int(os.environ["OPENLOOPS_PORT"])
+    env_port = os.environ.get("OPENLOOPS_PORT", "")
+    if re.fullmatch(r"[0-9]{1,5}", env_port) and 1024 <= int(env_port) <= 65535:  # ASCII digits, a port it can listen on
+        return int(env_port)
     try:
         p = int(load_cfg().get("port") or 8765)
     except (TypeError, ValueError):  # a hand-edited "port": "abc" falls back to the default rather than not starting
@@ -280,27 +283,117 @@ URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
 # challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
 REDACT_RE = re.compile(r"(https://[^\s?\x1b\x07]+)\?[^\s\x1b\x07]+")
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
+CONNECT_KEEP = 64000  # characters of a step's output its log keeps (the newest); a line longer than this is cut
+
+
+class SigninOutput:
+    """A setup step's output, fed in pieces of any size as it arrives -> the text for its log (every link without
+    its query) and the sign-in link once it has arrived whole. Pure Python over bytes and str: no files, no
+    processes, the same on every platform, so tests/test_connect_output.py runs it anywhere.
+
+    Review of #70: the Windows runner used to read only the last 64 KB of its output file on each poll, so a link
+    followed by more than that before the next poll was never seen, and the tail of its query could reach the log
+    with the https:// that the redaction looks for cut off. Now every byte is looked at once, in order:
+    - only whole lines are decoded, stripped of escape codes and redacted; the bytes after the last newline wait in
+      `carry` (memory only, never written) until the rest arrives, so a link, an escape code or a UTF-8 character
+      split between two reads is read whole;
+    - `kept` holds redacted text only, trimmed to its newest CONNECT_KEEP characters at a line break;
+    - a line with no end is not held for ever: past `limit` bytes it is cut at its last space (a link has none,
+      so a link is never split), or, with no space at all, dropped up to its newline (`skip`), so no part of it,
+      query included, is ever written without the start that would have got it redacted."""
+    NOTE = "(rest of the link not saved)"
+
+    def __init__(self, limit=CONNECT_KEEP):
+        self.limit, self.kept, self.carry, self.url, self.skip = limit, "", b"", "", False
+
+    @staticmethod
+    def redact(text):
+        return REDACT_RE.sub(r"\1?" + SigninOutput.NOTE, text)
+
+    @staticmethod
+    def _clean(raw):
+        # errors="replace": output that is not UTF-8 (a cp1252 console, say) still reads, a stray character aside;
+        # a sign-in link is ASCII, so it survives whatever the rest is in
+        return ANSI_RE.sub("", raw.decode("utf-8", "replace"))
+
+    def _look(self, text, whole):
+        """Note the first link in text if it is complete: followed by whitespace, or ending a whole line."""
+        u = None if self.url else URL_RE.search(text)
+        if u and (text[u.end():u.end() + 1].isspace() or (whole and u.end() == len(text))):
+            self.url = u.group(0)
+
+    def _take(self, raw, end):
+        """One whole line (or a piece cut at a space) -> kept, redacted."""
+        text = self._clean(raw)
+        self._look(text, True)
+        self.kept += self.redact(text) + end
+
+    def feed(self, chunk):
+        """The next bytes of output, as they came."""
+        data = self.carry + chunk
+        if self.skip:  # the rest of an over-long line with no space in it: dropped up to its newline
+            nl = data.find(b"\n")
+            if nl < 0:
+                self.carry = b""
+                return
+            data, self.skip = data[nl + 1:], False
+        *lines, self.carry = data.split(b"\n")
+        for ln in lines:
+            self._take(ln, "\n")
+        if len(self.carry) > self.limit:
+            cut = max(self.carry.rfind(b" "), self.carry.rfind(b"\t"))
+            if cut >= 0:
+                piece, self.carry = self.carry[:cut + 1], self.carry[cut + 1:]
+                self._take(piece, "")
+            else:
+                self.carry, self.skip = b"", True
+                self.kept += "(a very long line not saved)\n"
+        if len(self.kept) > self.limit:  # the newest lines; kept is redacted already, so any cut is safe
+            nl = self.kept.find("\n", len(self.kept) - self.limit)
+            self.kept = self.kept[nl + 1:] if nl >= 0 else self.kept[-self.limit:]
+        self._look(self._partial(), False)  # a link on the line still arriving counts once whitespace follows it
+
+    def _partial(self):
+        """The line still arriving, as text: an unfinished escape code at its end left out."""
+        return self._clean(self.carry).split("\x1b")[0]
+
+    def text(self):
+        """The log's text now: the kept lines, then the line still arriving, redacted like the rest."""
+        return self.kept + self.redact(self._partial())
+
+
 connects = {}  # step -> {"running", "rc", "url", "started", "agent", "run_id"}
 # run_id (#27): one id per run, uuid4 hex, returned by the POST that starts it and by every GET. It is what the page
 # keys a run on (a closed Allow pop-up is remembered for one run_id); "started" is for display only (to the second).
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
 connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
+# Windows: step -> the raw output file (state/connect-<step>.out) of the command running now. It holds the sign-in
+# link with its query, so stop_connects() removes it too: the worker that would is a daemon thread, which dies with
+# the app before its own clean-up can run (review of #70).
+connect_outs = {}
 # #67: the sign-ins that wait in the browser, which the row's "Stop this sign-in" may stop. The installs (the AI's own
 # and the Slack plugin's) are left to finish: cut short they could leave a half-installed CLI, and they end by themselves.
 STOPPABLE = ("login", "slack", "gmail", "miro")
 
 
 def stop_connects():
-    """Quit or exit: stop every setup step still waiting (Windows: its console window too). quit_requested is set
+    """Quit or exit: stop every setup step still waiting (Windows: the hidden console it runs in too). quit_requested is set
     first, and _launch checks it under the same lock, so a step about to start either is in this list or never starts."""
     with connect_lock:
         running = list(connect_procs.values())
+        outs = list(connect_outs.items())
     for p in running:
         kill_tree(p)
+    for step, out in outs:  # Windows only: the raw output files, once nothing holds them open
+        _drop_out(step, out)
+
+
+STOP_OPENING_WAIT_S = 2  # how long a Stop waits for a browser call already under way to return
 
 
 def stop_connect(step, run_id):
-    """#67: the row's "Stop this sign-in": stop that one step's run, the one the row shows (run_id) -> (why, record).
+    """#67: the row's "Stop this sign-in": stop that one step's run, the one the row shows (run_id) -> (why, record,
+    tab). tab: _tab_state once the bounded wait below is over (the API reads it again when it replies).
     why: "stopped", "not running" (it had already ended) or "other run" (it ended and another run of the step started
     since, perhaps in another tab: that one is never stopped for it). record: the run's own connects entry, so a caller
     waiting for it to end watches that run, not whatever holds the step by then. The run is marked "stopped" under the
@@ -310,14 +403,26 @@ def stop_connect(step, run_id):
     with connect_lock:
         c = connects.get(step)
         if not c or c.get("run_id") != run_id:
-            return ("other run" if c and c.get("running") else "not running"), c
+            return ("other run" if c and c.get("running") else "not running"), c, "no"
         if not c.get("running"):
-            return "not running", c
-        c["stopped"] = True
+            return "not running", c, "no"
+        c["stopped"] = True  # under connect_lock: _link_found's last check sees it unless "opening" is already set
         p = connect_procs.get(step)
     if p is not None:
         kill_tree(p)
-    return "stopped", c
+    end = time.time() + STOP_OPENING_WAIT_S  # a browser call under way: let it finish (bounded), so the reply is true
+    while c.get("opening") and time.time() < end:  # read without the lock; _link_found clears it under the lock
+        time.sleep(0.05)
+    return "stopped", c, _tab_state(c)
+
+
+def _tab_state(c):
+    """Whether a run's sign-in tab opened in the browser, as far as the app can know it now -> "yes" (the browser call
+    returned success: link_opened), "maybe" (the call is still under way: it may yet open a tab, or fail) or "no".
+    Fourth review of #70: read when the Stop's reply is built, never earlier, so a call that finishes (or fails)
+    during the reply's own wait is reported as it ended; only "yes" claims a tab."""
+    with connect_lock:
+        return "yes" if c.get("link_opened") else "maybe" if c.get("opening") else "no"
 
 
 def _launch(step, *args, **kw):
@@ -363,17 +468,20 @@ def add_install_dirs():
 
 
 def _connect_one(step, argv, log, deadline):
-    """Run one command of a setup step -> exit code. Off Windows it runs on a pseudo-terminal (stdlib pty):
-    `claude mcp login` gives up at once when stdin is not a terminal, but on one it waits for the browser's
-    callback. With --no-browser it prints the sign-in link instead of opening it; we open it here, and the
-    page shows it too in case no browser window came up. Windows has no stdlib pty: the command gets a
-    console window of its own (a real terminal) and opens the browser itself; its output stays in that window."""
+    """Run one command of a setup step -> exit code. Its output goes to the log as it comes (the sign-in link kept
+    without its query), and the link into connects[step]["url"] for the page's fallback link; with --no-browser
+    the CLI prints the link instead of opening it, and it is opened here, once.
+    The CLI refuses to wait for the browser when stdin is not a terminal (`claude mcp login` gives up at once), so:
+    - off Windows the command runs on a pseudo-terminal (stdlib pty) and its output is read from there;
+    - on Windows (no stdlib pty) it runs in a console of its own that has no window (CREATE_NO_WINDOW): stdin is a
+      real console, so the CLI waits for the browser's callback, and its output is sent to a file beside the log
+      that is read as it grows and removed at the end. Before #27 it ran in a console window of its own with
+      nothing captured: a failed sign-in had nothing to show, there was no fallback link, and closing that window
+      by hand ended the sign-in without a word."""
+    shown = subprocess.list2cmdline(argv) if WIN else " ".join(shlex.quote(a) for a in argv)
+    saw = _output_handler(connects[step], argv, log, log.read_text(encoding="utf-8") + "$ " + shown + "\n")
     if WIN:
-        with open(log, "a", encoding="utf-8") as f:
-            f.write(f"$ {subprocess.list2cmdline(argv)}\n(running in its own window)\n")
-        p = _launch(step, subprocess.list2cmdline(argv), cwd=ROOT, shell=True,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE)
-        return -1 if p is None else _reap(step, p, deadline - time.time())
+        return _connect_one_win(step, argv, log, deadline, saw)
     import os, pty, select
     m, s = pty.openpty()
     try:
@@ -383,9 +491,8 @@ def _connect_one(step, argv, log, deadline):
     if p is None:  # Open Loops is closing
         os.close(m)
         return -1
-    raw, tail, rc = b"", "", -1
+    tail, rc = "", -1
     try:
-        before = log.read_text(encoding="utf-8") + "$ " + " ".join(shlex.quote(a) for a in argv) + "\n"
         while True:
             if time.time() > deadline:
                 kill_tree(p)
@@ -398,20 +505,208 @@ def _connect_one(step, argv, log, deadline):
                     chunk = b""
                 if not chunk:
                     break
-                raw = (raw + chunk)[-64000:]
-                # the whole buffer each time: an escape code or the link can straddle two reads
-                text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
-                log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
-                u = URL_RE.search(text)
-                if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
-                    connects[step]["url"] = u.group(0)
-                    if "--no-browser" in argv:
-                        webbrowser.open(u.group(0))
+                saw(chunk)
             elif p.poll() is not None:
                 break
     finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
         os.close(m)
         rc = _reap(step, p, 5)
+    if tail:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(tail)
+    return rc
+
+
+def _output_handler(me, argv, log, before):
+    """The one handler both runners give each new piece of a command's output -> saw(chunk). me: the run's own
+    connects record; before: the log's text so far, then the command. SigninOutput carries a link or escape code
+    split between two reads over to the next, so each byte is handed over once, never the whole output again."""
+    out = SigninOutput()
+
+    def saw(chunk):
+        """New output (bytes, as read) -> the log rewritten (links without their query), the link kept and opened once."""
+        out.feed(chunk)
+        log.write_text(before + out.text(), encoding="utf-8")
+        if out.url and not me.get("url"):  # the whole link is in
+            _link_found(me, out.url, "--no-browser" in argv)
+    return saw
+
+
+def _link_found(me, url, open_it):
+    """A run's sign-in link has been read whole -> True if it was taken: kept for the page's fallback link and, if
+    open_it (the CLI was told --no-browser), opened in the browser, once. Review of #70: never for a run that has
+    been stopped (Stop this sign-in, or Quit). A Stop can land after the CLI printed the link but before it was read,
+    or before the first read at all; that read must not open a browser tab for a sign-in the person just stopped.
+    Checked under connect_lock, the lock stop_connect() marks the run under, twice: when the link is taken, and
+    again (second review of #70) immediately before the browser is asked to open it, where the run is marked
+    "opening". The browser call itself is made outside the lock (it can take a while, and every /api/connect
+    request needs that lock). So a Stop that lands between taking the link and that last check opens nothing. One
+    that lands while the browser call is under way cannot take that tab back (third review of #70): "opening" is
+    set just before the call and cleared, under the lock, once it has returned or raised, and "link_opened" records
+    a call that succeeded ("opened" is not used: on a Codex step it means a page was opened instead of a sign-in).
+    stop_connect() waits briefly for "opening" to clear, so its reply can say that a tab had opened."""
+    with connect_lock:
+        if me.get("stopped") or quit_requested or me.get("url"):
+            return False
+        me["url"] = url
+    if not open_it:
+        return True
+    if _before_open is not None:  # tests only; None in the app
+        _before_open(me)
+    with connect_lock:  # the last word before dispatch: a Stop since the link was taken wins
+        if me.get("stopped") or quit_requested:
+            me["url"] = ""  # nor a fallback link on the page for a sign-in that was stopped
+            return False
+        me["opening"] = True
+    ok = False
+    try:
+        ok = bool(webbrowser.open(url))
+    finally:
+        with connect_lock:
+            me["opening"] = False
+            if ok:
+                me["link_opened"] = True
+    return True
+
+
+# A test hook, None in the app: called with the run's record between taking a link and the last check before the
+# browser is asked to open it, so a test can land a Stop exactly there (tests/test_connect_output.py).
+_before_open = None
+
+
+def _read_on(path, offset, saw):
+    """Hand saw() what path holds past offset, a MB at a time -> the new offset. A file not there yet (or not
+    readable just now) is read next time from the same place. Platform-independent, for the tests."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            while chunk := f.read(1 << 20):
+                offset += len(chunk)
+                saw(chunk)
+    except OSError:
+        pass
+    return offset
+
+
+ICACLS = ["icacls"]   # the command _private_file restricts a file with on Windows; tests point it at a fake
+ICACLS_TIMEOUT_S = 15
+
+
+class PrivateFileError(OSError):
+    """_private_file could not make its file private; str() is the plain-words sentence (messages.py)."""
+
+
+def _private_file(path, restrict=None):
+    """A new, empty file only this user may read, for a command's raw output -> an OS-level descriptor open for
+    writing (the caller hands it to the child, then closes it). Review of #70: the file used to be made by cmd.exe's
+    `>` redirection, with whatever the folder passed on. Any earlier file there (left by a run the app could not clean
+    up after: a forced end, a power cut) is removed first; O_EXCL then refuses anything that appears in its place.
+    Mac and Linux: mode 0600. Windows (restrict, the default there): the mode only sets read-only-or-not, so icacls
+    drops the inherited permissions and grants this user alone full control. Second review of #70: that must work
+    before anything is written. If icacls fails, times out or there is no user name to grant, the file is removed
+    and PrivateFileError is raised: the sign-in does not start and its log says why in plain words, rather than
+    the link's query going to a file others may read."""
+    restrict = WIN if restrict is None else restrict
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+    if not restrict:
+        return fd
+    user, ok = os.environ.get("USERNAME", ""), False
+    if user:
+        if os.environ.get("USERDOMAIN"):
+            user = os.environ["USERDOMAIN"] + "\\" + user
+        try:
+            r = subprocess.run([*ICACLS, str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
+                               timeout=ICACLS_TIMEOUT_S, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            ok = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):  # icacls missing, or no answer within ICACLS_TIMEOUT_S
+            ok = False
+    if not ok:
+        os.close(fd)
+        try:
+            path.unlink()
+        except OSError:
+            pass  # empty, and removed again before the next run writes
+        raise PrivateFileError(messages.say("signin_private_failed"))
+    return fd
+
+
+def _drop_out(step, out):
+    """Remove a sign-in's raw output file -> True once it is gone (or was never there). cmd.exe or the CLI may still
+    hold it for a moment after taskkill, so it is tried for two seconds. A file that stays is said once, in plain
+    words (messages.py), in the step's log for the Console and on the app's own output; the next run of the step
+    removes it before it starts (_private_file)."""
+    for _ in range(10):
+        try:
+            out.unlink()
+            break
+        except FileNotFoundError:
+            break
+        except OSError:
+            time.sleep(0.2)
+    else:
+        line = messages.say("signin_file_left")
+        print(line, file=sys.stderr, flush=True)  # pythonw has no stderr: print() then writes nothing
+        try:
+            with open(connect_log(step), "a", encoding="utf-8") as f:
+                f.write("\n" + line + "\n")
+        except OSError:
+            pass
+        return False
+    with connect_lock:
+        if connect_outs.get(step) == out:
+            connect_outs.pop(step)
+    return True
+
+
+def _connect_one_win(step, argv, log, deadline, saw):
+    """_connect_one on Windows (#27): the command in a hidden console (a real terminal for the CLI, no window to
+    close), its output written to state/connect-<step>.out, which is read every quarter second and handed to
+    saw() (the log, the link). Each poll reads on from where the last one stopped (review of #70: a snapshot of the
+    file's last 64 KB could skip a link altogether), a MB at a time. The .out file holds the link query and all
+    while the command runs, as the console window did before, so (review of #70) the app makes it itself, for this
+    user only (_private_file), hands it to the child as stdout and stderr, and removes it on every way out: the
+    command ending, Stop, the deadline, a failed start, and Quit (stop_connects, via connect_outs).
+    stdin: with stdout given, Python passes the child standard handles, and stdin would be the app's own (a pipe
+    under pythonw.exe), which the CLI refuses. `<CON` makes cmd.exe open the hidden console's own input for the
+    command instead, so the CLI still sees a real terminal (tests/test_connect_win.py proves it under pythonw)."""
+    out = log.with_suffix(".out")
+    fd = _private_file(out)  # an error here (a file some process still holds) ends the step; the log says why
+    with connect_lock:
+        connect_outs[step] = out
+    try:
+        # argv is quoted for cmd.exe by list2cmdline; the server names it can hold are limited to plain characters
+        # (agent.usable_name), so nothing in it means anything to cmd
+        p = _launch(step, f"{subprocess.list2cmdline(argv)} <CON", cwd=ROOT, shell=True, stdout=fd, stderr=fd,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+    except BaseException:
+        os.close(fd)
+        _drop_out(step, out)
+        raise
+    os.close(fd)  # the child has its own copy; ours would keep the file open (and undeletable) after it ends
+    if p is None:  # Open Loops is closing, or this run was stopped from its row
+        _drop_out(step, out)
+        return -1
+    offset, tail, rc, me = 0, "", -1, connects[step]  # offset: how much of the .out file saw() has been given
+    try:
+        while True:
+            ended = p.poll() is not None  # looked at before the read, so the last lines are never missed
+            if me.get("stopped"):  # review of #70: stopped from its row: nothing more is read (so nothing opened)
+                break
+            offset = _read_on(out, offset, saw)
+            if ended:
+                break
+            if time.time() > deadline:
+                kill_tree(p)
+                tail = "\nstopped: no answer from the browser within 5 minutes\n"
+                break
+            time.sleep(0.25)
+    finally:
+        rc = _reap(step, p, 5)
+        _drop_out(step, out)
     if tail:
         with open(log, "a", encoding="utf-8") as f:
             f.write(tail)
@@ -448,6 +743,10 @@ def run_connect(step):
                 rc = _connect_one(step, argv, log, deadline)
                 if rc != 0:
                     break
+        except PrivateFileError as e:  # Windows could not make the output file private: not started, said plainly
+            me["reason"] = "private_file"  # third review of #70: the row shows signin_private_failed, not connect_failed
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\n{e}\n")
         except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
@@ -877,7 +1176,7 @@ class H(BaseHTTPRequestHandler):
             rid = str(body.get("run_id") or "")
             if not rid:  # the page sends the run it shows; nothing else is stopped on its behalf
                 return self._json({"ok": False, "error": "no run_id"}, 400)
-            why, c = stop_connect(step, rid)
+            why, c, _ = stop_connect(step, rid)
             if why == "other run":  # the run the row showed is over, and another has started since: left alone
                 # ...with the run that holds the step now, so the row can show it and a second Stop targets it
                 return self._json({"ok": False, "error": why, "running": True, "said": messages.say("connect_stop_other"),
@@ -885,8 +1184,9 @@ class H(BaseHTTPRequestHandler):
             end = time.time() + 8  # kill_tree waits up to 3 s, the worker's reap up to 5 s: answer once it has ended
             while why == "stopped" and c.get("running") and time.time() < end:  # this run's own record, not the step's
                 time.sleep(0.1)
+            # tab_opened: "yes" / "maybe" / "no" (_tab_state), read now, after the wait above; the toast words each
             return self._json({"ok": why == "stopped", "running": bool(c and c.get("running")), "run_id": (c or {}).get("run_id", ""),
-                               **({} if why == "stopped" else {"error": why})})
+                               **({"tab_opened": _tab_state(c)} if why == "stopped" else {"error": why})})
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)

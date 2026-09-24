@@ -16,7 +16,7 @@ interleaving Codex reproduced on #68:
 """
 import json, os, shutil, subprocess
 
-from _helpers import isolate_this_process
+from _helpers import isolate_this_process, run_node
 isolate_this_process("openloops-pagesignin-")   # importing app writes config/state into a throwaway copy
 from openloops import app, messages  # noqa: E402
 
@@ -75,7 +75,7 @@ PARTS = [STUBS, grab("const esc="), grab("const MSG="), grab("const LABEL="), gr
 def node(scenario):
     js = "\n".join(PARTS + ["(async()=>{const out={};try{" + scenario + "\n}catch(e){out.error=String(e&&e.stack||e)}"
                             "console.log(JSON.stringify(out));process.exit(0)})();"])
-    r = subprocess.run([NODE, "-e", js], capture_output=True, text=True, timeout=60)
+    r = run_node(js)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"FAIL: node could not run the page's code: {r.stderr.strip()[-800:]}")
     out = json.loads(r.stdout.strip().split("\n")[-1])
@@ -162,4 +162,27 @@ out = node("""
 check(out["dlgRun"] == "R2" and out["link"] == "", f"R1's link, answered after the pop-up became R2's, is not shown in it ({out})")
 check(out["own"] == "https://example.invalid/r2", "...and R2's own link is")
 check(out["said"] == "", f"a Check again started for R3's pop-up does not put its sentence in R4's ({out['said']!r})")
+# ---------------------------------------------------------------- 6. the Stop toast says whether a tab had opened
+say("6. third review of #70: the Stop toast names the tab that had already opened, and only then")
+for tab, said in (("yes", "connect_stopped_tab"), ("maybe", "connect_stopped_maybe_tab"), ("no", "connect_stopped")):
+    out = node(f"""
+ CONN.slack={{busy:true,msg:'Waiting',run:'R1'}};
+ const p=connectStop('slack');await flush();
+ await answer('{STOP}',true,200,{{ok:true,running:false,run_id:'R1',tab_opened:'{tab}'}});await p;
+ out.toasts=TOASTS.slice();""")
+    want = messages.say(said, party="Slack")
+    check(out["toasts"] == [want], f"tab_opened {tab}: the toast is {said} ({out['toasts']})")
+# ---------------------------------------------------------------- 7. a sign-in refused for want of a private file
+say("7. third review of #70: a run ended with reason private_file shows signin_private_failed on its row, toasted once")
+out = node("""
+ CONN.slack={busy:true,msg:'Waiting',run:'R1'};const w=connectWatch('slack',{});
+ await runTo(10000,()=>({running:false,rc:-1,run_id:'R1',reason:'private_file'}));await w;
+ out.msg=(CONN.slack||{}).msg;out.toasts=TOASTS.slice();
+ CONN.gmail={busy:true,msg:'Waiting',run:'R2'};const w2=connectWatch('gmail',{});
+ await runTo(20000,()=>({running:false,rc:1,run_id:'R2'}));await w2;
+ out.other=(CONN.gmail||{}).msg;out.toasts2=TOASTS.length;""")
+said = messages.say("signin_private_failed")
+check(out["msg"] == said and out["toasts"] == [said], f"the row and one toast say it ({out['msg']!r}, {out['toasts']})")
+check(out["other"] == messages.say("connect_failed", party="Google") and out["toasts2"] == 1,
+      f"...while any other failure keeps connect_failed and no extra toast ({out['other']!r})")
 say("all passed")

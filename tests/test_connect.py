@@ -5,7 +5,8 @@
 The API half puts a fake `claude` first on PATH and points BROWSER at a script that only writes down the
 link it was given, so nothing signs in to anything and no browser window opens. The fake refuses
 `mcp login` when stdin is not a terminal, as the real CLI (2.1.280) does, so a pass also proves the app
-runs it on a pseudo-terminal. That half is skipped on Windows, where the app gives the CLI a console window.
+runs it on a pseudo-terminal. That half is skipped on Windows (shell-script fakes); tests/test_connect_win.py covers
+the Windows runner, which gives the CLI a hidden console and reads its output from a file (#27).
 """
 import json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
@@ -13,7 +14,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PORT = 0  # set by start_app(): the port our own server says it bound, never just one that looked free
 t0 = time.time()
-from _helpers import isolate_this_process, isolated_env, start_app  # noqa: E402
+from _helpers import isolate_this_process, isolated_env, run_node, start_app  # noqa: E402
 isolate_this_process("openloops-connect-parent-")  # doctor reads ~/.claude.json in-process: a throwaway one
 from openloops import agent, doctor, messages  # noqa: E402
 
@@ -230,7 +231,7 @@ if NODE:
     grab = lambda start: next(l for l in page if l.startswith(start))
     js = "\n".join([grab("const esc="), "function connectBtn(){return ''}", grab("const checkRow="),
                     f"console.log(checkRow({json.dumps(rows['miro'])}))"])
-    html = subprocess.run([NODE, "-e", js], capture_output=True, text=True, timeout=60).stdout
+    html = run_node(js, timeout=60).stdout
     check('style="color:var(--r)" title="needs attention"' in html and "nothing to do here yet" not in html,
           "the unsupported row renders as the red 'needs attention' cross, not the grey optional dash")
 elif os.environ.get("GITHUB_ACTIONS"):
@@ -270,7 +271,8 @@ check(slack_ok and s_src == "connector" and names.get("slack") == "claude.ai Sla
 for k in ("slack_source", "miro_source", "claude_servers"):
     cfg.pop(k, None)
 agent.WIN = True
-check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail"]], "Windows: no --no-browser (the CLI opens the browser)")
+check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail", "--no-browser"]],
+      "Windows too: --no-browser, the app opens the link it prints (#27)")
 agent.WIN = sys.platform == "win32"
 check(agent.login_cmd("nope") is None, "unknown step -> None")
 cfg["agent"] = "grok"
@@ -278,7 +280,7 @@ check(all(agent.login_cmd(s) is None for s in agent.CONNECT_STEPS), "Grok -> Non
 
 # ---------------------------------------------------------------- /api/connect
 if sys.platform == "win32":
-    say("skip /api/connect: Windows runs the CLI in its own console window")
+    say("SKIP /api/connect: the fakes are shell scripts; tests/test_connect_win.py covers the Windows runner")
     raise SystemExit(0)
 
 FAKE = r'''#!PYTHON
@@ -631,8 +633,9 @@ try:
     t = time.time()
     code, out = api("/api/connect/miro/stop", {"run_id": rid})
     s = api("/api/connect/miro")[1]
-    check(code == 200 and out == {"ok": True, "running": False, "run_id": rid} and time.time() - t < 8,
-          f"POST /api/connect/miro/stop answers once the run has ended ({code}, {out})")
+    # tab_opened (third review of #70): the fake browser was handed the link when the CLI printed it
+    check(code == 200 and out == {"ok": True, "running": False, "run_id": rid, "tab_opened": "yes"} and time.time() - t < 8,
+          f"POST /api/connect/miro/stop answers once the run has ended, saying the sign-in tab had opened ({code}, {out})")
     check(not waiting() and s["running"] is False and s.get("stopped") is True and s["last"] == "stopped: Stop this sign-in was pressed",
           f"...the fake claude child is gone, and the status shows running false, stopped, and why in its last line ({s})")
     code, out = api("/api/connect/miro/stop", {"run_id": rid})

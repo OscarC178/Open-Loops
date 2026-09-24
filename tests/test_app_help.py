@@ -140,6 +140,18 @@ socket.socket.bind, socket.socket.listen, webbrowser.open = bind, listen, wopen
         except SystemExit:
             ok = False
         check(ok, f"accepted without exiting: {' '.join(args) or '(no options)'}")
+    # an OPENLOOPS_PORT the app could never listen on counts as unset, as a bad config.json "port" does (review of #70);
+    # before, 99999 went straight to the port scan, which found nothing and exited
+    had = os.environ.pop("OPENLOOPS_PORT", None)
+    try:
+        base = app._port_arg()
+        for env_port, want in (("8791", 8791), ("99999", base), ("abc", base), ("", base)):
+            os.environ["OPENLOOPS_PORT"] = env_port
+            check(app._port_arg() == want, f"OPENLOOPS_PORT={env_port!r} gives port {want} (unusable values count as unset)")
+    finally:
+        os.environ.pop("OPENLOOPS_PORT", None)
+        if had is not None:
+            os.environ["OPENLOOPS_PORT"] = had
     say("all passed")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)

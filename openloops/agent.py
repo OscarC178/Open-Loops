@@ -921,9 +921,9 @@ def login_cmd(step, agent_name=None):
     Codex has one command step, sign in (`codex login`, which opens the browser itself).
 
     Each opens the browser at most once and needs nothing typed: the user only clicks Allow. `mcp login`
-    gets --no-browser off Windows because app.py runs it on a pseudo-terminal, reads the sign-in link it
-    prints and opens that itself (the CLI refuses to wait for the browser when stdin is not a terminal).
-    On Windows app.py gives it a console window of its own instead, and the CLI opens the browser.
+    gets --no-browser because app.py reads the sign-in link it prints and opens that itself, and shows it on
+    the page in case no browser came up: from a pseudo-terminal off Windows, from a hidden console's output
+    file on Windows (#27; before that Windows gave it a console window of its own and captured nothing).
     agent_name: the AI app.py read once when the step was pressed, so the run is labelled and run for the same AI
     even if Settings change before its worker starts (#27); default the configured one."""
     who = agent_name or name()
@@ -936,7 +936,7 @@ def login_cmd(step, agent_name=None):
     if step == "slack_install":
         add = [] if _has_marketplace() else [["claude", "plugin", "marketplace", "add", _MARKETPLACE_SRC]]
         return add + [["claude", "plugin", "install", f"slack@{_MARKETPLACE}"]]
-    return [["claude", "mcp", "login", server_name(step)] + ([] if WIN else ["--no-browser"])]
+    return [["claude", "mcp", "login", server_name(step), "--no-browser"]]
 
 
 def server_name(svc):

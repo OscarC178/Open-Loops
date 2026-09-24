@@ -214,10 +214,32 @@ FAILURES = {
         "what": "Open Loops stopped waiting for the {party} sign-in.",
         "fix": "If you had already clicked Allow, its row turns green; if not, press its button again whenever you are ready.",
         "button": None},
+    # third review of #70: the same, when a sign-in tab had already opened in the browser (the app opens the link as
+    # soon as the CLI prints it, and a browser call under way cannot be taken back)
+    "connect_stopped_tab": {
+        "what": "Open Loops stopped waiting for the {party} sign-in.",
+        "fix": "A sign-in tab had already opened in your browser; you can close it, and press the button again whenever you are ready.",
+        "button": None},
+    # fourth review of #70: the same, when the browser was still being asked to open the link as the Stop answered
+    "connect_stopped_maybe_tab": {
+        "what": "Open Loops stopped waiting for the {party} sign-in.",
+        "fix": "A sign-in tab may have opened in your browser; if it did, you can close it, and press the button again whenever you are ready.",
+        "button": None},
     # #67: Stop pressed on a row whose run had already ended, with another run of that step started since (another tab)
     "connect_stop_other": {
         "what": "That sign-in had already ended, and another one has started since, so Open Loops left it running.",
         "fix": "Press Stop this sign-in again on the row as it is now if you want to stop that one too.",
+        "button": None},
+    # review of #70: Windows keeps a sign-in's raw output (link and all) in a temporary file while it runs, and
+    # removes it at the end; this is logged when that removal failed. The next run of that step removes it first.
+    "signin_file_left": {
+        "what": "Open Loops couldn't delete a temporary file that holds the last sign-in link.",
+        "fix": "Nothing to do now: Open Loops deletes it the next time you press that sign-in's button.",
+        "button": None},
+    # second review of #70: Windows could not restrict that temporary file to this user, so the sign-in was not started
+    "signin_private_failed": {
+        "what": "Open Loops couldn't make a private file for the sign-in output, so it didn't start the sign-in.",
+        "fix": "Press the button again, and if it happens again press Copy all in the Console at the bottom and send it to whoever set Open Loops up.",
         "button": None},
     "connect_timeout": {
         "what": "Open Loops stopped waiting for your browser after 5 minutes.",

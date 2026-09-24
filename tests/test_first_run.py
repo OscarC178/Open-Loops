@@ -40,7 +40,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from openloops import messages  # noqa: E402  (the wording table only; importing it writes nothing)
-from _helpers import fresh_install, isolated_env, start_app, stop  # noqa: E402
+from _helpers import fresh_install, isolated_env, run_node, start_app, stop  # noqa: E402
 
 t0 = time.time()
 
@@ -176,7 +176,7 @@ const snap=()=>({stage:stage(),shown:shown(),jobs:jobCalls(),said:$('#start_said
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);out.SS=SS;console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
-    r = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=300)
+    r = run_node("\n".join(parts), timeout=300)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"FAIL: node could not run the page's setup code: {r.stderr.strip()[-800:]}")
     out = json.loads(r.stdout.strip().splitlines()[-1])
@@ -703,7 +703,7 @@ const view=()=>({stage:stage(),setup:$('#setup').style.display,lists:$('#lists')
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);clearInterval(allowT);console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
-    r = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=300)
+    r = run_node("\n".join(parts), timeout=300)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"FAIL: node could not run the page's Set-up code: {r.stderr.strip()[-800:]}")
     out = json.loads(r.stdout.strip().splitlines()[-1])
@@ -1345,7 +1345,9 @@ if NODE:
               f"...the row is back to its Connect button, with no failure sentence ({so['msg']!r})")
         check(not so["open"] and so["note"] == "{}", f"...the pop-up is closed and that run's closed-pop-up note is gone ({so['note']})")
         check(so["why"] == "none" and so["locked"] == 0, f"...the AI picker is free again, with no reason line ({so})")
-        check(so["toasts"] == [messages.say("connect_stopped", party="Slack")], f"...and a toast says it was stopped ({so['toasts']})")
+        # the fake browser was handed the link when the CLI printed it, so the Stop's reply says a tab had opened
+        # (third review of #70) and the toast says it can be closed
+        check(so["toasts"] == [messages.say("connect_stopped_tab", party="Slack")], f"...and a toast says it was stopped ({so['toasts']})")
         check(out["after"] == {"msg": "", "busy": False, "failed": False},
               f"the row's watcher ends on the stopped run without calling it failed ({out['after']})")
         check(out["late"] == {"same": True, "busy": True, "run": "g2", "msg": "new"},
@@ -1409,20 +1411,37 @@ if NODE:
 say("4. install.sh --isolated, and setup.ps1 -Isolated (static)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
-check('python -m openloops.app$(if ($Port) { " --port $Port" })' in code and "Start this copy with: $manual" in code,
-      "setup.ps1: the printed start command carries -Port, as its launch does")
-# ...and that line as PowerShell evaluates it (review of #59): pwsh is on GitHub's Ubuntu and macOS runners; the whole
-# script needs Windows (Scheduled Tasks, shortcuts), which the test matrix does not have, so only this line is run
-pwsh = shutil.which("pwsh")
+# the start command and address of a copy with no icon are printed at the end, as install.sh prints them (#27 part 2);
+# the command carries -Port, as its launch does
+check('if ($Port) { $showPort = $Port; $portArg = " --port $Port"; $portFrom = "-Port you gave" }' in code
+      and 'Write-Host "    cd `"$Dest`"; python -m openloops.app$portArg"' in code
+      and 'Write-Host "  It opens at http://localhost:$showPort (the $portFrom; the next free port if that one is taken)"' in code,
+      "setup.ps1: the printed start command carries -Port, as its launch does, and the address says where the port came from")
+# ...and those lines as PowerShell evaluates them (review of #59): pwsh is on GitHub's Ubuntu and macOS runners; the
+# whole script needs Windows (Scheduled Tasks, shortcuts), which the test matrix does not have, so only they are run.
+# tests/test_setup_ps1.py runs the whole script on Windows.
+pwsh = shutil.which("pwsh") or (shutil.which("powershell") if sys.platform == "win32" else None)
 if pwsh:
-    line = next(l.strip() for l in code.splitlines() if l.strip().startswith("$manual = "))
-    for port_, want_ in ((8790, 'cd "C:\\OL test"; python -m openloops.app --port 8790'), (0, 'cd "C:\\OL test"; python -m openloops.app')):
-        r_ = subprocess.run([pwsh, "-NoProfile", "-Command", f'$Dest = "C:\\OL test"; $Port = {port_}; $env:OPENLOOPS_PORT = "8791"; {line}; $manual'],
-                            capture_output=True, text=True, timeout=60)
-        check(r_.returncode == 0 and r_.stdout.strip() == want_,
-              f"setup.ps1's printed command, evaluated by PowerShell with -Port {port_} and OPENLOOPS_PORT=8791: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
+    lines_ = code.splitlines()
+    start_ = next(i for i, l in enumerate(lines_) if l.strip() == "$cfgPort = 8765")
+    end_ = next(i for i, l in enumerate(lines_) if i > start_ and l.strip().startswith("else { $showPort = $cfgPort"))
+    block_ = "\n".join(lines_[start_:end_ + 1])
+    cfg_ = Path(tempfile.mkdtemp(prefix="openloops-firstrun-cfg-")) / "config.json"
+    cfg_.write_text('{"port": 99999}', encoding="utf-8")  # a saved port the app could never listen on: it uses 8765
+    for port_, env_port_, want_, port_want_ in ((8790, "8791", 'cd "C:\\OL test"; python -m openloops.app --port 8790', "8790"),
+                                                (0, "8791", 'cd "C:\\OL test"; python -m openloops.app', "8791"),
+                                                (0, "", 'cd "C:\\OL test"; python -m openloops.app', "8765"),
+                                                (0, "99999", 'cd "C:\\OL test"; python -m openloops.app', "8765"),   # neither usable
+                                                (0, "8791`n", 'cd "C:\\OL test"; python -m openloops.app', "8765")):  # a trailing newline: app.py refuses it
+        cmd_ = (f'$Dest = "C:\\OL test"; $CfgFile = "{cfg_}"; $Port = {port_}; $env:OPENLOOPS_PORT = "{env_port_}"; '
+                f'{block_}\n"cd `"$Dest`"; python -m openloops.app$portArg"; $showPort')
+        r_ = subprocess.run([pwsh, "-NoProfile", "-Command", cmd_], capture_output=True, text=True, timeout=60)
+        got_ = r_.stdout.split()
+        check(r_.returncode == 0 and r_.stdout.strip().splitlines()[:1] == [want_] and got_[-1:] == [port_want_],
+              f"setup.ps1's printed command and port, evaluated by PowerShell with -Port {port_}, OPENLOOPS_PORT={env_port_!r} and a saved port 99999: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
+    shutil.rmtree(cfg_.parent, ignore_errors=True)
 else:
-    say("SKIP running setup.ps1's start-command line: no pwsh here (CI's runners have it)")
+    say("SKIP running setup.ps1's start-command lines: no pwsh here (CI's runners have it)")
 check("$TaskRemoved = $true" in code and 'if ($NoTask -and $TaskRemoved) {' in code, "setup.ps1: a removed task is not then called unchanged")
 check("(-NoApp)" not in code and "$(if ($Isolated) { 'test copy' } else { '-NoApp' })" in code
       and "$(if ($Isolated) { 'test copy' } else { '-NoTask' })" in code, "setup.ps1 -Isolated says 'test copy' too (review of #59)")
@@ -1491,6 +1510,10 @@ try:
                         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
     check(rq.returncode == 0 and "python3 -m openloops.app --port 8792" in rq.stdout and "http://localhost:8792 (the --port you gave" in rq.stdout,
           f"...--port beats OPENLOOPS_PORT, as in app.py: the command carries it and the address matches ({rq.stdout[-200:]!r})")
+    rr = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(dest), "--isolated", "--no-launch"],
+                        env=dict(env_, OPENLOOPS_PORT="99999"), capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    check(rr.returncode == 0 and "(the port in its config.json" in rr.stdout and "99999" not in rr.stdout,
+          f"review of #70: an OPENLOOPS_PORT the app could never listen on is not the printed address ({rr.stdout[-200:]!r})")
     install(home, "--dest", str(dest), "--isolated", "--no-launch", "--port", "8790")   # back to 8790 for the checks below
     r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--name", "Other")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))

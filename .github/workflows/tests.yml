@@ -1,7 +1,9 @@
 # Runs the test suite (python tests/run_all.py, the same as `npm test`) on every pull request and on every
-# push to develop, on Linux and macOS. The tests are stdlib-only and never call Slack, Gmail or Claude: each
+# push to develop, on Linux, macOS and Windows. The tests are stdlib-only and never call Slack, Gmail or Claude: each
 # builds a throwaway install with its own HOME on a port the OS picks, and the Claude setup tests use a fake
-# `claude` on PATH. test_macos_launch skips itself on Linux, and skips its one live check (doctor finds a real
+# `claude` on PATH (a .cmd shim over Python on Windows, as npm installs the real one). test_connect_win and
+# test_setup_ps1 run only on Windows (the hidden-console sign-in runner, a real setup.ps1 -Isolated install into a
+# temp folder); elsewhere they skip. test_macos_launch skips itself off macOS, and skips its one live check (doctor finds a real
 # `claude`) where Claude Code is not installed, saying so in the log. Node is installed so the page's JavaScript is
 # tested too (test_messages fails, rather than skips, without it here).
 name: Tests
@@ -24,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

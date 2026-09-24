@@ -61,6 +61,7 @@ $env:OPENLOOPS_ISOLATED = "1" when starting any copy makes it act as -Isolated.
 }
 function Say($t) { Write-Host ""; Write-Host "  $t" -ForegroundColor Cyan }
 function Ok($t)  { Write-Host "  [ok] $t" -ForegroundColor Green }
+function Warn($t) { Write-Host "  $t" -ForegroundColor Yellow }
 
 Write-Host ""
 Write-Host "  ============================" -ForegroundColor Cyan
@@ -192,19 +193,38 @@ if ($Isolated) { Ok "Isolated test copy: it reads no to-do file and starts no sc
 $pyw  = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
 if (-not $pyw) { $pyw = (Get-Command python).Source }
 $ico  = Join-Path $Dest "docs\AppIcon.ico"
+# The icons and the weekday refresh are one per user, so a second copy takes them over from the first. Whether a
+# working folder (an icon's, the task's) is another copy that still exists -> that folder, else "" (#27: a test
+# install silently took over the everyday copy's icons and refresh, and nothing said so).
+function OtherCopy($path) {
+    if (-not $path) { return "" }
+    try { $full = [IO.Path]::GetFullPath($path).TrimEnd('\') } catch { return "" }
+    if (($full -ieq $Dest.TrimEnd('\')) -or -not (Test-Path -LiteralPath $full -PathType Container)) { return "" }
+    return $full
+}
 if ($NoApp) {
-    # the printed command passes -Port as the launch below does: --port beats a leftover OPENLOOPS_PORT (review of #59)
-    $manual = "cd `"$Dest`"; python -m openloops.app$(if ($Port) { " --port $Port" })"
-    Ok "Skipped the Desktop and Start menu icons ($(if ($Isolated) { 'test copy' } else { '-NoApp' })). Start this copy with: $manual"
+    # the command that starts it, and its address, are printed at the end (as install.sh does)
+    Ok "Skipped the Desktop and Start menu icons ($(if ($Isolated) { 'test copy' } else { '-NoApp' })). How to start this copy is at the end."
 } else {
     $ws = New-Object -ComObject WScript.Shell
+    # both icons are looked at: one of them may be missing, or point at a copy the other does not (review of #70)
+    $openedBefore = @()
+    foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
+        $lnk = Join-Path $folder "Open Loops.lnk"
+        if (Test-Path -LiteralPath $lnk) {
+            $was = OtherCopy $ws.CreateShortcut($lnk).WorkingDirectory
+            if ($was -and ($openedBefore -notcontains $was)) { $openedBefore += $was }
+        }
+    }
+    $openedBefore = $openedBefore -join " and "
     foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
         $s = $ws.CreateShortcut((Join-Path $folder "Open Loops.lnk"))
         $s.TargetPath = $pyw; $s.Arguments = "-m openloops.app"; $s.WorkingDirectory = $Dest
         if (Test-Path $ico) { $s.IconLocation = "$ico,0" } else { $s.IconLocation = "%SystemRoot%\System32\shell32.dll,44" }
         $s.Description = "Open Loops - who owes you a reply"; $s.Save()
     }
-    Ok "Desktop and Start menu icons created"
+    if ($openedBefore) { Warn "The Desktop and Start menu icons now open this copy; before this they opened $openedBefore." }
+    else { Ok "Desktop and Start menu icons created" }
 }
 
 # ---------- 5. Morning refresh ----------
@@ -223,13 +243,16 @@ if ($NoTask -and $TaskRemoved) {
 } elseif ($NoTask) {
     Ok "Skipped the weekday refresh ($(if ($Isolated) { 'test copy' } else { '-NoTask' })): whatever was already scheduled is unchanged"
 } else {
+    $had = Get-ScheduledTask -TaskName "Claude Open Loops Refresh" -ErrorAction SilentlyContinue
+    $ranBefore = if ($had) { OtherCopy (($had.Actions | Select-Object -First 1).WorkingDirectory) } else { "" }
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -At $At | Out-Null
     # $ErrorActionPreference = "Stop" does not react to a native process's exit code in Windows PowerShell 5.1.
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  Couldn't set the weekday refresh (register-task.ps1 exit $LASTEXITCODE, time '$At'). Fix the problem above and run setup again, or set the time later in the app's Settings." -ForegroundColor Yellow
         exit 1
     }
-    Ok "Will refresh itself weekdays at $At"
+    if ($ranBefore) { Warn "The weekday refresh now runs this copy at $At; before this it ran $ranBefore." }
+    else { Ok "Will refresh itself weekdays at $At" }
 }
 
 # ---------- 6. Open it ----------
@@ -240,6 +263,24 @@ if ($NoLaunch) {
     $launchArgs = "-m openloops.app"
     if ($Port) { $launchArgs += " --port $Port" }   # an explicit -Port beats a leftover OPENLOOPS_PORT, as on the Mac
     Start-Process -FilePath $pyw -ArgumentList $launchArgs -WorkingDirectory $Dest
+}
+if ($NoApp) {
+    # no icon to start it from: the command, and the address it answers on, as install.sh prints them. app.py takes
+    # --port first, then OPENLOOPS_PORT, then config.json "port" (where -Port was just saved), then 8765; the printed
+    # command passes --port as the launch above does, so the address matches both (review of #59)
+    $cfgPort = 8765
+    try { $cp = (Get-Content -LiteralPath $CfgFile -Raw -ErrorAction Stop | ConvertFrom-Json).port; if ($cp) { $cfgPort = [int]$cp } } catch {}
+    if ($cfgPort -lt 1024 -or $cfgPort -gt 65535) { $cfgPort = 8765 }   # as app.py _port_arg: a port it could never listen on
+    if ($Port) { $showPort = $Port; $portArg = " --port $Port"; $portFrom = "-Port you gave" }
+    # an OPENLOOPS_PORT the app could never listen on (99999) counts as unset, as app.py _port_arg treats it (review of #70);
+    # \A...\z and [0-9], not ^...$ and \d: in .NET $ also matches before a final newline and \d any Unicode digit,
+    # both of which Python's re.fullmatch("[0-9]{1,5}") in app.py refuses, and the address printed must be the app's
+    elseif ($env:OPENLOOPS_PORT -match '\A[0-9]{1,5}\z' -and [int]$env:OPENLOOPS_PORT -ge 1024 -and [int]$env:OPENLOOPS_PORT -le 65535) { $showPort = [int]$env:OPENLOOPS_PORT; $portArg = ""; $portFrom = "OPENLOOPS_PORT in your environment" }
+    else { $showPort = $cfgPort; $portArg = ""; $portFrom = "port in its config.json" }
+    Write-Host ""
+    Write-Host "  Start this copy with:"
+    Write-Host "    cd `"$Dest`"; python -m openloops.app$portArg"
+    Write-Host "  It opens at http://localhost:$showPort (the $portFrom; the next free port if that one is taken)"
 }
 Write-Host ""
 Write-Host "  Done. You can close this window." -ForegroundColor Green

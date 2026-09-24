@@ -302,7 +302,9 @@ except Exception: print(8765)' "$CFG_FILE")
 # and the printed command does the same, so the address matches both (review of #59)
 PORT_ARG=""
 if [ -n "$PORT" ]; then SHOW_PORT="$PORT"; PORT_ARG=" --port $PORT"; PORT_FROM="--port you gave"
-elif [[ "${OPENLOOPS_PORT:-}" =~ ^[0-9]{1,5}$ ]]; then SHOW_PORT="$((10#$OPENLOOPS_PORT))"; PORT_FROM="OPENLOOPS_PORT in your environment"
+# an OPENLOOPS_PORT the app could never listen on (99999) counts as unset, as app.py _port_arg treats it (review of #70)
+elif [[ "${OPENLOOPS_PORT:-}" =~ ^[0-9]{1,5}$ ]] && [ "$((10#$OPENLOOPS_PORT))" -ge 1024 ] && [ "$((10#$OPENLOOPS_PORT))" -le 65535 ]; then
+    SHOW_PORT="$((10#$OPENLOOPS_PORT))"; PORT_FROM="OPENLOOPS_PORT in your environment"
 else PORT_FROM="port in its config.json"; fi
 # Why a step was skipped, in the words the person typed: --isolated is "test copy", not the flags it implies (#56)
 if [ "$ISOLATED" -eq 1 ]; then SKIP_APP="test copy"; SKIP_TASK="test copy"; else SKIP_APP="--no-app"; SKIP_TASK="--no-task"; fi

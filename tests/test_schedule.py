@@ -86,6 +86,10 @@ try:
     s = doctor.schedule_step(logs, root)
     check(s["ok"] is True and s["kind"] == "started" and "Thu 24 Sep at 09:15" in s["title"] and not s["fix"],
           "a start line after the failures: green, 'started' with the start line's own time")
+    touch(err, blocked + "openloops-refresh started 2026-09-04T07:05:00+0100 " + str(root) + "\n")
+    s = doctor.schedule_step(logs, root)
+    check(s["kind"] == "started" and "Fri 4 Sep at 07:05" in s["title"] and "04 Sep" not in s["title"],
+          f"a single-digit day has no leading zero, on every platform (no %-d, which Windows refuses): {s['title']!r}")
     touch(err, started + blocked)
     check(doctor.schedule_step(logs, root)["kind"] == "blocked", "a failure after a start: red again (order decides)")
 
@@ -107,6 +111,37 @@ try:
     s = doctor.schedule_step(logs, root)
     check(s is not None and s["kind"] == "failed" and s["title"] == doctor.SCHEDULE_MSG["failed"]["title"],
           "another start failure: red row, the general wording")
+    prefixed = f"/bin/bash: line 1: {root}/scripts/run-refresh.sh: Permission denied\n"   # bash's own prefix before the path
+    touch(err, started + prefixed)
+    s = doctor.schedule_step(logs, root)
+    check(s is not None and s["kind"] == "failed" and "Permission denied" in s["detail"],
+          "review of #70: a failure with a prefix before the path ('line 1: ') is still matched to this install")
+    touch(err, f"/bin/bash: line 1: {other}/scripts/run-refresh.sh: Permission denied\n")
+    check(doctor.schedule_step(logs, root) is None, "...and a prefixed line about another install still is not")
+    for ln in ("/bin/bash: /Users/test/A:B/scripts/run-refresh.sh: Operation not permitted",
+               "/bin/bash: line 1: /Users/test/A:B/scripts/run-refresh.sh: Permission denied"):
+        m = doctor.RUN_REFRESH_RE.search(ln)
+        check(m and m.group(1) == "/Users/test/A:B/scripts/run-refresh.sh",
+              f"second review of #70: a colon inside a folder name is kept in the path, the prefix still left out ({ln[:24]}...)")
+    if sys.platform != "win32":   # a folder name with a colon in it cannot exist on Windows
+        colon = tmp / "A:B" / "OpenLoops"
+        touch(colon / "state" / "logs" / "launchd.err.log", f"/bin/bash: line 1: {colon}/scripts/run-refresh.sh: Permission denied\n")
+        s = doctor.schedule_step(colon / "state" / "logs", colon)
+        check(s is not None and s["kind"] == "failed", "...and such an install's own failure is matched to it")
+        work = tmp / "Work: Projects" / "OpenLoops"   # CodeRabbit on #70: ": " inside a folder name
+        wlogs = work / "state" / "logs"
+        touch(wlogs / "launchd.err.log", f"/bin/bash: {work}/scripts/run-refresh.sh: Permission denied\n")
+        s = doctor.schedule_step(wlogs, work)
+        check(s is not None and s["kind"] == "failed", "a folder name holding ': ' (Work: Projects): that install's failure is found")
+        touch(wlogs / "launchd.err.log", f"/bin/bash: line 1: {work}/scripts/run-refresh.sh: Operation not permitted\n")
+        check(doctor.schedule_step(wlogs, work)["kind"] == "blocked", "...with bash's 'line 1: ' prefix too")
+        touch(wlogs / "launchd.err.log", f"/bin/bash: {tmp / 'Work: Projects' / 'Other'}/scripts/run-refresh.sh: Permission denied\n"
+                                         f"/bin/bash: {work}/scripts/run-refresh.sh.bak: Permission denied\n")
+        check(doctor.schedule_step(wlogs, work) is None, "...while another copy beside it, or a longer name, is not taken for it")
+        link = tmp / "via-link"                        # the plist named it through a symlink: the fallback resolves it
+        link.symlink_to(work, target_is_directory=True)
+        touch(wlogs / "launchd.err.log", f"/bin/bash: {link}/scripts/run-refresh.sh: Permission denied\n")
+        check(doctor.schedule_step(wlogs, work) is not None, "...and a line naming it through a symlink is still matched")
     touch(err, blocked * 3 + missing)
     s = doctor.schedule_step(logs, root)
     check(s["kind"] == "failed" and "No such file" in s["detail"], "older privacy lines, newer other failure: the LATEST decides")
