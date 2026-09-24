@@ -1290,7 +1290,12 @@ if NODE:
  out.late={same:CONN.gmail===g2,busy:CONN.gmail.busy,run:CONN.gmail.run,msg:CONN.gmail.msg};delete CONN.gmail;
  FAKE['/api/connect/gmail']=[{},{running:true,run_id:'g3',url:'https://example.invalid/g3',agent:'claude'}];
  CONN.gmail={busy:true,msg:'x',run:'g3'};const pb=connectWatch('gmail',{});delete CONN.gmail;await pb;
- out.gone={row:CONN.gmail===undefined};delete FAKE['/api/connect/gmail'];
+ out.gone={row:CONN.gmail===undefined};
+ // (c) the watcher seeing the stop first (another tab pressed it) cleans up the same way: row, note, a fresh check
+ FAKE['/api/connect/gmail']=[{},{running:false,stopped:true,rc:-15,run_id:'g4',agent:'claude'}];
+ const g4=CONN.gmail={busy:true,msg:'x',run:'g4'};allowGoneSet('gmail','g4');let n4=CALLS.length;await connectWatch('gmail',{});
+ out.watchStop={busy:!!(CONN.gmail&&CONN.gmail.busy),msg:(CONN.gmail||{}).msg||'',note:allowGone().gmail||'',calls:CALLS.slice(n4).map(c=>c.split(' ')[0])};
+ delete FAKE['/api/connect/gmail'];
  // the Console's restart mark: once per app start, whatever polls in between; a new start adds one after the old lines
  await loadState();await loadState();out.once=[started,CON.filter(l=>l===LABEL.console_started).length];
  CON.push('no answer from /api/state: fetch failed');const st=await api('/api/state');
@@ -1308,8 +1313,9 @@ if NODE:
         check(out["refused"] == ["not saved: " + messages.say("ai_change_signin")],
               f"#67: Settings' refused Save is a Console note (not saved: …), with no error: line ({out['refused']})")
         so = out["stopped"]
-        check(so["calls"] == [f'/api/connect/slack/stop {{"run_id":"{out["run"]}"}}'] and so["con"] == ["setup: slack stopped"],
-              f"#67: Stop posts to /api/connect/slack/stop, once ({so['calls']})")
+        check(so["calls"][0] == f'/api/connect/slack/stop {{"run_id":"{out["run"]}"}}' and so["con"] == ["setup: slack stopped"]
+              and [c.split(" ")[0] for c in so["calls"]] == ["/api/connect/slack/stop", "/api/doctor"],
+              f"#67: Stop posts to /api/connect/slack/stop, once, and then checks the connections again ({so['calls']})")
         check(not so["busy"] and so["msg"] == "" and "connectStep('slack')" in so["rows"] and "connectStop(" not in so["rows"],
               f"...the row is back to its Connect button, with no failure sentence ({so['msg']!r})")
         check(not so["open"] and so["note"] == "{}", f"...the pop-up is closed and that run's closed-pop-up note is gone ({so['note']})")
@@ -1319,6 +1325,10 @@ if NODE:
               f"the row's watcher ends on the stopped run without calling it failed ({out['after']})")
         check(out["late"] == {"same": True, "busy": True, "run": "g2", "msg": "new"},
               f"#67 review: a Stop's answer that arrives after the row moved on to a new run leaves the new run's row alone ({out['late']})")
+        check(out["watchStop"] == {"busy": False, "msg": "", "note": "", "calls": ["/api/doctor"]},
+              f"#67 review: a stop the watcher sees first is cleaned up by the same function: row, closed-pop-up note, a fresh check ({out['watchStop']})")
+        check("so nothing changed" not in messages.say("connect_stopped", party="Slack"),
+              "#67 review: the stop's toast does not claim nothing changed (a sign-in can finish just before Stop)")
         check(out["gone"] == {"row": True},
               "#67 review: a watcher whose row was removed (a change of AI) ends quietly: no TypeError, nothing written back")
         check(out["status"]["running"] is False and out["status"].get("stopped") is True and not waiting(),

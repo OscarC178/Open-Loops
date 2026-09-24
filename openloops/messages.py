@@ -208,10 +208,11 @@ FAILURES = {
         "what": "The sign-in finished, but {party} still doesn't show as connected.",
         "fix": "Press the button again, and make sure you click Allow in your browser.",
         "button": None},
-    # #67: the toast once Stop this sign-in has stopped a waiting sign-in. {party}: who the sign-in was with
+    # #67: the toast once Stop this sign-in has stopped a waiting sign-in. {party}: who the sign-in was with. It does not
+    # claim nothing changed: a sign-in can finish just before Stop lands, and nothing undoes it (the page checks again).
     "connect_stopped": {
-        "what": "The {party} sign-in was stopped, so nothing changed.",
-        "fix": "Press its button again whenever you are ready.",
+        "what": "Open Loops stopped waiting for the {party} sign-in.",
+        "fix": "If you had already clicked Allow, its row turns green; if not, press its button again whenever you are ready.",
         "button": None},
     # #67: Stop pressed on a row whose run had already ended, with another run of that step started since (another tab)
     "connect_stop_other": {

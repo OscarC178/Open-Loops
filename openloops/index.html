@@ -723,8 +723,14 @@ async function connectStep(step){
  // the app has said which run it is, so a closed pop-up is remembered for that run and no other
  if(ALLOW_ROW[step]&&mine.busy)allowOpen(step,rid);
  return connectWatch(step,row)}
-// #67: Stop this sign-in. The app stops that one run and answers once it has ended; the row goes back to its button,
-// the pop-up (if open for it) closes, this run's closed-pop-up note goes, and the AI picker unlocks with the repaint.
+// #67: the end of a stopped run, whoever sees it first (the Stop's answer, or the row's watcher polling): only while the
+// row still shows that run, it goes back to its button (which unlocks the AI picker), the pop-up closes if it is for that
+// step, the run's closed-pop-up note goes, and the connections are checked again: a sign-in can finish just before Stop
+// lands, and nothing undoes it (review of #68). -> true if it did this, false if the row had moved on.
+function connectStopped(step,mine,run){if(!mine||CONN[step]!==mine)return false;CONN[step]={};
+ if(ALLOW&&ALLOW.step===step)allowClose();if(run)allowClosedEnd(step,run);repaint();
+ doctor(true).catch(e=>clog('setup: '+step+' stopped, and the check after it did not answer: '+e.message));return true}
+// #67: Stop this sign-in. The app stops that one run and answers once it has ended; then connectStopped() above.
 // The POST names the run this row shows (run_id): the app stops that one, or none (409, another run holds the step now).
 // The answer changes the row only if it still shows that run (#67 review): the watcher may have cleared it meanwhile,
 // another run may hold it, or a change of AI may have removed it.
@@ -733,7 +739,7 @@ async function connectStop(step){const c=CONN[step];if(!c||!c.busy||c.stopping||
   if(r.ok)toast(msg('connect_stopped',{party:PARTY(step)}));
   if(CONN[step]!==c)return;
   if(r.running){c.stopping=false;repaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
-  CONN[step]={};if(ALLOW&&ALLOW.step===step)allowClose();allowClosedEnd(step,run);repaint()}
+  connectStopped(step,c,run)}
  catch(e){if(CONN[step]===c){c.stopping=false;repaint()}toast(errSaid(e),{err:true})}}
 // Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
 // row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload. It writes only to
@@ -750,7 +756,7 @@ async function connectWatch(step,row){const inst=step==='install',mine=CONN[step
   if(inst&&s.running&&(s.agent!==mine.agent||s.command!==mine.command)){Object.assign(mine,{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
   if(inst&&s.running&&s.last&&s.last!==mine.last){mine.last=s.last;clog('install: '+s.last)}   // raw progress: Console only
   if(s.running)continue;
-  if(s.stopped){CONN[step]={};repaint();return}   // #67: stopped, not failed
+  if(s.stopped){connectStopped(step,mine,run);return}   // #67: stopped (here or in another tab), not failed
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
   if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
    CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
