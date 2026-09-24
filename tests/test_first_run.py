@@ -1209,7 +1209,14 @@ if NODE:
  // #62 wording: all ok with the optional Miro row red says so in the Console
  const green={all_ok:true,agent:'claude',steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:true,title:'Signed in'},
   {id:'slack',ok:true,optional:true,title:'Slack connected'},{id:'miro',ok:false,optional:true,connect:'miro',title:'Miro connected (optional)',fix:'x'}]};
- FAKE['/api/doctor']=[green,green];await doctor(false);delete FAKE['/api/doctor'];out.head=CON.filter(l=>l.startsWith('connection check: all ok'));""", tmp)
+ // review of #65: red is a Connect button or an alert (a source under a name Open Loops can't use); grey or green is not,
+ // and a red row that is not a source (the morning refresh) is not named either
+ const row=(id,x)=>Object.assign({id,optional:true,ok:false,title:id,fix:'x'},x),heads=[];
+ for(const extra of [[row('miro',{connect:'miro'})],[row('miro',{ok:true})],[row('miro',{})],[row('miro',{alert:true})],
+   [row('gmail',{alert:true}),row('miro',{connect:'miro'})],[row('schedule',{alert:true})]]){
+  const d=Object.assign({},green,{steps:green.steps.filter(x=>x.id!=='miro').concat(extra)});
+  FAKE['/api/doctor']=[d,d];docSaid='';await doctor(false);heads.push(docSaid)}
+ delete FAKE['/api/doctor'];out.head=heads;""", tmp)
         nd = out["nodes"]
         check(nd["rows"] >= 3 and nd["same"] and nd["sameSteps"] and nd["slack"] >= 0 and nd["slackNew"] and nd["others"],
               f"#62: two ticks with nothing changed keep every row's node, Connect Slack's included; a row that changed is replaced, only that one ({nd})")
@@ -1218,8 +1225,10 @@ if NODE:
               f"Settings' Save to Codex: saved and checked, and its sweep does not take Claude's sign-in as Codex's ({c})")
         check(out["claude"] == {"agent": "claude", "busy": True, "open": True, "picked": 1},
               f"#62: Settings' Save back to Claude: the page sweeps again by itself and the waiting sign-in is picked up ({out['claude']})")
-        check(out["head"] == ["connection check: all ok (Miro optional, not connected)"],
-              f"#62: the Console's 'all ok' says when an optional row is not connected ({out['head']})")
+        check(out["head"] == ["all ok (Miro optional, not connected)", "all ok", "all ok", "all ok (Miro optional, not connected)",
+                              "all ok (Gmail, Miro optional, not connected)", "all ok"],
+              f"#62: the Console's 'all ok' names an optional source whose row is red (Connect or alert), not a green or grey one, "
+              f"nor a red row that is not a source ({out['head']})")
     finally:
         quit_app(port, srv)
         stop(srv)
