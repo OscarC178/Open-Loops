@@ -642,9 +642,23 @@ async function tick(){
 function paintConnect(){$('#st_connect').style.display='';
  // the checklist is the Every check fold under the Set-up cards (setupEmbed), and the cards hold the one primary action,
  // so its Connect buttons are all plain (#56)
- $('#setup_steps').innerHTML=DOC.steps.map(s=>checkRow(s,false)).join('')}
-// One checklist row: tick or cross, the title, and while red its sentence and button. The Set-up cards use it too (#28).
-const checkRow=(s,primary)=>`<div class="row" style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
+ // a red row with a download page (the morning refresh, #24) carries its button inside the row, so the row is one piece
+ paintRows($('#setup_steps'),DOC.steps.map(s=>checkRow(s,false,!s.ok&&s.link?`<button data-href="${esc(s.link)}" onclick="window.open(this.dataset.href,'_blank','noopener')" style="margin-top:6px">Open the download page</button>`:'')))}
+// One checklist row: tick or cross, the title, and while red its sentence and button (more: anything else the red row
+// holds, under its button). The Set-up cards use it too (#28).
+const checkRow=(s,primary,more)=>`<div class="row" style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}${more||''}`}</div></div>`
+// #62: the rows are painted on every tick. Writing the whole list each time replaced every button, so a click landing
+// mid-repaint hit a node already gone and focus was lost. Each row lives in a box of its own that is rewritten only
+// when that row's HTML (its signature) changed: an unchanged row keeps its nodes, its button the same element.
+// htmls: one HTML string per row, in order. The first paint clears whatever the container held before.
+function paintRows(el,htmls){if(!el._rows){el.innerHTML='';el._rows=true}
+ const f=typeof document!=='undefined'&&document.activeElement,kids=el.children;
+ htmls.forEach((h,i)=>{const old=kids[i];if(old&&old._sig===h)return;   // unchanged: left alone
+  const n=document.createElement('div');n.innerHTML=h;n._sig=h;
+  const had=!!(old&&f&&old.contains&&old.contains(f));   // focus was in the row being replaced
+  if(old)el.replaceChild(n,old);else el.appendChild(n);
+  if(had){const b=n.querySelector&&n.querySelector('button:not([disabled])'),t=b||(el.closest&&el.closest('section'))||el;if(t.focus)t.focus()}});
+ while(kids.length>htmls.length)el.removeChild(kids[kids.length-1])}   // rows gone since the last paint
 
 // ---------- Setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
 // and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.
@@ -749,15 +763,13 @@ function paintSchedule(st){const w=$('#sched_warn'),s=schedBad()?schedStep():nul
 let schedSeq=0;   // only the newest poll may set SCHED: an older, slower answer must not undo a newer one
 async function checkSchedule(){const st=stage();if(['connect','checking','checkfail'].includes(st))return;const seq=++schedSeq;try{const r=await api('/api/schedule/status');if(seq!==schedSeq)return;SCHED=r.step||null;paintSchedule(stage())}catch(e){}}
 setInterval(checkSchedule,60000);
-// The download button in the setup checklist too. Wraps paintConnect instead of editing it (#21 rewrites that
-// function); rows are painted in DOC.steps order, so row i is step i.
+// What goes with the checklist: the Open <AI> button and the repair line. Wraps paintConnect instead of editing it (#21
+// rewrites that function).
 const paintConnectBase=paintConnect;
-paintConnect=function(){paintConnectBase();const rows=$('#setup_steps').children;
+paintConnect=function(){paintConnectBase();
  const inst=DOC.steps.find(x=>x.id==='claude'),noBtn=!!(inst&&!inst.ok);$('#agent_btn').style.display=noBtn?'none':'';   // it would only say "command not found"
  $('#st_connect').classList.toggle('no_agent_btn',noBtn);   // ...and the help paragraph's sentence about it goes too (#50)
- paintSetupDone();
- DOC.steps.forEach((s,i)=>{if(s.ok||!s.link||!rows[i])return;const b=document.createElement('button');b.textContent='Open the download page';b.style.marginTop='6px';
-  b.onclick=()=>window.open(s.link,'_blank','noopener');(rows[i].lastElementChild||rows[i]).append(b)})};
+ paintSetupDone()};   // a row's download button (s.link) is part of the row now (paintConnectBase), so it survives repaints (#62)
 
 // ---------- Set-up view (#28): your AI, your sources, your schedule ----------
 // Three cards over the same connection check as the checklist (DOC.steps): each shows its rows (checkRow), its state
@@ -809,7 +821,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  // 1. your AI: the choice, then its two rows (installed, signed in); the one button is the row's, else Open Grok / Check again
  setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun||stale?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
  const ai=stale?[]:suRows(SU_AI),aiFirst=(ai.find(s=>!s.ok&&s.connect)||{}).connect;
- setHTML($('#su_ai_rows'),stale?`<div class="sub" style="padding:6px 0"><span class="spin"></span>Checking ${esc(aiName(a))} on this computer…</div>`:ai.map(s=>checkRow(s,s.connect===aiFirst)).join(''));
+ paintRows($('#su_ai_rows'),stale?[`<div class="sub" style="padding:6px 0"><span class="spin"></span>Checking ${esc(aiName(a))} on this computer…</div>`]:ai.map(s=>checkRow(s,s.connect===aiFirst)));
  const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
  const openAgent=a==='grok'&&ai.length===2&&ai[0].ok&&!ai[1].ok;   // Grok signs in in its own window
  setHTML($('#su_ai_act'),stale||rowBtn(ai)?'':openAgent?`<button class="primary" onclick="suOpenAgent()">Open ${esc(agentLabel())}</button>`
@@ -820,14 +832,14 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :msg('sources_needed')+(a==='codex'?' Gmail and Slack are connected in your ChatGPT account: Connect opens ChatGPT\'s apps page.'
   :' Each Connect opens your browser, where you click Allow.');
  const src=stale?[]:suRows(SU_SRC),srcFirst=srcReady()?'':(src.find(s=>!s.ok&&s.connect)||{}).connect;   // once one is connected, the rest are extras, not the next step
- setHTML($('#su_src_rows'),src.map(s=>checkRow(s,s.connect===srcFirst)).join(''));
+ paintRows($('#su_src_rows'),src.map(s=>checkRow(s,s.connect===srcFirst)));
  setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
  suPill('#su_src_state',suState('src',st));
  // 3. your schedule: the morning time, whether the morning refresh started (Mac, doctor.py "schedule"), and last the first scan
  $('#su_time').innerHTML=ISO?esc(msg('sched_test_copy'))
   :`After the first scan, Open Loops refreshes itself on weekdays at <b>${esc((C&&C.refresh_time)||'09:15')}</b>, while you're logged in.${PAGE_WIN?' Open Loops can\'t yet see from here whether Windows started it.':''} <a href="#" onclick="showTab('settings','cs_prefs');return false">Change the time</a>`;
  const sr=schedStep();
- setHTML($('#su_sched_rows'),sr?checkRow(sr,false)+(sr.link&&!sr.ok?`<button data-href="${esc(sr.link)}" onclick="window.open(this.dataset.href,'_blank','noopener')">Open the download page</button>`:''):'');
+ paintRows($('#su_sched_rows'),sr?[checkRow(sr,false)+(sr.link&&!sr.ok?`<button data-href="${esc(sr.link)}" onclick="window.open(this.dataset.href,'_blank','noopener')">Open the download page</button>`:'')]:[]);
  const go=waitsForGo(st);
  $('#su_scan').textContent=stale?`Checking ${aiName(a)} first; the first scan waits until that has finished.`:scanned()?'The first scan is done.':go?'':!aiReady()||!srcReady()?'Last comes the first scan. It waits for you to press Start; nothing runs by itself.'
   :'The first scan has started; how far it has got shows below.';

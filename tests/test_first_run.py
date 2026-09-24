@@ -635,7 +635,12 @@ def setup_js(port, scenario, tmp, session=None):
         f"const BASE='http://127.0.0.1:{port}';const SS={json.dumps(session or {})};const BIN={json.dumps(str(tmp / 'bin'))};",
         "const fs=require('fs');const seen=()=>{const f=BIN+'/prompts.txt';return fs.existsSync(f)?fs.readFileSync(f,'utf8').split(/\\s+/).filter(Boolean):[]};",
         "const sessionStorage={getItem:k=>k in SS?SS[k]:null,setItem:(k,v)=>{SS[k]=String(v)},removeItem:k=>{delete SS[k]}};",
-        "const els={};const mk=id=>({id,style:{},dataset:{},textContent:'',innerHTML:'',disabled:false,title:'',open:false,className:'',kids:[],"
+        # elements keep what they are given; a container painted row by row (paintRows, #62) holds its row boxes as child
+        # nodes, and reads back as their HTML, as a browser's innerHTML would
+        "const els={};const mk=id=>({id,style:{},dataset:{},textContent:'',_html:'',disabled:false,title:'',open:false,className:'',kids:[],"
+        "get innerHTML(){return this.kids.length?this.kids.map(k=>'<div>'+k.innerHTML+'</div>').join(''):this._html},set innerHTML(v){this._html=String(v);this.kids=[]},"
+        "get children(){return this.kids},replaceChild(a,b){this.kids[this.kids.indexOf(b)]=a;a.parent=this;return b},removeChild(c){this.kids.splice(this.kids.indexOf(c),1);return c},"
+        "contains(x){return x===this||this.kids.some(k=>k.contains(x))},"
         "classList:{toggle(){}},appendChild(c){this.kids.push(c);c.parent=this;return c},showModal(){this.open=true},close(){this.open=false},addEventListener(){}});",
         "const $=s=>els[s]||(els[s]=mk(s));const document={getElementById:id=>$('#'+id),createElement:()=>mk('new')};",
         "const CON=[];function clog(m){CON.push(String(m))}const TOASTS=[];function toast(m){TOASTS.push(String(m))}",
@@ -651,7 +656,7 @@ def setup_js(port, scenario, tmp, session=None):
         cut("function stage(){", "\nasync function tick(){"), cut("async function tick(){", "\nfunction paintConnect("),
         cut("function paintConnect(", "\n// ---------- Setup buttons"),
         cut("// ---------- Setup buttons", "\n// The Mac's weekday"),
-        cut("let schedSaid=''", "\n// The download button"), "paintSchedule=function(){};",
+        cut("let schedSaid=''", "\n// What goes with the checklist"), "paintSchedule=function(){};",
         cut("// ---------- Set-up view (#28)", "\nlet peopleRendered=''"),
         cut("let peopleRendered=''", "async function findPeople("),
         cut("async function stageAuto(", "// Update Slack needs Slack"),
