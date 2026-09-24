@@ -415,16 +415,22 @@ def main():
     say("Your list and settings were copied to the new Open Loops. The old copy in Documents is untouched; "
         "Open Loops no longer uses it.")
     # The links Grok jobs keep in state/grok-home (agent.grok_job_env) point at ~/.grok's sign-in files. "Copy what
-    # they point to by hand" means nothing to a first-time user (#55): say which files they are and the easy fix.
+    # they point to by hand" means nothing to a first-time user (#55), and neither do "link(s)" or the file names
+    # (#60): say it is the Grok sign-in, how many files, and the easy fix. The names still go to the log below.
     grok = [x for x in skipped if x in GROK_LINKS]
     others = [x for x in skipped if x not in grok]
     if grok:
-        say(f"Left out {len(grok)} link(s) to your Grok sign-in ({', '.join(os.path.basename(g) for g in grok)}). "
-            "They hold the Grok sign-in, not your list, so nothing of yours is lost: if Grok asks you to sign in, "
-            "signing in again inside the app is the easy fix.")
+        say(f"Left out your Grok sign-in ({len(grok)} {'file' if len(grok) == 1 else 'files'}). Nothing of yours is "
+            "lost: if Grok asks you to sign in, sign in again inside the app.")
+    # Any other link: name it by its place in the old folder and say plainly that it stays where it was (#60). Singular
+    # and plural spelt out, no "shortcut(s)"; at most five named, the rest counted (the full list is in the log).
     if others:
-        say(f"Left out {len(others)} shortcut(s) that point somewhere else: {', '.join(others[:5])}. "
-            "Copy what they point to by hand if you need it.")
+        named = ", ".join(others[:5]) + (f" and {len(others) - 5} more" if len(others) > 5 else "")
+        if len(others) == 1:
+            say(f"Left out 1 shortcut: {named}. Open Loops did not copy it; it is still at its old place.")
+        else:
+            say(f"Left out {len(others)} shortcuts: {named}. Open Loops did not copy them; they are still at "
+                "their old places.")
     if a.no_task and PAUSED:
         if resume():
             say("The old copy's morning refresh was put back as it was, because this install does not set one up.")

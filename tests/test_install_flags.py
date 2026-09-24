@@ -15,7 +15,8 @@ pretend Open Loops servers listed in a file, and says nothing is running anywher
         unchanged; its job (found by parsing the plist) unloaded first, then registered for the new place at
         the saved time; the #25 sentence; no deletion advice, no staging folder, no marker file.
      b. rerun: nothing copied again, even if the old copy changed since; an update keeps every personal file.
-     c. symbolic links in the old folder are skipped and listed, never followed.
+     c. symbolic links in the old folder are skipped and listed, never followed; the sentences are plain and
+        singular or plural as the count says (#60).
      d. a job that is loaded and will not unload: refused, nothing copied.
      e. lsof missing, or lsof failing: refused, nothing copied.
      f. servers: only one that says "app": "openloops" with the old root is asked to quit (8767 here, not 8765);
@@ -284,14 +285,29 @@ try:
     os.symlink(old / "config.json", old / "state" / "grok-home" / "notes.md")   # not one of agent.py's three: generic wording
     new = home / "Library" / "Application Support" / "OpenLoops"
     r = install(home, "--no-app", "--no-launch", "--no-task")
-    check(r.returncode == 0 and "Left out 3 shortcut(s)" in r.stdout and "private/hosts-link" in r.stdout
-          and ".grok/etc-link" in r.stdout and "state/grok-home/notes.md" in r.stdout,
+    # #60: plain words. The others by their path in the old folder, "shortcuts" spelt out (no "shortcut(s)"), and
+    # that they stay where they were; the Grok ones as "your Grok sign-in" with a file count, no file names or "link(s)"
+    check(r.returncode == 0 and "Left out 3 shortcuts: " in r.stdout and "private/hosts-link" in r.stdout
+          and ".grok/etc-link" in r.stdout and "state/grok-home/notes.md" in r.stdout
+          and "Open Loops did not copy them; they are still at their old places." in r.stdout
+          and "(s)" not in r.stdout and "by hand" not in r.stdout,
           "the other links reported by their path, the unrelated one under grok-home among them")
-    check("Left out 3 link(s) to your Grok sign-in (auth.json, trusted_folders.toml, trusted_folders.toml.lock)" in r.stdout
-          and "signing in again inside the app" in r.stdout, "the grok-home links named, with the easy fix")
+    check("Left out your Grok sign-in (3 files). Nothing of yours is lost: if Grok asks you to sign in, sign in again "
+          "inside the app." in r.stdout and "auth.json" not in r.stdout,
+          "the grok-home links as 'your Grok sign-in (3 files)', with the easy fix")
     check(not os.path.lexists(new / "private" / "hosts-link") and not os.path.lexists(new / ".grok" / "etc-link")
           and not (new / ".grok" / "etc-link" / "hosts").exists(), "neither copied nor followed")
     check((new / "private" / "notes.md").read_text() == "mine\n", "the real files next to them were copied")
+    # one of each: the singular wording, never "1 shortcuts" or "(1 files)" (#60)
+    home = tmp / "home3c"
+    old = old_install(home, "Single")
+    os.symlink("/etc/hosts", old / "private" / "hosts-link")
+    (old / "state" / "grok-home").mkdir(parents=True, exist_ok=True)
+    os.symlink(home / ".grok" / "auth.json", old / "state" / "grok-home" / "auth.json")
+    r = install(home, "--no-app", "--no-launch", "--no-task")
+    check(r.returncode == 0 and "Left out 1 shortcut: private/hosts-link. Open Loops did not copy it; it is still at "
+          "its old place." in r.stdout and "Left out your Grok sign-in (1 file)." in r.stdout,
+          f"one link of each kind: singular sentences ({r.stdout[-400:]!r})")
 
     say("4d. the old job is loaded and will not unload: refused")
     home = tmp / "home6"
