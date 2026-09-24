@@ -478,10 +478,15 @@ FAILURES = {
         "fix": "Change your AI once it has finished.",
         "button": None},
     # The Console's "connection check: all ok" line when an optional row is red (#62): only "what" is shown, in
-    # brackets after "all ok". {names}: the optional sources not connected, e.g. "Miro".
+    # brackets after "all ok". {names}: the optional sources, e.g. "Miro". "off": the row has a Connect button (not
+    # connected); "unusable": an alert only (doctor.py "unsupported": listed under a name Open Loops can't use).
     "check_optional_off": {
         "what": "{names} optional, not connected.",
         "fix": "Nothing to do unless you want it; its row says how to connect it.",
+        "button": None},
+    "check_optional_unusable": {
+        "what": "{names} optional, unavailable to Open Loops.",
+        "fix": "Nothing to do unless you want it; its row says what is wrong.",
         "button": None},
 
     # ---- your own to-do file (standing.py, #37)

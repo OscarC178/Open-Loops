@@ -665,7 +665,7 @@ def setup_js(port, scenario, tmp, session=None):
         cut("// Update Slack needs Slack", "\n// ---------- lists"),
         cut("const counts=()=>", "\n// ---------- day log"),
         grab("async function openClaude("), grab("async function learnVoice("),
-        cut("const MODELS={", "\nfunction modelUI("), grab("let dirty=false;"), cut("// -> true once saved, false", "\n// the to-do file box"),   # Settings' Save (#62: its AI lock)
+        cut("const MODELS={", "\nfunction modelUI("), grab("let dirty=false;"), cut("// -> true once saved and read back", "\n// the to-do file box"),   # Settings' Save (#62: its AI lock)
         cut("async function standingCreate(", "\n// Zeigarnik"),   # a Save that must succeed before it acts (review of #65)
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),
         """const CALLS=[];const realFetch=global.fetch;
@@ -1242,8 +1242,8 @@ if NODE:
               f"Settings' Save to Codex: saved and checked, and its sweep does not take Claude's sign-in as Codex's ({c})")
         check(out["claude"] == {"agent": "claude", "busy": True, "open": True, "picked": 1},
               f"#62: Settings' Save back to Claude: the page sweeps again by itself and the waiting sign-in is picked up ({out['claude']})")
-        check(out["head"] == ["all ok (Miro optional, not connected)", "all ok", "all ok", "all ok (Miro optional, not connected)",
-                              "all ok (Gmail, Miro optional, not connected)", "all ok"],
+        check(out["head"] == ["all ok (Miro optional, not connected)", "all ok", "all ok", "all ok (Miro optional, unavailable to Open Loops)",
+                              "all ok (Miro optional, not connected; Gmail optional, unavailable to Open Loops)", "all ok"],
               f"#62: the Console's 'all ok' names an optional source whose row is red (Connect or alert), not a green or grey one, "
               f"nor a red row that is not a source ({out['head']})")
     finally:

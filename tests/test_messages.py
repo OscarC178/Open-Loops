@@ -116,7 +116,7 @@ TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entri
           # index.html paintSetupDone() picks one of these by the row that needs attention, with {ai, button, row}
           **{i: {"ai", "button", "row"} for i in ("setup_done_signin", "setup_done_install", "setup_done_other")},
           # index.html doctor(): only its "what", read from MSG, in brackets after the Console's "all ok" (#62)
-          "check_optional_off": {"names"}}
+          "check_optional_off": {"names"}, "check_optional_unusable": {"names"}}
 for i, keys in TABLES.items():
     asked.add(i)
     calls.append(({i}, keys, f"table:{i}"))
