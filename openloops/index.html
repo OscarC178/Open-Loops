@@ -739,7 +739,11 @@ async function connectStep(step){
 // news and is never adopted (the row would go backwards, and the newer run's closed-pop-up note would go with it).
 // Cleared when this page starts a new run of the step.
 const RUN_OVER={};
-function runOver(step,run){if(run)(RUN_OVER[step]=RUN_OVER[step]||new Set()).add(run)}
+// Capped at RUN_OVER_MAX ids per step, the oldest going first (a Set keeps the order they were added in): repeated
+// adoptions from other tabs cannot grow it for ever, and a run that old is not coming back in a late answer.
+const RUN_OVER_MAX=20;
+function runOver(step,run){if(!run)return;const set=RUN_OVER[step]=RUN_OVER[step]||new Set();set.delete(run);set.add(run);
+ while(set.size>RUN_OVER_MAX)set.delete(set.values().next().value)}
 const runIsOver=(step,run)=>!!(RUN_OVER[step]&&RUN_OVER[step].has(run));
 const liveRun=(step,run)=>!!run&&!!CONN[step]&&!!CONN[step].busy&&CONN[step].run===run;
 // #67: the end of a stopped run, whoever sees it first (the Stop's answer, or the row's watcher polling): only while the

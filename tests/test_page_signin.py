@@ -138,4 +138,10 @@ check(out["past"] == {"run": "R2", "busy": True, "msg": "Waiting", "ended": Fals
       f"past R1's deadline R2 is still waiting and watched: the watcher took R2 with a limit of its own ({out['past']})")
 check(out["own"]["busy"] is False and out["own"]["msg"] == messages.say("connect_timeout") and out["own"]["ended"],
       f"...and R2 times out only at its own limit ({out['own']})")
+# ---------------------------------------------------------------- 4. the ended-runs list is capped
+say("4. the list of ended runs keeps the last RUN_OVER_MAX per step")
+out = node("""for(let i=0;i<30;i++)runOver('slack','R'+i);out.size=RUN_OVER.slack.size;out.max=RUN_OVER_MAX;
+ out.oldest=runIsOver('slack','R0')||runIsOver('slack','R9');out.newest=runIsOver('slack','R10')&&runIsOver('slack','R29');""")
+check(out == {"size": 20, "max": 20, "oldest": False, "newest": True},
+      f"30 ended runs on one step keep the newest 20; the oldest 10 go ({out})")
 say("all passed")
