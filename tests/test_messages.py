@@ -114,7 +114,9 @@ TABLES = {**{i: set() for i in messages.RECHECK_AFTER_JOB},   # first: the entri
           **{i: {"job", "ai"} for i, _ in messages.AI_SIGNS}, "job_failed": {"job"}, "job_start_failed": {"job", "job_lower"},
           **{i: {"store", "limit"} for i in messages.CODEX_JOB_IDS},   # agent.py .format(store=, limit=)
           # index.html paintSetupDone() picks one of these by the row that needs attention, with {ai, button, row}
-          **{i: {"ai", "button", "row"} for i in ("setup_done_signin", "setup_done_install", "setup_done_other")}}
+          **{i: {"ai", "button", "row"} for i in ("setup_done_signin", "setup_done_install", "setup_done_other")},
+          # index.html doctor(): only its "what", read from MSG, in brackets after the Console's "all ok" (#62)
+          "check_optional_off": {"names"}, "check_optional_unusable": {"names"}}
 for i, keys in TABLES.items():
     asked.add(i)
     calls.append(({i}, keys, f"table:{i}"))
@@ -129,7 +131,7 @@ check(not unused, f"every FAILURES entry is used somewhere (unused: {unused})")
 SAMPLE = {"ai": "Claude", "vendor": "Anthropic", "tools": "curl", "email": "sam@example.com", "service": "Slack",
           "party": "Google", "limit": "10 minutes", "job": "The refresh", "job_lower": "the refresh", "port": "8791",
           "store": "the Mac keychain", "days": "30", "sources": "Slack and Gmail",
-          "button": "Sign in", "row": "Signed in to Grok"}
+          "button": "Sign in", "row": "Signed in to Grok", "names": "Miro"}
 import string as _string  # noqa: E402
 
 
