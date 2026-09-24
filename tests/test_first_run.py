@@ -782,7 +782,7 @@ if NODE:
  let n=CALLS.length;await chooseAI('codex');out.codex={calls:CALLS.slice(n),agent:C.agent,doc:DOC.agent,v:view()};
  out.cfgCodex=JSON.parse(fs.readFileSync(BIN+'/../config.json','utf8')).agent;
  n=CALLS.length;await chooseAI('claude');out.claude={calls:CALLS.slice(n),doc:DOC.agent,v:view()};
- n=CALLS.length;const p=connectStep('slack');
+ n=CALLS.length;const p=connectStep('slack');await until(()=>$('#allow_dlg').open,5000);   // once the app has named the run
  out.pressed={open:$('#allow_dlg').open,title:$('#allow_title').textContent,sub:$('#allow_sub').textContent,src:$('#su_src_state').textContent};
  await until(()=>$('#allow_link').innerHTML.includes('example.invalid'),15000);
  out.link={html:$('#allow_link').innerHTML,open:$('#allow_dlg').open,check:$('#allow_check').style.display};
@@ -839,7 +839,7 @@ if NODE:
     try:
         out = setup_js(port, """
  FAKE['/api/connect/gmail']=[{started:true},{running:false,rc:1,url:'https://chatgpt.com/apps',opened:true,last:'',step:'gmail'}];   // the page did not open
- await boot();await tick();const p=connectStep('gmail');out.opened={open:$('#allow_dlg').open,title:$('#allow_title').textContent};
+ await boot();await tick();const p=connectStep('gmail');await until(()=>$('#allow_dlg').open,5000);out.opened={open:$('#allow_dlg').open,title:$('#allow_title').textContent};
  await until(()=>$('#allow_msg').textContent!==''&&$('#allow_link').innerHTML.includes('chatgpt.com'),15000);
  out.fail={msg:$('#allow_msg').textContent,link:$('#allow_link').innerHTML,check:$('#allow_check').style.display};await p;
  await allowCheck();out.checked={msg:$('#allow_msg').textContent,open:$('#allow_dlg').open};""", tmp)
@@ -982,9 +982,9 @@ if NODE:
  out.after={n,busy:CONN.slack.busy,url:CONN.slack.url,msg:CONN.slack.msg,gmail:CONN.gmail===undefined,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,
   link:$('#allow_link').innerHTML,rows:$('#su_src_rows').innerHTML,state:$('#su_src_state').textContent};
  await loop();out.n2=n;offline=true;await loop();await until(()=>n===2,5000);out.second=await sweep;out.n3=n;out.picked=CON.filter(l=>l.includes('slack still running')).length;
- allowDismiss();out.dismissed={open:$('#allow_dlg').open,busy:CONN.slack.busy,started:CONN.slack.started};out.SS=SS;
+ allowDismiss();out.dismissed={open:$('#allow_dlg').open,busy:CONN.slack.busy,run:CONN.slack.run};out.SS=SS;
  // review of #58: an answer that arrives while the AI is being changed, or after it changed, restores nothing
- const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login',agent:'claude'};
+ const run={running:true,rc:null,url:'https://example.invalid/authorize?state=old',started:'2026-09-24T10:00:00',step:'login',agent:'claude',run_id:'r-login-1'};
  const quiet=()=>({busy:!!(CONN.login&&CONN.login.busy),open:$('#allow_dlg').open});
  HOLD['/api/connect/login']={body:run};let sw=real();await until(()=>HOLD['/api/connect/login'].release,5000);
  aiSwitching='codex';HOLD['/api/connect/login'].release();out.gated={ok:await sw,...quiet()};aiSwitching='';
@@ -993,7 +993,7 @@ if NODE:
  aiSwitching='codex';out.during=await real();aiSwitching='';
  // review of #58: one step's status fails and another never answers; the rest still restore, and the sweep ends in time
  FAIL_GET.add('/api/connect/install');HANG.add('/api/connect/slack_install');REATTACH_MS=1500;
- FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/authorize?state=miro',started:'2026-09-24T10:01:00',step:'miro',agent:'claude'}];
+ FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/authorize?state=miro',started:'2026-09-24T10:01:00',step:'miro',agent:'claude',run_id:'r-miro-1'}];
  const t2=Date.now();out.sweep={ok:await real(),ms:Date.now()-t2,miro:!!(CONN.miro&&CONN.miro.busy),url:CONN.miro&&CONN.miro.url};REATTACH_MS=15000;""", tmp)
         check(out["before"] == {"slack": None, "open": False}, "a fresh page knows nothing of the sign-in the app is running")
         a = out["after"]
@@ -1010,7 +1010,7 @@ if NODE:
               f"later polls do not ask again; once the offline banner clears they do, without watching the same run twice ({out['n2']}, {out['n3']}, {out['picked']})")
         ds = out["dismissed"]
         gone = json.loads(out["SS"].get("ol.allowDismissed") or "{}")
-        check(not ds["open"] and ds["busy"] and ds["started"] and gone.get("slack", {}).get("run") == ds["started"] and list(gone) == ["slack"],
+        check(not ds["open"] and ds["busy"] and ds["run"] and gone == {"slack": ds["run"]},
               f"Close on the pop-up: closed, the row still busy, and that run remembered for this tab ({gone})")
         check(out["gated"] == {"ok": False, "busy": False, "open": False} and out["changed"] == {"ok": False, "busy": False, "open": False}
               and out["during"] is False,
@@ -1023,45 +1023,13 @@ if NODE:
  out.again={busy:CONN.slack.busy,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML};
  fs.writeFileSync(BIN+'/allow','');await until(()=>!(CONN.slack&&CONN.slack.busy)&&DOC.steps.find(x=>x.id==='slack').ok,30000);
  out.done={ok:DOC.steps.find(x=>x.id==='slack').ok,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML,gone:SS['ol.allowDismissed']};
- // closed before the run's start time is known: remembered as "?", which the next status (here a reload's sweep) resolves
- const G=()=>JSON.parse(SS['ol.allowDismissed']||'{}');const iso=ms=>new Date(ms-new Date(ms).getTimezoneOffset()*60000).toISOString().slice(0,19);   // the app's local, zone-less form
- const R=(running,rc,started)=>[{},{running,rc,url:'https://example.invalid/g',started,step:'gmail',agent:'claude'}];
- const A=iso(Date.now());CONN.gmail={busy:true,msg:'x'};allowOpen('gmail');allowDismiss();out.early=G().gmail.run;delete CONN.gmail;
- FAKE['/api/connect/gmail']=R(true,null,A);await connectReattach();out.resolved={gone:G().gmail.run,busy:CONN.gmail.busy,open:$('#allow_dlg').open};
- FAKE['/api/connect/gmail']=R(false,0,A);await until(()=>G().gmail===undefined,15000);out.ended=!(CONN.gmail&&CONN.gmail.busy);   // the watcher saw it end
- FAKE['/api/connect/gmail']=R(true,null,A);await connectReattach();out.same={busy:CONN.gmail.busy,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step};allowClose();
- // Codex probe (a): A closed before its first poll, the page reloaded before A ended, then B runs: B's pop-up opens
- FAKE['/api/connect/gmail']=R(false,0,A);await until(()=>!(CONN.gmail&&CONN.gmail.busy),15000);delete CONN.gmail;await sleep(50);
- CONN.gmail={busy:true,msg:'x'};allowOpen('gmail');allowDismiss();delete CONN.gmail;const early=G().gmail.run;   // A: "?"
- const B=iso(Date.now()+10000);FAKE['/api/connect/gmail']=R(true,null,B);await connectReattach();
- out.probeA={early,busy:CONN.gmail.busy,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step,note:G().gmail||null};allowClose();
- // Codex probe (b): run A's watcher ends while the check it then runs is still out; B's pop-up is closed meanwhile; A's
- // cleanup must leave B's note alone
- const ends=[],realEnd=allowClosedEnd;allowClosedEnd=(s,r)=>{ends.push(s+' '+r);return realEnd(s,r)};
- const MA=iso(Date.now()-60000),MB=iso(Date.now()+20000);DOC_DEADLINE_MS=3000;
- FAKE['/api/connect/miro']=[{},{running:true,rc:null,url:'https://example.invalid/m',started:MA,step:'miro',agent:'claude'}];
- delete CONN.miro;await connectReattach();allowClose();   // A picked up and watched
- HANG.add('/api/doctor');FAKE['/api/connect/miro']=[{},{running:false,rc:0,url:'',started:MA,step:'miro',agent:'claude'}];
- await until(()=>!(CONN.miro&&CONN.miro.busy),15000);   // A ended: its watcher is now waiting on the check
- CONN.miro={busy:true,msg:'x',started:MB};allowOpen('miro');allowDismiss();   // B, closed while A's check is out
- await until(()=>ends.includes('miro '+MA),15000);allowClosedEnd=realEnd;DOC_DEADLINE_MS=500000;
- out.probeB={note:G().miro||null,MB};""", tmp, session=out["SS"])
+""", tmp, session=out["SS"])
         ag = out["again"]
         check(ag["busy"] and not ag["open"] and '<span class="spin"></span>' in ag["rows"] and "Open the sign-in page" in ag["rows"],
               "a reload after closing the pop-up: the row is busy again with its link, but the pop-up stays closed for that run")
         d = out["done"]
         check(d["ok"] is True and not d["open"] and "spin" not in d["rows"] and d["gone"] == "{}",
               "clicking Allow finishes it as if pressed on this page: the row turns green, and the closed pop-up's note goes with the run")
-        check(out["early"] == "?" and out["resolved"]["gone"] != "?" and out["resolved"]["busy"] and not out["resolved"]["open"],
-              f"a pop-up closed before the run's start time is known is still remembered; the next status names the run ({out['resolved']})")
-        check(out["ended"] and out["same"] == {"busy": True, "open": True, "step": "gmail"},
-              "once that run ends its note goes, so a later run started in the same second opens the pop-up again")
-        pa = out["probeA"]
-        check(pa["early"] == "?" and pa["busy"] and pa["open"] and pa["step"] == "gmail" and pa["note"] is None,
-              f"closed before its first poll, reloaded before it ended: a later run is not taken for it, its pop-up opens and the placeholder goes ({pa})")
-        pb = out["probeB"]
-        check(pb["note"] and pb["note"].get("run") == pb["MB"],
-              f"an ended run's cleanup, finishing after the next run's pop-up was closed, leaves that next run's note alone ({pb})")
     finally:
         quit_app(port, srv)   # a failure part-way can leave the fake sign-in waiting: the app's own quit stops it
         stop(srv)
