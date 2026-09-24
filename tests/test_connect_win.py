@@ -32,6 +32,25 @@ if sys.platform != "win32":
 
 from _helpers import isolated_env, start_app, stop  # noqa: E402
 
+# ---------------------------------------------------------------- the console the CLI gets, from a parent that has none
+# The installed app is started by pythonw.exe (the icons, Start-Process), which has no console at all. CREATE_NO_WINDOW
+# still gives the child a console of its own, only without a window, so stdin is a terminal there and `claude mcp
+# login` does not refuse it (review of #70 asked for CREATE_NEW_CONSOLE + SW_HIDE; this shows it is not needed).
+pyw = Path(sys.executable).with_name("pythonw.exe")
+if pyw.exists():
+    with tempfile.TemporaryDirectory(prefix="openloops-pyw-") as td:
+        probe, seen = Path(td) / "probe.py", Path(td) / "seen.txt"
+        probe.write_text(
+            "import subprocess, sys\n"
+            "child = subprocess.list2cmdline([sys.executable.replace('pythonw.exe', 'python.exe'), '-c', 'import os; print(os.isatty(0))'])\n"
+            f"subprocess.run(child + ' > \"{seen.as_posix()}\" 2>&1', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)\n",
+            encoding="utf-8")
+        subprocess.run([str(pyw), str(probe)], timeout=60)
+        check(seen.exists() and seen.read_text().strip() == "True",
+              f"a child of pythonw.exe (no console) launched with CREATE_NO_WINDOW has a terminal on stdin ({seen.read_text().strip() if seen.exists() else 'no output'})")
+else:
+    say("SKIP the pythonw probe: no pythonw.exe beside this Python")
+
 # ---------------------------------------------------------------- static: the runner itself
 src = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
 check("CREATE_NEW_CONSOLE" not in src and "running in its own window" not in src,
