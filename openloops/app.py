@@ -879,11 +879,13 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "no run_id"}, 400)
             why, c = stop_connect(step, rid)
             if why == "other run":  # the run the row showed is over, and another has started since: left alone
-                return self._json({"ok": False, "error": why, "running": True, "said": messages.say("connect_stop_other")}, 409)
+                # ...with the run that holds the step now, so the row can show it and a second Stop targets it
+                return self._json({"ok": False, "error": why, "running": True, "said": messages.say("connect_stop_other"),
+                                   "run_id": c.get("run_id", ""), "url": c.get("url", ""), "started": c.get("started")}, 409)
             end = time.time() + 8  # kill_tree waits up to 3 s, the worker's reap up to 5 s: answer once it has ended
             while why == "stopped" and c.get("running") and time.time() < end:  # this run's own record, not the step's
                 time.sleep(0.1)
-            return self._json({"ok": why == "stopped", "running": bool(c and c.get("running")),
+            return self._json({"ok": why == "stopped", "running": bool(c and c.get("running")), "run_id": (c or {}).get("run_id", ""),
                                **({} if why == "stopped" else {"error": why})})
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]

@@ -631,12 +631,12 @@ try:
     t = time.time()
     code, out = api("/api/connect/miro/stop", {"run_id": rid})
     s = api("/api/connect/miro")[1]
-    check(code == 200 and out == {"ok": True, "running": False} and time.time() - t < 8,
+    check(code == 200 and out == {"ok": True, "running": False, "run_id": rid} and time.time() - t < 8,
           f"POST /api/connect/miro/stop answers once the run has ended ({code}, {out})")
     check(not waiting() and s["running"] is False and s.get("stopped") is True and s["last"] == "stopped: Stop this sign-in was pressed",
           f"...the fake claude child is gone, and the status shows running false, stopped, and why in its last line ({s})")
     code, out = api("/api/connect/miro/stop", {"run_id": rid})
-    check(code == 200 and out == {"ok": False, "running": False, "error": "not running"}, f"a second Stop: nothing running ({out})")
+    check(code == 200 and out == {"ok": False, "running": False, "run_id": rid, "error": "not running"}, f"a second Stop: nothing running ({out})")
     rid2 = start_miro()
     check(rid2 and rid2 != rid and waiting(), "the row's button starts a new run afterwards (the stop was for that run only)")
     # #67 review: a Stop for the old run (a tab that has not polled since) lands while the new run waits: 409, in plain
@@ -644,7 +644,8 @@ try:
     code, out = api("/api/connect/miro/stop", {"run_id": rid})
     s = api("/api/connect/miro")[1]
     check(code == 409 and out.get("ok") is False and out.get("said") == messages.say("connect_stop_other")
-          and s["running"] is True and s["run_id"] == rid2 and not s.get("stopped") and waiting(),
+          and s["running"] is True and s["run_id"] == rid2 and not s.get("stopped") and waiting()
+          and out.get("run_id") == rid2 and out.get("url") == s["url"],
           f"#67 review: a Stop naming an earlier run is refused (409, plain words) and the newer run keeps waiting ({code}, {out})")
     api("/api/connect/miro/stop", {"run_id": rid2})
     (tmp / "bin" / "hang").unlink()

@@ -1285,6 +1285,19 @@ if NODE:
  await Promise.race([w,sleep(8000).then(()=>{throw new Error('the watcher did not end after Stop')})]);
  out.after={msg:(CONN.slack||{}).msg||'',busy:!!(CONN.slack&&CONN.slack.busy),failed:CON.some(l=>l.startsWith('setup: slack finished'))};
  out.status=await (await realFetch(BASE+'/api/connect/slack')).json();
+ // #67 review, round 3: the row shows R1; on the app R1 ends and R2 starts (another tab). Stop -> 409, and the row now
+ // shows R2 -> Stop again -> R2 stopped.
+ const post=(u,b)=>realFetch(BASE+u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}).then(r=>r.json());
+ const waitLink=async()=>{for(let i=0;i<150;i++){const s=await (await realFetch(BASE+'/api/connect/slack')).json();if(s.running&&s.url)return s;await sleep(100)}throw new Error('no sign-in link')};
+ const r1=(await post('/api/connect/slack')).run_id;await waitLink();const c1=CONN.slack={busy:true,msg:'Waiting',run:r1,url:'https://example.invalid/old'};
+ await post('/api/connect/slack/stop',{run_id:r1});const r2=(await post('/api/connect/slack')).run_id;const s2=await waitLink();
+ let n5=CALLS.length;TOASTS.length=0;await connectStop('slack');
+ out.adopt={r1:r1!==r2,same:CONN.slack===c1,run:c1.run===r2,busy:c1.busy,stopping:!!c1.stopping,url:c1.url===s2.url,
+  calls:CALLS.slice(n5).map(c=>c.split(' ')[0]+(c.includes(r1)?' R1':c.includes(r2)?' R2':'')),toasts:TOASTS.slice(),
+  btn:$('#su_src_rows').innerHTML.includes(`<button onclick="connectStop('slack')">`)};
+ n5=CALLS.length;await connectStop('slack');const s3=await (await realFetch(BASE+'/api/connect/slack')).json();
+ out.adopt2={calls:CALLS.slice(n5).map(c=>c.split(' ')[0]+(c.includes(r2)?' R2':'')),busy:!!(CONN.slack&&CONN.slack.busy),
+  stopped:s3.stopped===true&&s3.run_id===r2&&s3.running===false};
  // #67 review, stale callbacks. (a) A Stop whose answer arrives after the row has moved on to a new run leaves the new
  // row alone. (b) A watcher whose row went away (a change of AI deletes the rows) ends without touching anything.
  const f0=global.fetch;let release;global.fetch=(u,o)=>u==='/api/connect/gmail/stop'?new Promise(r=>{release=()=>r(new Response('{"ok":true,"running":false}',{status:200}))}):f0(u,o);
@@ -1294,6 +1307,11 @@ if NODE:
  FAKE['/api/connect/gmail']=[{},{running:true,run_id:'g3',url:'https://example.invalid/g3',agent:'claude'}];
  CONN.gmail={busy:true,msg:'x',run:'g3'};const pb=connectWatch('gmail',{});delete CONN.gmail;await pb;
  out.gone={row:CONN.gmail===undefined};
+ // #67 review, round 3: the watcher finds another run holding the step (the one shown ended, another tab started one):
+ // the row takes that run's id and link
+ FAKE['/api/connect/gmail']=[{},{running:true,run_id:'g6',url:'https://example.invalid/g6',agent:'claude'}];
+ const g5=CONN.gmail={busy:true,msg:'x',run:'g5',url:'https://example.invalid/g5'};const pw=connectWatch('gmail',{});
+ await until(()=>g5.run==='g6',8000);out.watchAdopt={run:g5.run,url:g5.url,busy:g5.busy};delete CONN.gmail;await pw;
  // (c) the watcher seeing the stop first (another tab pressed it) cleans up the same way: row, note, a fresh check
  FAKE['/api/connect/gmail']=[{},{running:false,stopped:true,rc:-15,run_id:'g4',agent:'claude'}];
  const g4=CONN.gmail={busy:true,msg:'x',run:'g4'};allowGoneSet('gmail','g4');let n4=CALLS.length;await connectWatch('gmail',{});
@@ -1336,6 +1354,15 @@ if NODE:
               f"#67 review: a stop the watcher sees first is cleaned up by the same function: row, closed-pop-up note, a fresh check ({out['watchStop']})")
         check("so nothing changed" not in messages.say("connect_stopped", party="Slack"),
               "#67 review: the stop's toast does not claim nothing changed (a sign-in can finish just before Stop)")
+        check(out["watchAdopt"] == {"run": "g6", "url": "https://example.invalid/g6", "busy": True},
+              f"#67 review: the watcher finding another run on the step makes the row show that run (id and link) ({out['watchAdopt']})")
+        ad = out["adopt"]
+        check(ad["r1"] and ad["calls"] == ["/api/connect/slack/stop R1"] and ad["toasts"] == [messages.say("connect_stop_other")],
+              f"#67 review: Stop on a row still showing an ended run R1 while R2 waits: 409, in plain words ({ad})")
+        check(ad["same"] and ad["run"] and ad["busy"] and not ad["stopping"] and ad["url"] and ad["btn"],
+              f"#67 review: ...and the row now shows R2 (its id and link), with Stop ready again ({ad})")
+        check(out["adopt2"]["calls"][0] == "/api/connect/slack/stop R2" and not out["adopt2"]["busy"] and out["adopt2"]["stopped"],
+              f"#67 review: Stop again posts R2 and stops it ({out['adopt2']})")
         check(out["gone"] == {"row": True},
               "#67 review: a watcher whose row was removed (a change of AI) ends quietly: no TypeError, nothing written back")
         check(out["status"]["running"] is False and out["status"].get("stopped") is True and not waiting(),
