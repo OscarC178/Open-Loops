@@ -710,48 +710,60 @@ const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
 const connectWaitSaid=(step,a)=>step==='install'?installing(a):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.';
 async function connectStep(step){
  const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
- CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
+ const mine=CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
+ const ours=()=>CONN[step]===mine;   // #67 review: after each await, only a row still showing this press is written to
  let rid='';   // the run's id (#27), from the app's answer: the run it started, or the one already running
- try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});rid=r.run_id||'';if(CONN[step])CONN[step].run=rid;
-  clog('setup: '+step+(r.started?' started':' already running'));if(!r.started&&r.said){CONN[step].msg=r.said;repaint()}}
+ try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});rid=r.run_id||'';
+  clog('setup: '+step+(r.started?' started':' already running'));if(!ours())return;mine.run=rid;if(!r.started&&r.said)mine.msg=r.said;repaint()}
  catch(e){const changed=inst&&e.status===409;   // the app says which: the AI changed in Settings, or Open Loops was updated
+  if(!ours())return;
   CONN[step]={msg:changed?((e.body&&e.body.said)||msg('app_updated'))
    :inst?msg('install_start',{ai:aiName(row.agent)}):msg('connect_start_failed')};repaint();if(changed)doctor(true);return}
  // a step that waits for Allow in the browser opens the pop-up (the Set-up cards' and the checklist's buttons alike), once
  // the app has said which run it is, so a closed pop-up is remembered for that run and no other
- if(ALLOW_ROW[step]&&CONN[step]&&CONN[step].busy)allowOpen(step,rid);
+ if(ALLOW_ROW[step]&&mine.busy)allowOpen(step,rid);
  return connectWatch(step,row)}
 // #67: Stop this sign-in. The app stops that one run and answers once it has ended; the row goes back to its button,
 // the pop-up (if open for it) closes, this run's closed-pop-up note goes, and the AI picker unlocks with the repaint.
 // The POST names the run this row shows (run_id): the app stops that one, or none (409, another run holds the step now).
+// The answer changes the row only if it still shows that run (#67 review): the watcher may have cleared it meanwhile,
+// another run may hold it, or a change of AI may have removed it.
 async function connectStop(step){const c=CONN[step];if(!c||!c.busy||c.stopping||!c.run)return;const run=c.run;c.stopping=true;repaint();
  try{const r=await api('/api/connect/'+step+'/stop',{run_id:run});clog('setup: '+step+(r.ok?' stopped':' was not running'));
+  if(r.ok)toast(msg('connect_stopped',{party:PARTY(step)}));
+  if(CONN[step]!==c)return;
   if(r.running){c.stopping=false;repaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
-  CONN[step]={};if(ALLOW&&ALLOW.step===step)allowClose();if(run)allowClosedEnd(step,run);repaint();
-  if(r.ok)toast(msg('connect_stopped',{party:PARTY(step)}))}
+  CONN[step]={};if(ALLOW&&ALLOW.step===step)allowClose();allowClosedEnd(step,run);repaint()}
  catch(e){if(CONN[step]===c){c.stopping=false;repaint()}toast(errSaid(e),{err:true})}}
 // Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
-// row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload.
-async function connectWatch(step,row){const inst=step==='install',run=(CONN[step]&&CONN[step].run)||'';try{   // finally: this run is over, forget a pop-up closed for it (only it)
+// row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload. It writes only to
+// the row it was started for (#67 review): once that row is replaced (a new run, a Stop's answer) or removed (a change
+// of AI), the watcher stops, touching nothing.
+async function connectWatch(step,row){const inst=step==='install',mine=CONN[step],run=(mine&&mine.run)||'',ours=()=>!!mine&&CONN[step]===mine;
+ try{   // finally: this run is over, forget a pop-up closed for it (only it)
  const t0=Date.now();
  while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
+  if(!ours())return;
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
-  if(s.url&&!CONN[step].url){CONN[step].url=s.url;repaint()}
-  if(inst&&s.running&&(s.agent!==CONN[step].agent||s.command!==CONN[step].command)){Object.assign(CONN[step],{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
-  if(inst&&s.running&&s.last&&s.last!==CONN[step].last){CONN[step].last=s.last;clog('install: '+s.last)}   // raw progress: Console only
+  if(!ours())return;
+  if(s.url&&!mine.url){mine.url=s.url;repaint()}
+  if(inst&&s.running&&(s.agent!==mine.agent||s.command!==mine.command)){Object.assign(mine,{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
+  if(inst&&s.running&&s.last&&s.last!==mine.last){mine.last=s.last;clog('install: '+s.last)}   // raw progress: Console only
   if(s.running)continue;
-  if(s.stopped){if(!CONN[step]||!CONN[step].busy||CONN[step].run===s.run_id){CONN[step]={};repaint()}return}   // #67: stopped, not failed
+  if(s.stopped){CONN[step]={};repaint();return}   // #67: stopped, not failed
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
   if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
    CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
     :msg('codex_browser_failed',{service:n})};CONN[step].opened=s.rc===0;repaint();return}
-  const ai=aiName(CONN[step].agent||row.agent);
-  CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
+  const ai=aiName(mine.agent||row.agent);
+  const after=CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
    :step==='slack_install'?msg('slack_install_failed'):msg('connect_failed',{party:PARTY(step)})};
   await doctor(true);   // repaints the checklist: the row goes green, or offers its next step
+  if(CONN[step]!==after)return;   // changed meanwhile: not this watcher's to say more
   if(s.rc===0&&!inst&&DOC&&DOC.steps&&DOC.steps.some(x=>!x.ok&&x.connect===step)){CONN[step]={msg:msg('connect_no_change',{party:PARTY(step)})};repaint()}   // finished fine, row still red: say so
   return}
- CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(CONN[step].agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
+ if(!ours())return;
+ CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(mine.agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
  finally{if(run)allowClosedEnd(step,run)}}
 
 // #27: the page reloaded (or the app came back after the "not running" banner) while a step was still running: ask the

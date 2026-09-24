@@ -1282,6 +1282,15 @@ if NODE:
  await Promise.race([w,sleep(8000).then(()=>{throw new Error('the watcher did not end after Stop')})]);
  out.after={msg:(CONN.slack||{}).msg||'',busy:!!(CONN.slack&&CONN.slack.busy),failed:CON.some(l=>l.startsWith('setup: slack finished'))};
  out.status=await (await realFetch(BASE+'/api/connect/slack')).json();
+ // #67 review, stale callbacks. (a) A Stop whose answer arrives after the row has moved on to a new run leaves the new
+ // row alone. (b) A watcher whose row went away (a change of AI deletes the rows) ends without touching anything.
+ const f0=global.fetch;let release;global.fetch=(u,o)=>u==='/api/connect/gmail/stop'?new Promise(r=>{release=()=>r(new Response('{"ok":true,"running":false}',{status:200}))}):f0(u,o);
+ CONN.gmail={busy:true,msg:'x',run:'g1'};const pa=connectStop('gmail');await until(()=>release,5000);
+ const g2=CONN.gmail={busy:true,msg:'new',run:'g2'};release();await pa;global.fetch=f0;
+ out.late={same:CONN.gmail===g2,busy:CONN.gmail.busy,run:CONN.gmail.run,msg:CONN.gmail.msg};delete CONN.gmail;
+ FAKE['/api/connect/gmail']=[{},{running:true,run_id:'g3',url:'https://example.invalid/g3',agent:'claude'}];
+ CONN.gmail={busy:true,msg:'x',run:'g3'};const pb=connectWatch('gmail',{});delete CONN.gmail;await pb;
+ out.gone={row:CONN.gmail===undefined};delete FAKE['/api/connect/gmail'];
  // the Console's restart mark: once per app start, whatever polls in between; a new start adds one after the old lines
  await loadState();await loadState();out.once=[started,CON.filter(l=>l===LABEL.console_started).length];
  CON.push('no answer from /api/state: fetch failed');const st=await api('/api/state');
@@ -1308,6 +1317,10 @@ if NODE:
         check(so["toasts"] == [messages.say("connect_stopped", party="Slack")], f"...and a toast says it was stopped ({so['toasts']})")
         check(out["after"] == {"msg": "", "busy": False, "failed": False},
               f"the row's watcher ends on the stopped run without calling it failed ({out['after']})")
+        check(out["late"] == {"same": True, "busy": True, "run": "g2", "msg": "new"},
+              f"#67 review: a Stop's answer that arrives after the row moved on to a new run leaves the new run's row alone ({out['late']})")
+        check(out["gone"] == {"row": True},
+              "#67 review: a watcher whose row was removed (a change of AI) ends quietly: no TypeError, nothing written back")
         check(out["status"]["running"] is False and out["status"].get("stopped") is True and not waiting(),
               f"the app says the run is over (stopped), and the fake sign-in's process is gone ({out['status'].get('running')}, {out['status'].get('stopped')})")
         check(out["once"] == [1, 1], f"#67: the Console's restart mark is written once for this app start, however often it polls ({out['once']})")
