@@ -446,7 +446,9 @@ def _connect_one_win(step, argv, log, deadline, saw):
         while True:
             ended = p.poll() is not None  # looked at before the read, so the last lines are never missed
             try:
-                saw(out.read_bytes()[-64000:])
+                with out.open("rb") as f:  # only the last 64 KB is read, however much the CLI has written
+                    f.seek(max(0, f.seek(0, 2) - 64000))
+                    saw(f.read())
             except OSError:  # not created yet
                 pass
             if ended:
