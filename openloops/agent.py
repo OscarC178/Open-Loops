@@ -198,9 +198,10 @@ CODEX_SEEN_ASK = ("When you have finished, end your reply with one more line: TO
 # front (18 of 18). So the preamble's first step is the look-up, not something left to the model's judgement.
 CODEX_LOOKUP_FIRST = ("First step, before anything else: look up your full list of tools. Some of your tools are "
                       "deferred: they are not shown at the start and only appear once you search for them or list them, "
-                      "for example by running ALL_TOOLS.map(x => x.name) in the exec tool (listing tools there is allowed; "
-                      "it is not a shell command) or with Codex's tool search. Do not decide, or say, that you have no "
-                      "Gmail or Slack tools until you have done this look-up.\n")
+                      "for example by running ALL_TOOLS.map(x => x.name) in the code-mode functions.exec tool (listing "
+                      "tools there is allowed; it is not a shell command) or with Codex's tool search. Keep what the "
+                      "look-up prints out of your answer. Do not decide, or say, that you have no Gmail or Slack tools "
+                      "until you have done this look-up.\n")
 _CODEX_SEEN_LINE = re.compile(r"[*_`]*TOOLS_SEEN[*_`]*[ \t]*:(.*)", re.I)  # the whole last line, no quote or bullet
 
 
@@ -601,7 +602,7 @@ def codex_preamble(tools):
     if lines:
         # Wording matters (measured): "do not use any other tool" also kept the model from Codex's own tool search,
         # which is how app tools are found, so it then saw none. Finding tools is allowed; calling others is not.
-        head += (CODEX_LOOKUP_FIRST + "The only tools you may call are:\n" + "\n".join(lines) +
+        head += (CODEX_LOOKUP_FIRST + "The only connector tools you may call are:\n" + "\n".join(lines) +
                  "\nThey may not be loaded at the start: search for them by name first." + named + " Do not call any other app or "
                  "connector tool, do not run shell commands, do not read or write files, do not search the web, do not "
                  "install anything. If a tool you need is missing or fails, carry on without it and say so where the "

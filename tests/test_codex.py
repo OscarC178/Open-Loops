@@ -56,7 +56,7 @@ task = "Refresh the open loops."
 full = pre + task
 at = full.find(agent.CODEX_LOOKUP_FIRST)
 check("ALL_TOOLS.map(x => x.name)" in agent.CODEX_LOOKUP_FIRST and "until you have done this look-up" in agent.CODEX_LOOKUP_FIRST
-      and 0 < at < full.find("The only tools you may call are:") < full.find("[End of the Open Loops note") < full.find(task)
+      and 0 < at < full.find("The only connector tools you may call are:") < full.find("[End of the Open Loops note") < full.find(task)
       and agent.CODEX_LOOKUP_FIRST not in agent.codex_preamble([]),
       "the Codex preamble's first step is to look up the full tool list, before the tool list and any task text")
 for said, want_text, want_seen in (
