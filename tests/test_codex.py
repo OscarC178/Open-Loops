@@ -59,6 +59,11 @@ check("ALL_TOOLS.map(x => x.name)" in agent.CODEX_LOOKUP_FIRST and "until you ha
       and 0 < at < full.find("The only connector tools you may call are:") < full.find("[End of the Open Loops note") < full.find(task)
       and agent.CODEX_LOOKUP_FIRST not in agent.codex_preamble([]),
       "the Codex preamble's first step is to look up the full tool list, before the tool list and any task text")
+header = pre.split("\n", 1)[0] + "\n"
+check(header.startswith("[Open Loops: an unattended run.") and pre.startswith(header + agent.CODEX_LOOKUP_FIRST)
+      and pre.count(agent.CODEX_LOOKUP_FIRST) == 1 and pre.count("look up your full list of tools") == 1
+      and "it is not a shell command" in agent.CODEX_LOOKUP_FIRST,
+      "the look-up line comes straight after the header, once, and still says listing tools is not a shell command")
 for said, want_text, want_seen in (
         ("OK\nTOOLS_SEEN: gmail.search_emails, slack.slack_read_channel", "OK", {"gmail.search_emails", "slack.slack_read_channel"}),
         ("OK\n**TOOLS_SEEN:** none\n", "OK", set()),
