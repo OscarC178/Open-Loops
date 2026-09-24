@@ -4,13 +4,13 @@
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
 import itertools, json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import messages
 from .paths import PKG, ROOT
-from .store import isolated, load_cfg, norm_date, read_json, update_json, write_json
+from .store import LockTimeout, _locked, isolated, load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
@@ -101,6 +101,13 @@ def load():
 
 def save(s):
     write_json(STATE, s)
+
+
+def state_lock():
+    """The lock every state.json read-modify-write holds (store.update_state for the jobs, update_json for Forget
+    where I was): a click saved here can no longer write back a copy read before a cursor repair or a refresh's
+    write, undoing it (review of #59). Held only around the file work, never around a job start or an AI run."""
+    return _locked(STATE)
 
 
 def kill_tree(p):
@@ -562,6 +569,20 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        try:
+            self._get()
+        except LockTimeout as e:   # a writer held state.json past the deadline: say so, plainly, rather than hang
+            print(f"busy: {e}", file=sys.stderr)
+            self._json({"error": messages.say("app_busy")}, 503)
+
+    def do_POST(self):
+        try:
+            self._post()
+        except LockTimeout as e:
+            print(f"busy: {e}", file=sys.stderr)
+            self._json({"error": messages.say("app_busy")}, 503)
+
+    def _get(self):
         if self.path.split("?")[0] in ("/", "/index.html"):
             # the page's copy of messages.py, for this platform: it can still say "not running" once the server is gone
             b = index_bytes()
@@ -573,11 +594,15 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b)
         elif self.path == "/api/state":
             from . import standing
-            s = load()
-            s = dict(s)
+            # the to-do file can live on a synced or mounted folder: read it outside the lock, on a plain read of
+            # state.json; only the vault_seen it changed is then written, under the lock, onto a fresh read
+            s = dict(load())
             vault_loops, dirty = standing.as_loops(s)
             if dirty:
-                save(s)
+                with state_lock():
+                    fresh = load()
+                    fresh["vault_seen"] = s.get("vault_seen") or {}
+                    save(fresh)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
                         "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
@@ -642,7 +667,7 @@ class H(BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlsplit
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
 
-    def do_POST(self):
+    def _post(self):
         global doctor_cache
         # Every POST changes something (a job, a sign-in, a file), and any web page open in the browser can send one
         # to localhost. Browsers always say where a POST comes from (Origin), so one from anywhere but this page is
@@ -784,11 +809,48 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "config.json could not be read, so the new time was not saved there"}, 500)
             return self._json({"ok": r.returncode == 0, "out": (r.stdout + r.stderr)[-500:]})
         if self.path == "/api/setup-done":  # the page reached "ready" (#38 review): setup stays done, whatever is connected later
-            s = load()
-            if not s.get("setup_done"):
-                s["setup_done"] = True
-                save(s)
+            with state_lock():
+                s = load()
+                if not s.get("setup_done"):
+                    s["setup_done"] = True
+                    save(s)
             return self._json({"ok": True})
+        if self.path == "/api/cursor/forget":
+            # "Forget where I was" (#56), offered on the cursor_unreadable toast: a cursor in state.json that is not a
+            # date stops every refresh (refresh.parse_when). Only the unreadable cursors change, each from what is
+            # recorded about its own source (refresh.apply), never from a time that does not prove that source was read:
+            # - cursor (the shared one): last_refresh, written with it by every full run;
+            # - slack_cursor: last_slack_refresh, written only when a Slack-only pass searched Slack;
+            # - gmail_cursor: nothing records when Gmail was last searched (last_refresh moves on runs that could
+            #   not reach Gmail too), so it is always the History window.
+            # With no such time the cursor is set to the start of Settings > History, the first scan's window (not
+            # removed: a missing slack/gmail cursor falls back to the shared one, which proves nothing for them).
+            # The list, people picks and learned tone are kept: that is what Start over would wipe.
+            def when(v):
+                try:
+                    return datetime.fromisoformat(str(v).strip())
+                except (TypeError, ValueError):
+                    return None
+
+            def readable(v):
+                return v is None or (isinstance(v, str) and not v.strip()) or when(v) is not None
+            proof = {"cursor": "last_refresh", "slack_cursor": "last_slack_refresh", "gmail_cursor": None}
+            window = (datetime.now().astimezone() - timedelta(days=history_days())).isoformat(timespec="minutes")
+            done = {}
+
+            def forget(s):
+                bad = [k for k in proof if k in s and not readable(s[k])]
+                if not bad:
+                    return False   # nothing unreadable: nothing is written
+                for k in bad:
+                    src = proof[k] and s.get(proof[k])
+                    ok = bool(src) and when(src) is not None
+                    s[k] = src if ok else window
+                    done[k] = proof[k] if ok else "history"
+            if update_json(STATE, forget) is False:
+                return self._json({"ok": False, "error": messages.say("server_error")}, 500)
+            since = "" if not done else "history" if "history" in done.values() else "recorded"
+            return self._json({"ok": True, "forgot": sorted(done), "how": done, "since": since})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":
@@ -816,17 +878,17 @@ class H(BaseHTTPRequestHandler):
             if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="", slack_self_name="", first_scan="later")) is False:
                 return self._json({"ok": False, "error": messages.say("config_unreadable"),
                                    "detail": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
-            for f in (STATE, VOICEF, PEOPLEF):
-                if f.exists():
-                    f.unlink()
-            STATE.write_text(fresh_state(), encoding="utf-8")
+            with state_lock():
+                for f in (STATE, VOICEF, PEOPLEF):
+                    if f.exists():
+                        f.unlink()
+                STATE.write_text(fresh_state(), encoding="utf-8")
             doctor_gen["n"] += 1
             doctor_cache = {"at": 0, "result": None}
             return self._json({"ok": True})
         if self.path == "/api/chase":
             return self._json({"started": run_job("chase", [body["id"]])})
         if self.path == "/api/action":
-            s = load()
             act = body.get("action")
             vid = str(body.get("id") or "")
             if vid.startswith("vault-"):
@@ -846,69 +908,78 @@ class H(BaseHTTPRequestHandler):
                                ensure_ascii=False), encoding="utf-8")
                 started = run_job("standing")
                 return self._json({"ok": True, "id": vid, "started": started})
-            if act == "add":
-                owner = (body.get("owner") or "").strip()[:80]
-                ask = (body.get("ask") or "").strip()[:300]
-                notes = (body.get("notes") or "").strip()[:2000]
-                if not ask:
-                    return self._json({"error": "need something to do"}, 400)
-                email = None
-                for name, p in (cfg().get("people") or {}).items():
-                    if name.lower() == owner.lower():
-                        owner = name
-                        email = (p or {}).get("email")
-                        break
-                slug = lambda t: re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:32] or "x"
-                now = datetime.now().astimezone()
-                lid = f"note-{slug(owner or 'me')}-{slug(ask)}-{now.strftime('%Y%m%d%H%M%S')}"
-                s["loops"].insert(0, {
-                    "id": lid, "owner": owner, "owner_email": email, "ask": ask,
-                    "channel": "note", "thread": None, "link": None,
-                    "asked_at": now.isoformat(timespec="minutes"),
-                    "status": "needs_me", "inbound": True, "manual": True,
-                    "notes": notes, "links": [], "last_reply_at": None, "reply_snippet": None,
-                    "chases": 0, "snooze_until": None,
-                })
-                save(s)
-                return self._json({"ok": True, "id": lid})
-            for lp in s["loops"]:
-                if lp["id"] == body["id"]:
-                    if act == "done":
-                        lp["status"] = "done"
-                        lp["closed_at"] = datetime.now().isoformat(timespec="minutes")
-                    elif act == "reopen":
-                        # typed reminders belong in Needs me, not Waiting on them
-                        lp["status"] = "needs_me" if lp.get("channel") == "note" or lp.get("manual") else "waiting"
-                        lp["snooze_until"] = None
-                    elif act == "snooze":
-                        try:
-                            lp["snooze_until"] = norm_date(body.get("until"))
-                        except ValueError as e:
-                            return self._json({"error": str(e)}, 400)
-                    elif act == "unsnooze":
-                        lp["snooze_until"] = None
-                    elif act == "priority":
-                        pr = body.get("priority")
-                        if pr not in ("high", "normal", "low"):
-                            return self._json({"error": "priority is high, normal or low"}, 400)
-                        lp["priority"], lp["priority_by"] = pr, "you"
-                    elif act == "auto_off":
-                        lp["auto_off"] = True
-                    elif act == "auto_on":
-                        lp["auto_off"] = False
-                    elif act == "note":
-                        lp["notes"] = (body.get("notes") or "").strip()[:2000]
-                    elif act == "add_link":
-                        url = (body.get("url") or "").strip()
-                        if not url.startswith("http"):
-                            return self._json({"error": "link must start with http"}, 400)
-                        links = lp.setdefault("links", [])
-                        if not any(x.get("url") == url for x in links):
-                            links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
-                    elif act == "drop_link":
-                        lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
-            save(s)
-            return self._json({"ok": True})
+            people = cfg().get("people") or {}   # read before the lock: the lock covers state.json only
+
+            def act_on(s):
+                """The click applied to s -> (answer, status, write): s is saved only when write is true."""
+                if act == "add":
+                    owner = (body.get("owner") or "").strip()[:80]
+                    ask = (body.get("ask") or "").strip()[:300]
+                    notes = (body.get("notes") or "").strip()[:2000]
+                    if not ask:
+                        return {"error": "need something to do"}, 400, False
+                    email = None
+                    for name, p in people.items():
+                        if name.lower() == owner.lower():
+                            owner = name
+                            email = (p or {}).get("email")
+                            break
+                    slug = lambda t: re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:32] or "x"
+                    now = datetime.now().astimezone()
+                    lid = f"note-{slug(owner or 'me')}-{slug(ask)}-{now.strftime('%Y%m%d%H%M%S')}"
+                    s["loops"].insert(0, {
+                        "id": lid, "owner": owner, "owner_email": email, "ask": ask,
+                        "channel": "note", "thread": None, "link": None,
+                        "asked_at": now.isoformat(timespec="minutes"),
+                        "status": "needs_me", "inbound": True, "manual": True,
+                        "notes": notes, "links": [], "last_reply_at": None, "reply_snippet": None,
+                        "chases": 0, "snooze_until": None,
+                    })
+                    return {"ok": True, "id": lid}, 200, True
+                for lp in s["loops"]:
+                    if lp["id"] == body["id"]:
+                        if act == "done":
+                            lp["status"] = "done"
+                            lp["closed_at"] = datetime.now().isoformat(timespec="minutes")
+                        elif act == "reopen":
+                            # typed reminders belong in Needs me, not Waiting on them
+                            lp["status"] = "needs_me" if lp.get("channel") == "note" or lp.get("manual") else "waiting"
+                            lp["snooze_until"] = None
+                        elif act == "snooze":
+                            try:
+                                lp["snooze_until"] = norm_date(body.get("until"))
+                            except ValueError as e:
+                                return {"error": str(e)}, 400, False
+                        elif act == "unsnooze":
+                            lp["snooze_until"] = None
+                        elif act == "priority":
+                            pr = body.get("priority")
+                            if pr not in ("high", "normal", "low"):
+                                return {"error": "priority is high, normal or low"}, 400, False
+                            lp["priority"], lp["priority_by"] = pr, "you"
+                        elif act == "auto_off":
+                            lp["auto_off"] = True
+                        elif act == "auto_on":
+                            lp["auto_off"] = False
+                        elif act == "note":
+                            lp["notes"] = (body.get("notes") or "").strip()[:2000]
+                        elif act == "add_link":
+                            url = (body.get("url") or "").strip()
+                            if not url.startswith("http"):
+                                return {"error": "link must start with http"}, 400, False
+                            links = lp.setdefault("links", [])
+                            if not any(x.get("url") == url for x in links):
+                                links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
+                        elif act == "drop_link":
+                            lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
+                return {"ok": True}, 200, True
+            # one locked read-modify-write (a cursor repair or a job's write in between is kept); the answer after it
+            with state_lock():
+                s = load()
+                answer, code, write = act_on(s)
+                if write:
+                    save(s)
+            return self._json(answer, code)
         self._json({"error": "not found"}, 404)
 
 

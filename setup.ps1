@@ -179,7 +179,9 @@ $pyw  = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
 if (-not $pyw) { $pyw = (Get-Command python).Source }
 $ico  = Join-Path $Dest "docs\AppIcon.ico"
 if ($NoApp) {
-    Ok "Skipped the Desktop and Start menu icons (-NoApp). Start this copy with: cd `"$Dest`"; python -m openloops.app"
+    # the printed command passes -Port as the launch below does: --port beats a leftover OPENLOOPS_PORT (review of #59)
+    $manual = "cd `"$Dest`"; python -m openloops.app$(if ($Port) { " --port $Port" })"
+    Ok "Skipped the Desktop and Start menu icons ($(if ($Isolated) { 'test copy' } else { '-NoApp' })). Start this copy with: $manual"
 } else {
     $ws = New-Object -ComObject WScript.Shell
     foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
@@ -199,10 +201,13 @@ if ($Isolated) {
     if ($task -and ($task.Actions | Where-Object { $_.WorkingDirectory -and ([IO.Path]::GetFullPath($_.WorkingDirectory).TrimEnd('\') -eq $Dest.TrimEnd('\')) })) {
         powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -Remove | Out-Null
         Ok "Removed this copy's weekday refresh (-Isolated: it starts no scan by itself)"
+        $TaskRemoved = $true
     }
 }
-if ($NoTask) {
-    Ok "Skipped the weekday refresh (-NoTask): whatever was already scheduled is unchanged"
+if ($NoTask -and $TaskRemoved) {
+    Ok "No new weekday refresh registered (test copy)"   # the line above said what changed: not "unchanged" (review of #59)
+} elseif ($NoTask) {
+    Ok "Skipped the weekday refresh ($(if ($Isolated) { 'test copy' } else { '-NoTask' })): whatever was already scheduled is unchanged"
 } else {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dest "scripts\register-task.ps1") -At $At | Out-Null
     # $ErrorActionPreference = "Stop" does not react to a native process's exit code in Windows PowerShell 5.1.

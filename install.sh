@@ -263,6 +263,30 @@ PYEOF
 )
 fi
 ok "Files in place"
+# --name only names a new copy (config.json "owner_name"); say which name this copy uses either way (#56)
+OWNER=$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("owner_name") or "")
+except Exception: print("")' "$CFG_FILE")
+if [ -n "$OWNER" ]; then
+    if [ -n "$NAME" ] && [ "$NAME" != "$OWNER" ]; then
+        ok "Kept the name this copy already has: $OWNER (--name only names a new copy)"
+    else
+        ok "Your first name: $OWNER (used so messages sound like you)"
+    fi
+fi
+# The port the printed start command answers on, as app.py picks it for a run without --port: OPENLOOPS_PORT in the
+# environment, else config.json "port" (where --port was just saved), else 8765 (review of #59)
+SHOW_PORT=$(python3 -c 'import json,sys
+try: print(int(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("port") or 8765))
+except Exception: print(8765)' "$CFG_FILE")
+# app.py takes --port first, then OPENLOOPS_PORT, then config.json: the launch below passes --port when it was given,
+# and the printed command does the same, so the address matches both (review of #59)
+PORT_ARG=""
+if [ -n "$PORT" ]; then SHOW_PORT="$PORT"; PORT_ARG=" --port $PORT"; PORT_FROM="--port you gave"
+elif [[ "${OPENLOOPS_PORT:-}" =~ ^[0-9]{1,5}$ ]]; then SHOW_PORT="$((10#$OPENLOOPS_PORT))"; PORT_FROM="OPENLOOPS_PORT in your environment"
+else PORT_FROM="port in its config.json"; fi
+# Why a step was skipped, in the words the person typed: --isolated is "test copy", not the flags it implies (#56)
+if [ "$ISOLATED" -eq 1 ]; then SKIP_APP="test copy"; SKIP_TASK="test copy"; else SKIP_APP="--no-app"; SKIP_TASK="--no-task"; fi
 if [ "$ISOLATED" -eq 1 ]; then
     ok "Isolated test copy: it reads no to-do file and starts no scan until you press Start the first scan"
 fi
@@ -270,7 +294,7 @@ fi
 # ---------- 4. App with logo (Dock + Desktop) ----------
 # Real .app so it can sit in the Dock. The zip's Open Loops.command is only first-run install.
 if [ "$NO_APP" -eq 1 ]; then
-    ok "Skipped Open Loops.app (--no-app). Start this copy with: cd \"$DEST\" && python3 -m openloops.app"
+    ok "Skipped Open Loops.app ($SKIP_APP): start this copy from Terminal, as shown at the end"
 else
     mkdir -p "$HOME/Applications" "$HOME/Desktop"
     DOCK_FLAG=""
@@ -302,9 +326,12 @@ PYEOF
 then
     bash "$DEST/scripts/register-task.sh" --remove >/dev/null
     ok "Removed this copy's weekday refresh (--isolated: it starts no scan by itself)"
+    TASK_REMOVED=1
 fi
-if [ "$NO_TASK" -eq 1 ]; then
-    ok "Skipped the weekday refresh (--no-task): whatever this Mac already had registered is unchanged"
+if [ "$NO_TASK" -eq 1 ] && [ "${TASK_REMOVED:-0}" -eq 1 ]; then
+    ok "No new weekday refresh registered ($SKIP_TASK)"   # the line above said what changed: not "unchanged" (review of #59)
+elif [ "$NO_TASK" -eq 1 ]; then
+    ok "Skipped the weekday refresh ($SKIP_TASK): whatever this Mac already had registered is unchanged"
 else
     bash "$DEST/scripts/register-task.sh" --at "$AT" --dest "$DEST"
     ok "Will refresh itself weekdays at $AT"
@@ -318,6 +345,13 @@ else
     cd "$DEST"
     nohup python3 -m openloops.app ${PORT:+--port "$PORT"} >/dev/null 2>&1 &
     disown
+fi
+if [ "$NO_APP" -eq 1 ]; then
+    # no icon to start it from: the command, and the address it answers on (#56)
+    echo ""
+    echo "  Start this copy with:"
+    echo "    cd \"$DEST\" && python3 -m openloops.app$PORT_ARG"
+    echo "  It opens at http://localhost:$SHOW_PORT (the $PORT_FROM; the next free port if that one is taken)"
 fi
 echo ""
 echo "  Done. You can close this window."

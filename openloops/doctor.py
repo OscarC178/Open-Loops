@@ -165,9 +165,10 @@ def claude_steps(steps):
                 r.pop("connect", None)
         return r
 
-    steps.append(row("slack", slack, "Slack connected (optional)", s_st, "slack",
+    # Slack or Gmail is needed (the "At least one source" row), so neither title says "optional"; Miro is (#56)
+    steps.append(row("slack", slack, "Slack connected", s_st, "slack",
                      (say("slack_missing"), "slack_install"), say("slack_signin"), "Slack"))
-    steps.append(row("gmail", gmail, "Gmail connected (optional)", g_st, "gmail",
+    steps.append(row("gmail", gmail, "Gmail connected", g_st, "gmail",
                      (say("gmail_missing"), None), say("gmail_signin"), "Gmail"))
     steps.append(row("miro", miro, "Miro connected (optional, for the Roadmap card)", m_st, "miro",
                      (say("miro_missing"), None), say("miro_signin"), "Miro"))
@@ -215,7 +216,7 @@ def grok_steps(steps):
         except Exception:
             pass
     if want_slack:
-        steps.append({"id": "slack", "ok": slack, "optional": True, "title": "Slack connected (optional)",
+        steps.append({"id": "slack", "ok": slack, "optional": True, "title": "Slack connected",
                       "fix": "Click 'Open Grok', type /mcps and press Enter, select Slack, press i to authenticate, and approve in the browser." if not slack else ""})
     gmail = bool(tok) and gmail_srv
     if not gmail:
@@ -231,7 +232,7 @@ def grok_steps(steps):
             gmail_fix = "Open Grok once in this folder and trust it, so it picks up the app's .grok/config.toml."
     else:
         gmail_fix = ""
-    steps.append({"id": "gmail", "ok": gmail, "optional": True, "title": "Gmail connected (optional)",
+    steps.append({"id": "gmail", "ok": gmail, "optional": True, "title": "Gmail connected",
                   "fix": gmail_fix})
     return email, slack, gmail, "", False, "", {}
 
@@ -467,7 +468,7 @@ def codex_steps(steps, recheck=False):
             r["connect"] = id_
         return r
 
-    slack_row, gmail_row = row("slack", "Slack connected (optional)", "Slack"), row("gmail", "Gmail connected (optional)", "Gmail")
+    slack_row, gmail_row = row("slack", "Slack connected", "Slack"), row("gmail", "Gmail connected", "Gmail")
     steps += [slack_row, gmail_row]
     miro = {"id": "miro", "ok": bool(ok and want_miro and probe.get("miro")), "optional": True,
             "title": "Miro connected (optional, for the Roadmap card)", "fix": ""}

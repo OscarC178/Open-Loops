@@ -91,6 +91,9 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
 #su_start .box{margin:10px 0 0;background:var(--bg)}
 #su_repair{border:1px solid var(--a);border-radius:8px;padding:10px 14px;margin:0 0 12px;font-size:13px}
 #setup section:focus{outline:2px solid var(--b);outline-offset:2px}
+/* the checklist lives in Every check (setupEmbed): its old "1 · Let's get you connected" heading and paragraph are not shown
+   there (#56); paintSetupDone() still writes the repair line into #st_connect_h, which #su_repair shows above the cards */
+#st_connect_h,#st_connect_intro{display:none!important}
 @media(max-width:720px){.su-pick{grid-template-columns:1fr}}
 </style></head><body>
 <header><h1>Open Loops</h1>
@@ -148,7 +151,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <button onclick="doctor(true)">Check again</button>
    <span class="sub" id="setup_msg"></span>
   </div>
-  <div class="sub" style="margin-top:10px" id="agent_help">Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can't do.</span></div>
+  <div class="sub" style="margin-top:10px" id="agent_help">Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can't do.</span></div>
  </div>
 
  <!-- stage: people -->
@@ -160,7 +163,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  </div>
 
  <div id="st_people" class="box" style="display:none">
-  <h3>2 · Who's who?</h3>
+  <h3>Who's who?</h3>
   <div class="sub" style="margin-bottom:8px">So nudges hit the right note, tell it who's senior to you, a peer, junior, or outside the company. It's looked at who you message most and taken a guess — correct anything that's wrong, then press Save. You can change this later in ⚙ Settings.</div>
   <div id="people_list"></div>
   <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
@@ -467,14 +470,19 @@ window.addEventListener('error',e=>clog('script error: '+e.message+' ('+(e.filen
 window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e.reason.message)||e.reason)));
 // ---------- feedback: a toast for every action (Doherty), with Undo where it is cheap (Postel) ----------
 const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
+// under 600 px wide three toasts took about 40% of the screen (#56): two there
+const toastMax=()=>typeof innerWidth==='number'&&innerWidth<600?2:TOAST_MAX;
 function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
  // The header grows by the toast; with the page scrolled, the browser's scroll anchoring would keep the rows where they
  // were, i.e. under the grown header. Off for this one layout, the rows move down with it and stay in view (#52 review).
  const box=$('#toasts'),de=document.documentElement;de.style.overflowAnchor='none';
- while(box.children.length>=TOAST_MAX)box.firstElementChild.remove();
+ while(box.children.length>=toastMax())box.firstElementChild.remove();
  box.appendChild(t);requestAnimationFrame(()=>requestAnimationFrame(()=>{de.style.overflowAnchor=''}));
  setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
+// A window narrowed while three toasts are up keeps only the newest two, once the resizing settles (review of #59)
+function trimToasts(){const box=$('#toasts');while(box.children.length>toastMax())box.firstElementChild.remove()}
+let toastRT=null;addEventListener('resize',()=>{clearTimeout(toastRT);toastRT=setTimeout(trimToasts,150)});
 // ---------- one dialog for snooze / note / link / vault close ----------
 let dlgOk=null;
 function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textContent=o.sub||'';$('#dlg_err').textContent='';$('#dlg_ok').textContent=o.ok||'OK';$('#dlg_ok').disabled=false;
@@ -519,8 +527,8 @@ function agentUI(){if(!$('#agent_btn'))return;
     ?'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.</span>'
     :'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.</span>')
   :(C&&C.agent)==='codex'
-  ?'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.</span>'
-  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can\'t do.</span>';}
+  ?esc(msg('sources_needed'))+' <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.</span>'
+  :esc(msg('sources_needed'))+' Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can\'t do.</span>';}
 // Model and effort per AI. Claude keeps "model" / "effort", Codex has "codex_model" / "codex_effort" (agent.py), so
 // switching AI never hands one CLI the other's model. Grok takes neither.
 const MODELS={
@@ -585,7 +593,15 @@ function paintStart(){$('#st_start').style.display='';$('#start_said').textConte
  $('#start_msg').textContent=choiceFailed?msg('first_scan_not_saved'):GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
-const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone'],['scan','First scan'],['ready','Ready']];
+// One numbering on the page (#56): the Set-up cards' three steps. While the Set-up view is up its cards say where things
+// are, so paintSetup() hides this bar; after Start the first scan it shows the same three, the third naming the part of
+// the first scan under way (Who's who, then your tone, then the scan itself: the jobs JOB_OF names).
+const ORDER=[['connect','Your AI'],['sources','Your sources'],['scan','First scan']],SCAN_PART={people:"Who's who",voice:'learning your tone',scan:'reading your messages'};
+// A part is lit only while its job runs, or while it waits for you (Who's who with its list up): never before (#54)
+function stepsBar(st){const conn=st==='connect'||st==='checkfail',part=SCAN_PART[st],job=JOB_OF[st];
+ const lit=!!part&&!waitsForGo(st)&&(running(job)||(st==='people'&&!!P&&!!P.people&&P.people.length>0));
+ return ORDER.map(([k,t],i)=>{const done=!conn&&i<2,now=conn?i===0:k==='scan'&&lit;
+  return `<span class="${done?'done':now?'now':''}">${i+1} · ${t}${k==='scan'&&part&&!waitsForGo(st)?': '+part:''}${done?' ✓':''}</span>`}).join('')}
 // Setup finished once (setup_done) and the checklist is back (a sign-out, a source that stopped answering): not setup
 // starting over, so no "1 · Connect, 2 · Who's who…" bar, and one line on top of the checklist says so (#50).
 const setupDone=()=>!!(S&&S.setup_done);
@@ -593,7 +609,11 @@ const setupDone=()=>!!(S&&S.setup_done);
 // draws it), otherwise "follow the <row> row" (Grok's Open Grok, a Codex keyring sign-in, no installer here).
 function paintSetupDone(){const h=$('#st_connect_h'),intro=$('#st_connect_intro');if(!h)return;if(h.dataset.first===undefined)h.dataset.first=h.textContent;
  const done=setupDone(),steps=(DOC&&DOC.steps)||[],row=id=>steps.find(x=>x.id===id),inst=row('claude'),login=row('login');
- const bad=(inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.connect||x.alert)))||null;
+ // an optional row (Miro, or the other source once one is in) is an extra, not a failing connection: only a required
+ // row or an alert (the morning refresh) puts the repair line up, so all green is reachable without Miro (#56).
+ // With no source left (the required "At least one source" row), the fix is a source's own Connect: name that one.
+ let bad=(inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.alert)))||null;
+ if(bad&&bad.id==='channel')bad=steps.find(x=>!x.ok&&(x.id==='slack'||x.id==='gmail')&&x.connect)||bad;
  if(done&&!bad){h.textContent='';h.style.display='none';if(intro)intro.style.display='none';return}   // set up and nothing failing: no line at all (#52 review)
  h.style.display='';if(!bad){h.textContent=h.dataset.first;if(intro)intro.style.display='';return}   // not set up yet: the plain heading
  const id=bad===inst?'setup_done_install':bad===login?'setup_done_signin':'setup_done_other';
@@ -602,8 +622,7 @@ function paintSetupDone(){const h=$('#st_connect_h'),intro=$('#st_connect_intro'
  h.textContent=!done?h.dataset.first:busy?msgBusy(id,f):f.button?msg(id,f):msgFollow(id,f);
  if(intro)intro.style.display=done?'none':''}
 async function tick(){
- const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step
- $('#steps').innerHTML=st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
+ const st=stage();   // the steps bar treats "checker did not answer" as step 1, not as a new step (stepsBar)
  for(const k of ['connect','checkfail','people','auto','start'])$('#st_'+k).style.display='none';
  if(st!==lastStage)clog('stage: '+st);
  // Hick / Prägnanz: while setting up, the page is the setup - the lists, Day log and Roadmap wait until "ready"
@@ -615,11 +634,15 @@ async function tick(){
  else if(waitsForGo(st))paintStart();   // nothing starts until Start the first scan is pressed
  else if(st==='people'){$('#st_people').style.display='';await stagePeople()}
  else if(st==='voice'||st==='scan'){$('#st_auto').style.display='';await stageAuto(st)}
+ // the steps bar last, so a job this tick started is already lit (stepsBar lights a part only once its job runs)
+ // no bar once the first scan is done: Who's who reopened from Settings is not another "3 · First scan" (review of #59)
+ $('#steps').innerHTML=st==='ready'||scanned()||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':stepsBar(st);
  keepSetupDone(st);paintGmailLater(st);renderLists();paintVoice();paintButtons(st);paintSchedule(st);paintSetup(st)}
 
 function paintConnect(){$('#st_connect').style.display='';
- const first=(DOC.steps.find(s=>!s.ok&&s.connect)||{}).connect;   // one primary action: the first row still to do
- $('#setup_steps').innerHTML=DOC.steps.map(s=>checkRow(s,s.connect===first)).join('')}
+ // the checklist is the Every check fold under the Set-up cards (setupEmbed), and the cards hold the one primary action,
+ // so its Connect buttons are all plain (#56)
+ $('#setup_steps').innerHTML=DOC.steps.map(s=>checkRow(s,false)).join('')}
 // One checklist row: tick or cross, the title, and while red its sentence and button. The Set-up cards use it too (#28).
 const checkRow=(s,primary)=>`<div class="row" style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}`}</div></div>`
 
@@ -772,7 +795,7 @@ const setHTML=(el,h)=>{if(el._h===h)return;const f=typeof document!=='undefined'
  if(had!==null){const n=had&&el.querySelector(`[data-fk="${had}"]`);const t=n&&!n.disabled?n:(el.closest&&el.closest('section'))||el;if(t.focus)t.focus()}};
 function suPill(id,k){const p=$(id);p.textContent=SU_STATE[k];p.className='su-state '+k}
 function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN||setupFirstRun(st));
- v.style.display=show?'':'none';allowPaint();if(!show)return;
+ v.style.display=show?'':'none';$('#steps').style.display=show?'none':'';allowPaint();if(!show)return;   // its cards are the steps meanwhile (#56)
  $('#lists').style.display='none';$('#gmail_later').style.display='none';   // while Set-up is up, it is the page
  if(!aiPending())paintConnect();   // Every check: the whole checklist, from this check, at every stage the view is up (not only while connecting)
  // Setup was done once and something needs fixing again: the checklist heading's one line (#52 writes it) goes on top
@@ -784,7 +807,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   suDoc=true;doctor(false).catch(()=>{}).finally(()=>{suDoc=false;paintSetup(stage())})}
  const a=aiSwitching||(C&&C.agent)||'claude',stale=suBusy==='agent'||aiPending(),anyRun=suRunning(Object.keys(CONN))||jobRunning();
  // 1. your AI: the choice, then its two rows (installed, signed in); the one button is the row's, else Open Grok / Check again
- setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
+ setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun||stale?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
  const ai=stale?[]:suRows(SU_AI),aiFirst=(ai.find(s=>!s.ok&&s.connect)||{}).connect;
  setHTML($('#su_ai_rows'),stale?`<div class="sub" style="padding:6px 0"><span class="spin"></span>Checking ${esc(aiName(a))} on this computer…</div>`:ai.map(s=>checkRow(s,s.connect===aiFirst)).join(''));
  const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
@@ -794,14 +817,14 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
  suPill('#su_ai_state',suState('ai',st));
  // 2. your sources: one row each, one Connect each; one is enough
  $('#su_src_help').textContent=a==='grok'?'Gmail alone is enough (Slack only if you turn it on). Each row says the one-off step it needs.'
-  :(a==='codex'?'Slack or Gmail is needed; one of them is enough. Miro is optional, for the Roadmap card. Gmail and Slack are connected in your ChatGPT account: Connect opens ChatGPT\'s apps page.'
-  :'Slack or Gmail is needed; one of them is enough. Miro is optional, for the Roadmap card. Each Connect opens your browser, where you click Allow.');
+  :msg('sources_needed')+(a==='codex'?' Gmail and Slack are connected in your ChatGPT account: Connect opens ChatGPT\'s apps page.'
+  :' Each Connect opens your browser, where you click Allow.');
  const src=stale?[]:suRows(SU_SRC),srcFirst=srcReady()?'':(src.find(s=>!s.ok&&s.connect)||{}).connect;   // once one is connected, the rest are extras, not the next step
  setHTML($('#su_src_rows'),src.map(s=>checkRow(s,s.connect===srcFirst)).join(''));
  setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>`);
  suPill('#su_src_state',suState('src',st));
  // 3. your schedule: the morning time, whether the morning refresh started (Mac, doctor.py "schedule"), and last the first scan
- $('#su_time').innerHTML=ISO?'This is a test copy: it has no morning refresh. Press Refresh when you want a pass.'
+ $('#su_time').innerHTML=ISO?esc(msg('sched_test_copy'))
   :`After the first scan, Open Loops refreshes itself on weekdays at <b>${esc((C&&C.refresh_time)||'09:15')}</b>, while you're logged in.${PAGE_WIN?' Open Loops can\'t yet see from here whether Windows started it.':''} <a href="#" onclick="showTab('settings','cs_prefs');return false">Change the time</a>`;
  const sr=schedStep();
  setHTML($('#su_sched_rows'),sr?checkRow(sr,false)+(sr.link&&!sr.ok?`<button data-href="${esc(sr.link)}" onclick="window.open(this.dataset.href,'_blank','noopener')">Open the download page</button>`:''):'');
@@ -810,7 +833,7 @@ function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN|
   :'The first scan has started; how far it has got shows below.';
  suPill('#su_sched_state',suState('sched',st));
  $('#su_all_sub').textContent='each check on its own, and Open '+agentLabel()+' for anything a button can\'t do'}
-async function chooseAI(a){if(suBusy||!C||(C.agent||'claude')===a||suRunning(Object.keys(CONN)))return;
+async function chooseAI(a){if(suBusy||aiPending()||!C||(C.agent||'claude')===a||suRunning(Object.keys(CONN)))return;   // aiPending: the last change's check is not in yet (#56)
  if(jobRunning()){toast(`Open Loops is still running a job with ${aiName(C.agent||'claude')}. Change your AI once it has finished.`,{err:true});return}
  suBusy='agent';aiSwitching=a;tick();   // "checking" until the new AI's own check is in: nothing starts meanwhile
  try{await api('/api/config',{agent:a});clog('set-up: your AI is now '+a);
@@ -879,7 +902,7 @@ async function allowCheck(){const a=ALLOW,b=$('#allow_check');if(!a)return;b.dis
 let peopleRendered='';
 async function stagePeople(){
  if(!P&&!running('people')&&!kicked.people){kicked.people=true;await api('/api/people',{});jobStarted('people')}
- if(running('people')){$('#people_list').innerHTML='<span class="sub"><span class="spin"></span>Looking at who you talk to on Slack and email… about a minute.</span>';peopleRendered='';$('#people_save').disabled=true;$('#people_again').disabled=true;return}
+ if(running('people')){$('#people_list').innerHTML='<span class="sub"><span class="spin"></span>'+esc(msg('people_running',{sources:scanSources()}))+'</span>';peopleRendered='';$('#people_save').disabled=true;$('#people_again').disabled=true;return}
  $('#people_again').disabled=false;
  if(!P||!P.people||!P.people.length){$('#people_list').innerHTML='<span class="sub">'+(J.people&&J.people.said?jobSaid('people'):'Couldn\'t find anyone. Press <b>Look again</b>.')+'</span>';$('#people_save').disabled=true;peopleRendered='';return}
  $('#people_save').disabled=false;
@@ -901,12 +924,12 @@ const stage0=stage;
 async function stageAuto(st){const t=$('#auto_title'),s=$('#auto_sub'),r=$('#auto_retry');r.style.display='none';
  if(st==='voice'){
   if(!running('voice')&&!kicked.voice){kicked.voice=true;await api('/api/voice',{});jobStarted('voice')}
-  if(running('voice')){t.innerHTML='<span class="spin"></span>3 · Learning how you write…';s.textContent='Reading your own messages to the people you just picked, so chases sound like you. About a minute.'}
-  else{t.textContent='3 · Learning your tone didn\'t finish';s.innerHTML=jobSaid('voice','Learning your tone');r.style.display=''}}
+  if(running('voice')){t.innerHTML='<span class="spin"></span>Learning how you write…';s.textContent='Reading your own messages to the people you just picked, so chases sound like you. About a minute.'}
+  else{t.textContent='Learning your tone didn\'t finish';s.innerHTML=jobSaid('voice','Learning your tone');r.style.display=''}}
  else{
   if(!running('refresh')&&!kicked.scan){kicked.scan=true;await api('/api/refresh',slackOnlyScan()?{slack_only:true}:{});jobStarted('refresh')}
-  if(running('refresh')){t.innerHTML='<span class="spin"></span>4 · First scan of your '+esc(scanSources())+'…';s.textContent=msg('first_scan',{days:histDays(),sources:scanSources()})}
-  else{t.textContent='4 · The first scan didn\'t finish';s.innerHTML=jobSaid('refresh','The first scan');r.style.display=''}}}
+  if(running('refresh')){t.innerHTML='<span class="spin"></span>First scan of your '+esc(scanSources())+'…';s.textContent=msg('first_scan',{days:histDays(),sources:scanSources()})}
+  else{t.textContent='The first scan didn\'t finish';s.innerHTML=jobSaid('refresh','The first scan');r.style.display=''}}}
 // A setup job that failed: the app's plain sentence (who stopped it, what to do); what it printed is one click away (#25)
 function jobSaid(k,job){const j=J[k]||{},tail=(j.log||'').trim().slice(-400);
  return esc(j.said||msg('job_failed',{job}))+(tail?`<details style="margin-top:6px"><summary>Show what it printed</summary><pre class="log" style="margin-top:6px">${esc(tail)}</pre></details>`:'')}
@@ -915,8 +938,9 @@ function retryStage(){const st=stage();kicked[st==='voice'?'voice':'scan']=false
 // Update Slack needs Slack connected AND the owner's Slack id known (refresh --slack-only is SKIPPED without it)
 const slackOk=()=>!aiPending()&&!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='slack'&&x.ok)&&DOC.steps.some(x=>x.id==='self'&&x.ok));
 function paintButtons(st){const rb=$('#refresh');rb.style.display=st==='ready'&&$('#page_home').style.display!=='none'?'':'none';rb.disabled=running('refresh');rb.textContent=running('refresh')?'Refreshing…':'Refresh';   // hidden, not disabled, until setup is done
- // Update Slack: whenever Slack is connected, setup included (#38): the quick pass needs no Who's who
- const ub=$('#uslack');ub.style.display=slackOk()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
+ // Update Slack: once Slack is connected and the first scan is done (#56: during set-up it ran a real Slack pass
+ // before the first scan, next to a page that says nothing reads your messages until you press Start)
+ const ub=$('#uslack');ub.style.display=slackOk()&&scanned()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
  const vb=$('#voicebtn');vb.disabled=!havePeople()||running('voice');vb.textContent=running('voice')?'Learning…':'Learn my tone';vb.title=havePeople()?'':'save Who\'s who first';
  $('#meta').textContent=S?[S.last_refresh?'last refresh '+fmt(S.last_refresh):S.last_slack_refresh?'':'last refresh never',S.last_slack_refresh?'slack '+fmt(S.last_slack_refresh):''].filter(Boolean).join(' · '):'';
  $('#isolated_pill').style.display=ISO?'':'none';
@@ -1147,7 +1171,7 @@ async function startOver(){if(!confirm('Wipe the list, people picks and learned 
 async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').textContent=agentLabel()+' window opened — finish there, then come back. The ticks update by themselves.'}
 
 // ---------- doctor + the main loop ----------
-let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0;
+let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0,docReread='';   // docReread: the agent a mismatch last re-read settings for
 // The page's own limit on one check. app.py's /api/doctor makes up to two attempts of 240 s each, 2 s apart (482 s at most),
 // so a request still open after 500 s never will answer. It then counts as a check that did not run (the Retry box), and
 // whatever waited on it (an AI change) lets go. A timer bounds it too where the browser has no AbortController.
@@ -1167,6 +1191,13 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
   if(docFails<4){clearTimeout(docT);docT=setTimeout(()=>doctor(true).catch(()=>{}),15000)}}   // three quiet retries, then the normal once-a-minute rhythm
  else{if(docFails)clog('connection check ran fine again');docFails=0;DOC=r;
   if(aiSwitching&&r.agent===aiSwitching&&C&&C.agent===aiSwitching)aiSwitching='';   // the new AI's own answer is in: however the change went, the gate lets go
+  // A good answer for another AI with no change under way here: another tab changed it, or a save went through but its
+  // answer was lost. This tab's settings are stale, and aiPending() would keep the picker disabled for good, so read
+  // them again, once per mismatch (review of #59).
+  if(r.agent&&C&&r.agent!==(C.agent||'claude')&&!aiSwitching&&docReread!==r.agent){   // one re-read per answer at most
+   // the marker is set only once the re-read worked: a failed one is tried again on the next good check (review of #59)
+   try{await loadCfg();docReread=r.agent;clog('set-up: the check was for '+r.agent+', settings re-read')}catch(e){clog('set-up: the check was for '+r.agent+', settings not re-read, trying on the next check')}}
+  else if(r.agent&&C&&r.agent===(C.agent||'claude'))docReread='';
   const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
 let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set(),reattached=false,reattaching=false;   // #27: a whole connectReattach() sweep has answered / one is under way
@@ -1188,11 +1219,16 @@ function newlyEnded(){const out=[];if(!J)return out;
  for(const k of Object.keys(WATCH))if(!out.includes(k)&&Date.now()-WATCH[k]>15000&&!running(k))delete WATCH[k];   // never started after all
  return out}
 function ack(keys,seqs){keys.forEach((k,i)=>{SEEN[k]=seqs[i];delete WATCH[k]})}
+// "Forget where I was" (#56): the app replaces only the unreadable cursors, with the last refresh's time when it has one
+async function forgetCursor(){try{const r=await api('/api/cursor/forget',{});toast(r.since==='recorded'?msg('cursor_forgotten'):r.since==='history'?msg('cursor_forgotten_window'):msg('cursor_fine'),{ms:8000})}
+ catch(e){toast(errSaid(e),{err:true})}}   // its own sentence, not the toast's "Undo failed"
 // Peak-End: when a job ends, say what it did and what is next - never just let the spinner vanish
 function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.running||j.rc===undefined)continue;
  const ok=j.rc===0,tail=(j.log||'').trim().split('\n').pop()||'';clog(`${k} finished rc=${j.rc}`+(tail?' · '+tail.slice(0,200):''));
  if(!ok&&j.rc===2){toast(`${k}: skipped - ${tail.replace(/^SKIPPED:?\s*/i,'')}`,{ms:6000});continue}
- if(!ok){toast(j.said||`${k} didn't finish - details under Settings → History → "Last job output"`,{err:true,ms:10000});if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true);continue}   // signed out and the like: bring the checklist and its Sign in back   // the log stays in the Console and Settings
+ // an unreadable cursor (refresh.py) gets its light fix on the toast itself; Start over stays the last resort (#56)
+ const fix=j.failure==='cursor_unreadable'?{undo:forgetCursor,undoLabel:'Forget where I was',ms:30000}:{};
+ if(!ok){toast(j.said||`${k} didn't finish - details under Settings → History → "Last job output"`,{err:true,ms:10000,...fix});if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true);continue}   // signed out and the like: bring the checklist and its Sign in back   // the log stays in the Console and Settings
  if(k==='refresh'){const a=counts(),b=before||a;const fresh=[...a.ids].filter(x=>!b.ids.has(x)).length;before=null;
   toast(`Refresh done: ${fresh} new, ${a.needs} need you, ${a.wait} waiting on them`);continue}
  if(k==='chase')toast('Chase '+(/sent/i.test(tail)?'sent':'drafted')+' - check the thread',{ms:6000});

@@ -37,6 +37,11 @@ FAILURES = {
         "fix_test": "Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder.",
         "fix_test_win": "Start it again by typing python -m openloops.app in PowerShell, in this copy's folder.",
         "button": None},
+    # a click that could not get state.json's lock within store.LOCK_WAIT_S: a job or a repair is writing (review of #59)
+    "app_busy": {
+        "what": "Open Loops is busy saving just now.",
+        "fix": "Try that again in a moment.",
+        "button": None},
     "server_error": {
         "what": "Open Loops couldn't answer this page just now.",
         "fix": "Reload the page, and if it happens again press Copy all in the Console at the bottom and send it to "
@@ -143,7 +148,25 @@ FAILURES = {
     # prints this and records it (report_refusal), so the page's toast says it.
     "cursor_unreadable": {
         "what": "Open Loops can't read when it last checked.",
-        "fix": "Press Start over in Settings, or fix state.json.",
+        # the light fix first (#56): "Forget where I was" on the toast (app.py /api/cursor/forget) keeps the list,
+        # people and tone; Start over wipes them, so it is named last
+        # (review of #59) Gmail has no record of when it was last read, so it always gets the History window: say both cases
+        "fix": "Press Forget where I was on the message: the next refresh picks up where each source was last read or, where that isn't recorded, reads back as far as Settings → History says; Start over in Settings is only the last resort.",
+        "button": None},
+
+    # after Forget where I was (app.py /api/cursor/forget): each source from when it was last read; a source with no
+    # such record from Settings > History back, the first scan's window; and nothing unreadable at all
+    "cursor_forgotten": {
+        "what": "Done: the next refresh picks up from where each source was last read, and nothing else changed.",
+        "fix": "Run it again when you're ready.",
+        "button": None},
+    "cursor_forgotten_window": {
+        "what": "Done: for a source with no record of when it was last read, the next refresh reads back as far as Settings → History says.",
+        "fix": "Run it again when you're ready.",
+        "button": None},
+    "cursor_fine": {
+        "what": "Nothing needed forgetting: Open Loops can read where it got to with every source.",
+        "fix": "Run the refresh again, and if it stops the same way press Copy all in the Console and send it to whoever set Open Loops up.",
         "button": None},
 
     # ---- the Mac's weekday morning refresh (doctor.schedule_step, #24 / #31)
@@ -411,6 +434,26 @@ FAILURES = {
     "first_scan_later": {
         "what": "Not started; Open Loops remembers that, so nothing reads your messages until you choose.",
         "fix": "Press Start the first scan when you're ready.",
+        "button": None},
+
+    # ---- the Set-up page's own lines (#54, #56): not failures either, but said once, here, like the rest.
+    # One statement of which sources are needed, for the sources card and the Every check fold alike, so the card,
+    # its rows ("Slack connected", "Gmail connected", "Miro connected (optional, ...)") and the fold never disagree.
+    "sources_needed": {
+        "what": "Slack or Gmail is needed; one of them is enough.",
+        "fix": "Miro is optional, for the Roadmap card.",
+        "button": None},
+    # The schedule card on an isolated test copy: it has no weekday refresh, and Refresh only appears once the first
+    # scan is done (paintButtons), so the card says what really happens rather than naming a button not there yet.
+    "sched_test_copy": {
+        "what": "This is a test copy, so it never refreshes by itself.",
+        "fix": "Once the first scan is done, press Refresh at the top of the page whenever you want a new pass.",
+        "button": None},
+    # Who's who while its job runs. {sources} as in first_scan. It took about 3.5 minutes on a Slack-only set-up in
+    # the #48 test, so "a few minutes", not "about a minute" (#54).
+    "people_running": {
+        "what": "Looking at who you talk to on {sources}.",
+        "fix": "This usually takes a few minutes.",
         "button": None},
 
     # ---- your own to-do file (standing.py, #37)

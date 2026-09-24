@@ -30,9 +30,9 @@ Each row that isn't ticked has a button: press it, your browser opens a sign-in 
 |---|---|
 | **Claude is installed** | If Claude isn't on your computer yet, press **Install Claude**. The commands it runs are shown underneath first; it takes a minute or two. (Using Grok instead? Open ⚙ Settings → Preferences → *Your AI*, choose Grok, press **Save settings**, return to **Home**, then press **Install Grok**.) |
 | **Signed in to Claude** | Press **Sign in**. Your browser opens the Claude sign-in page: sign in with your **work Google account**. |
-| **Slack connected** *(optional)* | Press **Install Slack plugin** if the row shows it (about half a minute), then **Connect Slack** → click **Allow** in the browser. |
-| **Gmail connected** *(optional)* | Press **Connect Gmail** → **Allow**. No button? Add Gmail at claude.ai → Settings → Connectors first, then press **Check again**. |
-| **At least one source connected** | Ticks by itself once Slack or Gmail is connected — you only need the one(s) you actually use. |
+| **Slack connected** *(Slack or Gmail is needed)* | Press **Install Slack plugin** if the row shows it (about half a minute), then **Connect Slack** → click **Allow** in the browser. |
+| **Gmail connected** *(Slack or Gmail is needed)* | Press **Connect Gmail** → **Allow**. No button? Add Gmail at claude.ai → Settings → Connectors first, then press **Check again**. |
+| **At least one source connected** | Ticks by itself once Slack or Gmail is connected: one of them is enough. Miro is optional, for the Roadmap card. |
 | **Knows who you are on Slack** | Fills in by itself (only matters if you use Slack). |
 
 A button didn't work? **Open Claude (advanced)** opens a black window: type `/mcp`, press Enter, pick the connection, choose **Authenticate** and click **Allow**. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.

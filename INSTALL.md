@@ -11,10 +11,10 @@ behalf — chases are created as **drafts** in the original thread and you press
 | Windows 10/11, or macOS | Task Scheduler + Desktop shortcut (Windows) / `launchd` + Desktop launcher (Mac) | — |
 | Python 3.11+ (stdlib only, no pip installs) | runs the page and the scripts | `python --version` (Windows) / `python3 --version` (Mac) |
 | An AI CLI, logged in — Claude Code (default), Codex or Grok | does the reading/classifying via headless runs (`agent.py`) | Nothing to do beforehand: the checklist's **Install** button installs it (the command is shown first), then the **Sign in** button runs `claude auth login` (Claude) or `codex login` (Codex). Check by hand: `claude --version` / `codex --version` / `grok --version` |
-| Slack connected in that CLI *(optional)* | reads your DMs/channels, creates Slack drafts | Claude: the checklist's **Install Slack plugin** / **Connect Slack** buttons (fallback: *Open Claude (advanced)* → `/mcp` → *slack* → Authenticate) · Codex: connected in your ChatGPT account; the checklist's **Connect Slack** opens chatgpt.com/apps (see **Codex (ChatGPT)** below) · Grok: off unless ⚙ Settings → *Use Slack*, then `/mcps`, select *slack*, press `i` |
-| Gmail connected *(optional)* | reads sent mail/threads, creates Gmail drafts | Claude: the checklist's **Connect Gmail** button (Gmail must be added at claude.ai → Settings → Connectors first; fallback: `/mcp` → *claude.ai Gmail* → Authenticate) · Codex: connected in your ChatGPT account, like Slack · Grok: see **Gmail with Grok** below |
+| Slack connected in that CLI *(Slack or Gmail)* | reads your DMs/channels, creates Slack drafts | Claude: the checklist's **Install Slack plugin** / **Connect Slack** buttons (fallback: *Open Claude (advanced)* → `/mcp` → *slack* → Authenticate) · Codex: connected in your ChatGPT account; the checklist's **Connect Slack** opens chatgpt.com/apps (see **Codex (ChatGPT)** below) · Grok: off unless ⚙ Settings → *Use Slack*, then `/mcps`, select *slack*, press `i` |
+| Gmail connected *(Slack or Gmail)* | reads sent mail/threads, creates Gmail drafts | Claude: the checklist's **Connect Gmail** button (Gmail must be added at claude.ai → Settings → Connectors first; fallback: `/mcp` → *claude.ai Gmail* → Authenticate) · Codex: connected in your ChatGPT account, like Slack · Grok: see **Gmail with Grok** below |
 
-Slack and Gmail are both optional sources — connect **at least one**; the checklist and every job adapt to
+Slack or Gmail is needed; one of them is enough, and Miro is optional. The checklist and every job adapt to
 whichever is available (Gmail-only and Slack-only installs both work).
 
 **Connecting with Claude: buttons, not a terminal.** Each unticked row on the checklist has a button. The app runs
@@ -240,7 +240,7 @@ Both are built by `.github/workflows/release.yml` when a `v*` tag is pushed (see
    answer until this tab is closed (another tab asks again). Then it shows **Who's who?** (`people.py`): the 12–15 people the user messages
    most, each with a sample line and a guessed *senior / peer / junior / external* to correct with radio buttons.
    Saving writes `config.people`, then runs *Learn my tone* (`voice.py`) and the first scan automatically. With Gmail
-   not connected, the first scan is the Slack-only pass (**Update Slack**), and setup finishes when it has run.
+   not connected, the first scan is the Slack-only pass (the one **Update Slack** runs later), and setup finishes when it has run.
    Setup stays finished (`setup_done` in state.json): connecting Gmail later only offers **Run a full scan**.
    The choice is also saved as `first_scan` (`"go"` / `"later"`) in config.json; a new install starts with `"later"`,
    and the weekday refresh (and auto-chase) skips with one `SKIPPED:` line in the runner log until it is `"go"`. A run
@@ -278,8 +278,8 @@ its Settings is read, and written back when you press *done*.
   `config.json`;
 - no to-do file is read or written back, whatever `standing_file` / `vault_path` say;
 - the page never starts *Who's who*, *Learn my tone* or the first scan by itself, not even after a reload: each
-  page load waits for **Start the first scan** (the button still works, and so does **Update Slack** once Slack is
-  connected; **Refresh** only appears after the first scan);
+  page load waits for **Start the first scan** (the button still works; **Refresh** and **Update Slack** only appear
+  after the first scan);
 - the header shows a grey **Test copy: no automatic scans** pill;
 - the weekday refresh and auto-chase skip on it even if a scheduled job points at it, and `--isolated` removes that
   copy's own weekday job if it has one (a job for another copy is left alone);
@@ -298,8 +298,9 @@ cd ~/OpenLoops-test && python3 -m openloops.app --no-browser &   # answers on 87
 ```
 
 Opening its page then runs only the connection checklist, which with Slack connected makes one quick call to find
-your Slack id; nothing is scanned until you press **Start the first scan** or **Update Slack** (**Refresh** appears
-once the first scan has run). Stop it with `python3 -m openloops.app --stop --port 8790`.
+your Slack id; nothing is scanned until you press **Start the first scan** (**Refresh** and **Update Slack** appear
+once the first scan has run). The installer prints the command to start the copy and its address,
+`http://localhost:8790`; skipped steps say *(test copy)* when `--isolated` was given. Stop it with `python3 -m openloops.app --stop --port 8790`.
 
 The other flags:
 
@@ -361,7 +362,7 @@ switch).
   tone*, who's who, exclusions), **Chasing** (external on/off, draft or send, timer, tone per seniority), **Preferences** (AI,
   model, refresh time), **History** (how far back it reads, what it writes to disk), **Connections** (to-do file, Miro board),
   **App** (quit, start over). The browser remembers which sections you left open. *Save settings* stays pinned at the bottom.
-- **Update Slack** (shown whenever Slack is connected, during setup too) is a quick Slack-only pass: no email, about a
+- **Update Slack** (shown once Slack is connected and the first scan is done) is a quick Slack-only pass: no email, about a
   third of the time. It keeps its own cursor, so the next full Refresh still picks up every email ask made in between.
 - **+ link** on a card attaches a document URL (Drive, Miro, Notion, Figma); the refresh also captures any document
   link it sees in the thread. Links show as chips; bare URLs typed into a note become clickable too.

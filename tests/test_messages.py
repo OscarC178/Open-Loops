@@ -459,13 +459,14 @@ check(html.count("<b>Open Claude (advanced)</b>") == 2 and html.count('<span cla
 check("${CON.length} lines" not in html and "${CON.length} line${CON.length===1?'':'s'}" in html, "Console: '1 line', not '1 lines'")
 check(re.search(r'<header>.*<div id="toasts" aria-live="polite"></div></header>', html, re.S)
       and "#toasts{flex-basis:100%" in html and "position:" not in html.split("#toasts{")[1].split("}")[0]
-      and "while(box.children.length>=TOAST_MAX)box.firstElementChild.remove()" in html and "const TOAST_MAX=3;" in html,
+      and "while(box.children.length>=toastMax())box.firstElementChild.remove()" in html and "const TOAST_MAX=3;" in html
+      and "innerWidth<600?2:TOAST_MAX" in html,
       "toasts are a full-width line of the sticky header (in the flow, not over the page), at most 3 at once")
 check("double-click the Open Loops icon to start it again" not in html and "$('#quit_again').textContent=restartSaid();" in html
       and "You can close this tab. '+restartSaid())" in html and "function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)" in html,
       "Settings > Quit says how to start again as the offline banner does (the command on a test copy, #50)")
 check("<b>${esc(s.title)}</b>" in html, "a checklist row's title is escaped (it can hold a Slack display name)")
-check("st==='ready'||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
+check("st==='ready'||scanned()||(setupDone()&&(st==='connect'||st==='checkfail'))?''" in html and "!schedBad()&&!setupDone())toast(`All set." in html,
       "after setup, a sign-out brings back no numbered setup bar and no second 'All set' toast")
 
 # #52 review: toasts never lie over a checklist row, at 400 px and at 1280 px, even with more arriving than the cap.
@@ -486,7 +487,7 @@ else:
 window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=true;clearTimeout(loopT);banner('');
  C={agent:'claude'};S={setup_done:true};$('#steps').innerHTML='';   // after setup: no intro, no bar, the rows start high up
  DOC={all_ok:false,steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:false,title:'Signed in to Claude',fix:MSG.signin_needed.what+' '+MSG.signin_needed.fix,connect:'login'},
-  {id:'slack',ok:false,optional:true,title:'Slack connected (optional)',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected (optional)',fix:'Sign in to Claude first (the row above).'},
+  {id:'slack',ok:false,optional:true,title:'Slack connected',fix:'Sign in to Claude first (the row above).'},{id:'gmail',ok:false,optional:true,title:'Gmail connected',fix:'Sign in to Claude first (the row above).'},
   {id:'channel',ok:false,title:'At least one source connected (Slack or Gmail)',fix:'Sign in to Claude first (the row above).'},{id:'self',ok:false,optional:true,title:'Knows who you are on Slack',fix:'Sign in to Claude first (the row above).'}]};
  // the set-up page as #28 builds it: its cards (checkRow rows) and, opened, "Every check" holding the whole checklist
  document.querySelectorAll('#page_home>div').forEach(e=>{if(e.id!=='setup'&&e.id!=='steps')e.style.display='none'});
@@ -513,6 +514,7 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
 </script>"""
     node_ = shutil.which("node")
     for w_ in (400, 1280) if node_ else ():
+        keep_ = 2 if w_ < 600 else 3   # index.html toastMax(): three toasts took about 40% of a 400 px screen (#56)
         work = Path(tempfile.mkdtemp(prefix="openloops-layout-"))
         try:
             (work / "page.html").write_text(html.replace("</body>", LAYOUT + "</body>"), encoding="utf-8")
@@ -526,11 +528,11 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
             lay = json.loads(json.loads(rc_.stdout.strip().splitlines()[-1]))
         except (ValueError, IndexError, TypeError):
             lay = {"error": (rc_.stdout + rc_.stderr)[-300:]}
-        check(not lay.get("error") and lay["w"] == w_ and lay["total"] >= 6 and lay["cards"] >= 2 and not lay.get("setupErr") and lay["toasts"] == 3 and lay["first"].startswith("Toast 2")
+        check(not lay.get("error") and lay["w"] == w_ and lay["total"] >= 6 and lay["cards"] >= 2 and not lay.get("setupErr") and lay["toasts"] == keep_ and lay["first"].startswith(f"Toast {5 - keep_}")
               and lay["hit"] is False,
-              f"at {w_} px: five toasts leave the newest three (the oldest go), and none overlaps a checklist row ({lay})")
+              f"at {w_} px: five toasts leave the newest {keep_} (the oldest go; two under 600 px, #56), and none overlaps a checklist row ({lay})")
         sc = lay.get("scrolled") or {}
-        check(sc.get("y", 0) > 0 and sc.get("toasts") == 3 and sc.get("hit") is False and sc.get("rowTop", -1) >= sc.get("hdrBottom", 1e9)
+        check(sc.get("y", 0) > 0 and sc.get("toasts") == keep_ and sc.get("hit") is False and sc.get("rowTop", -1) >= sc.get("hdrBottom", 1e9)
               and sc.get("fullBefore", 0) >= 1 and sc.get("stillClear") == sc.get("fullBefore"),
               f"at {w_} px, scrolled: toasts arriving while a row sits just below the sticky header neither cover it nor push it under the header ({sc})")
     if not node_:
@@ -637,8 +639,15 @@ SD_CASES = {
                        "Setup is done; Claude just needs installing again. Press Install Claude below."),
     "sign-in under way": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": False, "title": "Signed in to Claude", "connect": "login"}],
                           "Setup is done; Claude just needs signing in again. Please wait while that finishes."),
-    "slack stopped": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": False, "optional": True, "title": "Slack connected (optional)", "connect": "slack"}],
+    # Slack was the only source and stopped: "At least one source" fails, and the fix named is Slack's own Connect
+    "slack stopped": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": False, "optional": True, "title": "Slack connected", "connect": "slack"},
+                                 {"id": "channel", "ok": False, "title": "At least one source connected (Slack or Gmail)"}],
                       "Setup is done; one connection just needs attention. Press Connect Slack below."),
+    # #56: an optional row that was never connected (Miro, or Gmail beside a working Slack) is an extra: no line at all
+    "miro never connected": ("claude", [{"id": "claude", "ok": True}, {"id": "login", "ok": True}, {"id": "slack", "ok": True, "optional": True},
+                                        {"id": "gmail", "ok": False, "optional": True, "title": "Gmail connected", "connect": "gmail"},
+                                        {"id": "miro", "ok": False, "optional": True, "title": "Miro connected (optional, for the Roadmap card)", "connect": "miro"},
+                                        {"id": "channel", "ok": True}], ""),
 }
 for name_, (ai_, steps_, want_) in SD_CASES.items():
     js = ("const els={};const $=s=>els[s]||(els[s]={style:{},textContent:\"1 · Let's get you connected\",dataset:{}});"
@@ -657,6 +666,15 @@ for n, want_ in ((1, "1 line · last"), (2, "2 lines · last")):
           json.dumps(["2026-09-23 10:00:0%d  x" % i for i in range(n)]) + ";\n" + CP + "\nconPaint();console.log($('#con_meta').textContent)")
     r5 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
     check(r5.returncode == 0 and r5.stdout.strip().startswith(want_), f"Console header with {n} line(s): {r5.stdout.strip()!r} {r5.stderr.strip()[-150:]}")
+# review of #59: three toasts up at 1280 px, the window narrowed to 400 px: the resize handler keeps the newest two
+TR = "\n".join([grab("const TOAST_MAX="), grab("const toastMax="), grab("function trimToasts("), grab("let toastRT=null;")])
+js = ("let innerWidth=1280;const L={};function addEventListener(k,f){L[k]=f}const kids=['t0','t1','t2'];"
+      "const box={children:kids,get firstElementChild(){return {remove(){kids.shift()}}}};const $=()=>box;\n" + TR +
+      "\ntrimToasts();const wide=kids.length;innerWidth=400;L.resize();L.resize();"
+      "setTimeout(()=>console.log(JSON.stringify([wide,kids])),300)")
+r7 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+check(r7.returncode == 0 and json.loads(r7.stdout.strip()) == [3, ["t1", "t2"]],
+      f"toasts: three stay at 1280 px; narrowing to 400 px trims to the newest two ({r7.stdout.strip()!r} {r7.stderr.strip()[-150:]})")
 PS = grab("window.addEventListener('pageshow'")
 for ok_, want_ in ((True, "reload"), (False, "loop")):
     js = ("let did=[];const location={reload:()=>did.push('reload')};const loop=()=>did.push('loop');let stopped=false;const H={};"

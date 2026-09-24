@@ -7,7 +7,8 @@ The page's own setup code (stage machine, tick, stagePeople, stageAuto, paintBut
 is cut out of the page as the app serves it and run in node against the real app, whose jobs run the fake `claude`.
 So a pass means the served page, the app and the jobs agree, not that a copy of the logic does. Checks:
   1. Slack only (Gmail not connected): the checklist is green; before the press nothing runs and the page says what
-     the first scan reads and how long ("Looking back 30 days across Slack. ..."), with Update Slack on show; after
+     the first scan reads and how long ("Looking back 30 days across Slack. ..."), Update Slack hidden until the first
+     scan is done (#56) and the steps bar lighting a part only while it runs or waits for you (#54); after
      Start the first scan: who's who, tone, then the first scan, which is the Slack-only pass; then the lists appear.
      With Gmail connected the first scan would be the full refresh, and a Slack pass alone would not finish setup.
   2. The gate: several ticks start no job (server side too: the fake saw no scan prompt); Not now is remembered for
@@ -90,6 +91,10 @@ if a[:1] == ["-p"]:
     if kind == "slack-id":
         print("SLACK_ID: U0TEST12345\nSLACK_NAME: Test Person")
     elif kind == "people":
+        import time   # a test barrier: while hold_people exists the job stays running (up to 60 s), so its running state can be seen
+        end = time.time() + 60
+        while os.path.exists(os.path.join(here, "hold_people")) and time.time() < end:
+            time.sleep(0.1)
         print('<<<PEOPLE>>>{"people": [{"name": "Sam Lee", "email": null, "channel": "slack", "count": 9, "guess": "peer", "example": "can you send the deck?"}]}<<<END>>>')
     elif kind == "voice":
         print('<<<VOICE>>>{"general": "Short and warm.", "people": {"Sam Lee": {"level": "peer", "style": "Brief.", "examples": ["ta"]}}, "samples": {"peer": "Any news?"}}<<<END>>>')
@@ -165,7 +170,8 @@ async function endElsewhere(){const before=(J.refresh&&J.refresh.seq)||0;   // a
  const end=Date.now()+10000;while(Date.now()<end){const s=await (await realFetch(BASE+'/api/state')).json();if(!s.jobs.refresh.running&&(s.jobs.refresh.seq||0)>before)return;await sleep(100)}throw new Error('refresh did not end')}
 async function boot(){await loadCfg();await loadState();DOC=await api('/api/doctor',{force:true,detect:true})}
 const snap=()=>({stage:stage(),shown:shown(),jobs:jobCalls(),said:$('#start_said').textContent,ask:$('#start_ask').textContent,
-  later:$('#start_msg').textContent,uslack:$('#uslack').style.display,uslack_label:$('#uslack').textContent,uslack_disabled:$('#uslack').disabled,pill:$('#isolated_pill').style.display,lists:$('#lists').style.display});
+  later:$('#start_msg').textContent,uslack:$('#uslack').style.display,uslack_label:$('#uslack').textContent,uslack_disabled:$('#uslack').disabled,pill:$('#isolated_pill').style.display,lists:$('#lists').style.display,
+  bar:$('#steps').innerHTML,save:$('#people_save').disabled,plist:$('#people_list').innerHTML});
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);out.SS=SS;console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
@@ -196,7 +202,8 @@ if NODE:
         out = page_js(port, {}, """
  await boot();await tick();await tick();await tick();out.before=snap();out.seen=seen();out.doc=DOC.steps.map(x=>x.id+':'+x.ok);out.all_ok=DOC.all_ok;
  const me=DOC.steps.find(x=>x.id==='self');out.self={title:me.title,detail:me.detail};
- startScan();await until(()=>jobCalls().length>0);await waitJob('people');await loadCfg();await tick();out.people=snap();out.P=P&&P.people.length;
+ const HOLD=PF.replace('prompts.txt','hold_people');fs.writeFileSync(HOLD,'');   // the people job waits until the snapshot is taken
+ startScan();await until(()=>jobCalls().length>0);await tick();out.peopleRun=snap();fs.unlinkSync(HOLD);await waitJob('people');await loadCfg();await tick();out.people=snap();out.P=P&&P.people.length;
  await api('/api/config',{people:{'Sam Lee':{level:'peer',aliases:['Sam'],email:null}},voice_sample_people:['Sam Lee']});
  await loadCfg();await tick();out.voice=snap();await waitJob('voice');await loadCfg();
  await tick();out.scan=snap();out.scanTitle=$('#auto_title').innerHTML;out.scanSub=$('#auto_sub').textContent;
@@ -214,10 +221,22 @@ if NODE:
         check(b["said"] == "Looking back 30 days across Slack. The first pass can take ten minutes.",
               f"...saying what the first scan reads and how long, from history_days and what is connected ({b['said']!r})")
         check(b["ask"] == messages.say("first_scan_ask_slack"), "with Slack connected, the box mentions the one quick Slack-id check (#50)")
-        check(b["uslack"] == "" and b["uslack_label"] == "Update Slack" and b["uslack_disabled"] is False,
-              "Update Slack is on show during setup, Slack being connected, and pressable")
-        check(out["scan"]["uslack_label"] == "Updating…" and out["scan"]["uslack_disabled"] is True,
-              "...and while the first scan (a refresh) runs it is disabled and says Updating…")
+        check(b["uslack"] == "none" and out["scan"]["uslack"] == "none",
+              "#56: Update Slack is hidden during set-up, before and during the first scan (it would run a real Slack pass)")
+        check(out["end"]["uslack"] == "" and out["end"]["uslack_label"] == "Update Slack" and out["end"]["uslack_disabled"] is False,
+              "...and on show, pressable, once the first scan is done")
+        # #54 / #56: one numbering, the Set-up cards'; the Who's who part is lit only while it runs or waits for you
+        check("3 · First scan</span>" in b["bar"] and 'class="now"' not in b["bar"] and "Who's who" not in b["bar"]
+              and b["bar"].count(" ✓") == 2 and "1 · Your AI" in b["bar"] and "2 · Your sources" in b["bar"],
+              f"before the press the bar is the cards' 1 · Your AI, 2 · Your sources, 3 · First scan, nothing lit ({b['bar']!r})")
+        pr = out["peopleRun"]
+        check('class="now">3 · First scan: Who\'s who</span>' in pr["bar"] and pr["save"] is True
+              and messages.say("people_running", sources="Slack") in pr["plist"] and "about a minute" not in pr["plist"],
+              f"Who's who running: lit, Save disabled, and 'a few minutes' ({pr['plist'][-90:]!r})")
+        check('class="now">3 · First scan: Who\'s who</span>' in out["people"]["bar"] and out["people"]["save"] is False,
+              "its list up: still lit (it waits for you), and Save can be pressed")
+        check('class="now">3 · First scan: learning your tone</span>' in out["voice"]["bar"]
+              and 'class="now">3 · First scan: reading your messages</span>' in out["scan"]["bar"], f"then your tone, then the scan, under the same 3 ({out['voice']['bar']!r}, {out['scan']['bar']!r})")
         check(out["seen"] == ["slack-id"], f"...and the fake claude was asked nothing but the Slack id before the press ({out['seen']})")
         check(out["self"] == {"title": "Knows who you are on Slack (Test Person)", "detail": "U0TEST12345"},
               f"the Slack row names you by your display name; the id is only in its detail (#50) ({out['self']})")
@@ -257,6 +276,8 @@ if NODE:
         out = page_js(port, {}, """
  await boot();for(let i=0;i<5;i++){await tick();await sleep(50)}out.before=snap();notNow();await sleep(100);await tick();out.after=snap();""", tmp)
         st = api(port, "/api/state")
+        check('class="now"' not in out["before"]["bar"] and 'class="now"' not in out["after"]["bar"],
+              f"#54: nothing in the steps bar is lit while the first scan waits for its press ({out['before']['bar']!r})")
         check(out["before"]["shown"] == ["start"] and out["before"]["jobs"] == [] and out["after"]["jobs"] == []
               and not any(j["running"] or "rc" in j for j in st["jobs"].values()) and "people" not in prompts(tmp),
               "five ticks and Not now: no job started, by the page or on the server")
@@ -381,7 +402,8 @@ else:
      out.after={stage:stage(),rows:Object.fromEntries(DOC.steps.map(x=>[x.id,{ok:x.ok,fix:x.fix,connect:x.connect||''}]))};
      const h=$('#st_connect_h');h.dataset={};h.textContent="1 · Let's get you connected";
      out.bar=$('#steps').innerHTML;paintSetupDone();out.head=h.textContent;
-     S.setup_done=false;paintSetupDone();out.headFresh=h.textContent;await tick();out.barFresh=$('#steps').innerHTML;S.setup_done=true;
+     S.setup_done=false;const lr_=[S.last_refresh,S.last_slack_refresh];S.last_refresh=S.last_slack_refresh=null;   // never finished: no first scan either
+     paintSetupDone();out.headFresh=h.textContent;await tick();out.barFresh=$('#steps').innerHTML;S.setup_done=true;S.last_refresh=lr_[0];S.last_slack_refresh=lr_[1];
      out.watch=Object.keys(WATCH);""", tmp)
             check(out["idle"]["stage"] == "ready" and out["idle"]["seen"] == 3, "page: set up and idle, earlier job ends noted but not announced")
             check(out["ms"] < 3000 and out["toasts"] and out["toasts"][0] == out["said"] and out["said"],
@@ -396,7 +418,7 @@ else:
             check(out["bar"] == "" and out["head"] == messages.say("setup_done_signin", ai="Claude", button="Sign in"),
                   f"#50: set up once, a sign-out shows the checklist under one line, not the numbered setup again ({out['head']!r}, {out['bar'][:60]!r})")
             check(out["head"] == "Setup is done; Claude just needs signing in again. Press Sign in below."
-                  and out["headFresh"] == "1 · Let's get you connected" and "1 · Connect" in out["barFresh"],
+                  and out["headFresh"] == "1 · Let's get you connected" and '<span class="now">1 · Your AI</span>' in out["barFresh"],
                   "...while a setup that never finished still shows '1 · Let's get you connected' and the numbered steps")
             check(out["watch"] == [], "page: back to the slow poll once the job's end was seen")
             out = page_js(port, {}, """
@@ -653,7 +675,8 @@ async function boot(){await loadCfg();await loadState();DOC=await api('/api/doct
 const card=k=>({state:$('#su_'+k+'_state').textContent,cls:$('#su_'+k+'_state').className,rows:$('#su_'+k+'_rows').innerHTML,act:($('#su_'+k+'_act')||{}).innerHTML});
 const view=()=>({stage:stage(),setup:$('#setup').style.display,lists:$('#lists').style.display,back:$('#setup_back').style.display,
   ai:card('ai'),src:card('src'),sched:card('sched'),pick:$('#su_ai_pick').innerHTML,scan:$('#su_scan').textContent,time:$('#su_time').innerHTML,
-  start:$('#st_start').style.display,jobs:jobCalls(),every:$('#st_connect').style.display,steps:$('#setup_steps').innerHTML});
+  start:$('#st_start').style.display,jobs:jobCalls(),every:$('#st_connect').style.display,steps:$('#setup_steps').innerHTML,
+  bar:$('#steps').style.display,srchelp:$('#su_src_help').textContent});
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);clearInterval(allowT);console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
@@ -678,6 +701,11 @@ if NODE:
     check('role="radiogroup" aria-labelledby="su_ai_h" onkeydown="suPickKey(event)"' in page and 'tabindex="${k===a?0:-1}" data-fk="ai-${k}"' in page
           and all(f'id="su_{k}" tabindex="-1"' in page for k in ("ai", "src", "sched")),
           "the picker is a keyboard radio group with a roving tab stop; the cards can take focus back after a repaint")
+    check("both optional" not in page and page.count("esc(msg('sources_needed'))+'") == 2 and "msg('sources_needed')+(a==='codex'" in page
+          and "#st_connect_h,#st_connect_intro{display:none!important}" in page and "<h3>2 · Who's who?</h3>" not in page,
+          "#56: the fold and the card state sources the same way; the fold's old heading is hidden; the stage headings carry no old numbers")
+    check(messages.say("people_running", sources="Slack") == "Looking at who you talk to on Slack. This usually takes a few minutes."
+          and "msg('people_running',{sources:scanSources()})" in page, "#54: Who's who says 'a few minutes', from messages.py")
 
     # 7a. nothing installed at all: the real check on a machine with no AI CLI
     tmp = setup_install("openloops-setup-none-", fake=False)
@@ -710,7 +738,7 @@ if NODE:
  DOC={agent:'claude',all_ok:true,steps:[row('claude',true),row('login',true),row('slack',false,{connect:'slack'}),row('gmail',true),
   row('miro',false,{connect:'miro'}),row('channel',true),row('self',false),
   row('schedule',false,{alert:true,kind:'failed',link:'https://github.com/OscarC178/Open-Loops/releases/latest'})]};
- await tick();out.a=view();
+ await tick();out.a=view();ISO=true;paintSetup(stage());out.iso=$('#su_time').innerHTML;ISO=false;paintSetup(stage());
  CONN.slack={busy:true,msg:'Waiting for you in the browser: click Allow there.'};paintSetup(stage());out.b=view();delete CONN.slack;
  DOC={agent:'claude',all_ok:false,steps:[row('claude',true),row('login',false,{connect:'login'}),row('slack',false),row('gmail',false),row('miro',false),row('channel',false),row('self',false)]};
  await tick();out.c=view();
@@ -744,6 +772,12 @@ if NODE:
               and 'class="" onclick="connectStep(\'miro\')">Connect Miro</button>' in a["src"]["rows"] and a["src"]["act"] == "",
               "Gmail ticked is enough for 'Your sources' to be done; Slack and Miro keep a Connect each, as extras (not primary)")
         check("self title" not in a["src"]["rows"], "an optional 'Knows who you are on Slack' does not clutter the card")
+        check("onclick=\"connectStep('slack')\">Connect Slack</button>" in a["steps"] and 'class="primary"' not in a["steps"],
+              "#56: Every check's Connect buttons are plain; the cards above hold the one primary action")
+        check(a["bar"] == "none" and a["srchelp"] == messages.say("sources_needed") + " Each Connect opens your browser, where you click Allow.",
+              f"#56: while Set-up is up the steps bar is hidden; the sources card says one thing about sources ({a['srchelp']!r})")
+        check(out["iso"] == messages.say("sched_test_copy").replace("'", "&#39;") and "Press Refresh when you want a pass" not in page,
+              f"#56: a test copy's schedule card says what happens there, not a Refresh button that isn't there yet ({out['iso']!r})")
         check(a["sched"]["state"] == "Needs you" and "schedule fix" in a["sched"]["rows"] and "Open the download page" in a["sched"]["rows"]
               and a["start"] == "" and a["scan"] == "",
               "a red morning-refresh row puts 'Your schedule' on Needs you, with its fix and the download page; the first-scan box shows")
@@ -806,6 +840,8 @@ if NODE:
               and "Codex is installed" in cz["v"]["ai"]["rows"] and "Signed in to ChatGPT" in cz["v"]["ai"]["rows"]
               and 'aria-checked="true" tabindex="0" data-fk="ai-codex" onclick="chooseAI(\'codex\')"' in cz["v"]["pick"],
               "...config.json says codex, and the card shows Codex's own rows with Codex picked")
+        check(cz["v"]["srchelp"].startswith(messages.say("sources_needed") + " Gmail and Slack are connected in your ChatGPT account"),
+              "...its sources card opens with the same statement of which sources are needed")
         check(out["claude"]["calls"][:2] == ['/api/config {"agent":"claude"}', '/api/doctor {"force":true,"detect":true}']
               and out["claude"]["doc"] == "claude" and out["claude"]["v"]["ai"]["state"] == "Done",
               "choosing Claude again: saved, re-checked, 'Your AI' done")
@@ -827,7 +863,8 @@ if NODE:
               "AI and a source ready: the view stays, and its last step is the first-scan box, waiting for the press")
         check(e["jobs"] == [] and out["seen"] == ["slack-id"], f"nothing started by itself: no job, the AI asked only for the Slack id ({out['seen']})")
         check(out["embed"] == {"start": "#su_start", "connect": "#su_all_body"}, "setupEmbed puts the first-scan box in the schedule card")
-        check(e["every"] == "" and "Slack connected (optional)" in e["steps"] and "At least one source connected" in e["steps"],
+        check(e["every"] == "" and "Slack connected" in e["steps"] and "(optional)" not in e["steps"].split("Miro")[0]
+              and "At least one source connected" in e["steps"],
               "past the connect stage, Every check still holds the whole checklist, from the latest check")
     finally:
         stop(srv)
@@ -865,6 +902,17 @@ if NODE:
  out.pending={pend:aiPending(),v:view(),uslack:$('#uslack').style.display};
  let n=CALLS.length;await startScan();await refresh();await learnVoice();out.pendCalls=CALLS.slice(n);out.pendToasts=TOASTS.slice();
  await p;fs.unlinkSync(BIN+'/slow');out.after={pend:aiPending(),doc:DOC.agent,stage:stage()};
+ // #56: doctor(true) has resolved (suBusy clear) but the answer is still another AI's: the picker stays disabled
+ const dis=()=>($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length;
+ const d0=DOC;DOC=Object.assign({},d0,{agent:'claude'});paintSetup(stage());
+ out.gap={pend:aiPending(),busy:suBusy,disabled:dis()};n=CALLS.length;await chooseAI('grok');out.gap.calls=CALLS.slice(n);out.gap.agent=C.agent;
+ DOC=d0;paintSetup(stage());out.gap.after=dis();
+ // review of #59: another tab switched to Codex; this one still caches Claude. A good Codex answer re-reads settings once
+ C.agent='claude';paintSetup(stage());out.stale={pend:aiPending(),disabled:dis()};await doctor(true);paintSetup(stage());
+ out.stale.after={pend:aiPending(),agent:C.agent,disabled:dis(),reread:CON.filter(l=>l.includes('settings re-read')).length};
+ // ...and a re-read that fails once is tried again on the next good check, instead of leaving the picker disabled
+ C.agent='claude';docReread='';FAIL_GET.add('/api/config');await doctor(true);paintSetup(stage());out.rereadFail={pend:aiPending(),disabled:dis()};
+ await doctor(true);paintSetup(stage());out.retried={pend:aiPending(),agent:C.agent,disabled:dis()};
  J.refresh=Object.assign({},J.refresh,{running:true});n=CALLS.length;TOASTS.length=0;await chooseAI('claude');
  out.job={calls:CALLS.slice(n),toasts:TOASTS.slice(),agent:C.agent};J.refresh.running=false;
  FAIL_ONCE.add('/api/doctor');n=CALLS.length;await chooseAI('claude');
@@ -878,6 +926,14 @@ if NODE:
         check(out["pendCalls"] == [] and any("still checking Codex" in t for t in out["pendToasts"]),
               f"...Start, Refresh and Learn my tone start nothing then, and say why ({out['pendCalls']}, {out['pendToasts'][-1:]})")
         check(out["after"] == {"pend": False, "doc": "codex", "stage": "connect"}, f"once the check is in, the page follows Codex's own rows ({out['after']})")
+        g = out["gap"]
+        check(g["pend"] is True and g["busy"] == "" and g["disabled"] == 3 and g["calls"] == [] and g["agent"] == "codex" and g["after"] == 0,
+              f"#56: check resolved but not yet for the new AI: all three choices disabled and a press starts nothing ({g})")
+        st_ = out["stale"]
+        check(st_["pend"] is True and st_["disabled"] == 3 and st_["after"] == {"pend": False, "agent": "codex", "disabled": 0, "reread": 1},
+              f"another tab switched the AI: the next good check re-reads settings once and the picker is usable again ({st_})")
+        check(out["rereadFail"] == {"pend": True, "disabled": 3} and out["retried"] == {"pend": False, "agent": "codex", "disabled": 0},
+              f"...a failed settings re-read is retried on the next good check, and the picker comes back ({out['rereadFail']}, {out['retried']})")
         check(out["job"]["calls"] == [] and out["job"]["agent"] == "codex"
               and out["job"]["toasts"] == ["Open Loops is still running a job with Codex. Change your AI once it has finished."],
               f"changing the AI while a job runs is refused, in a sentence ({out['job']['toasts']})")
@@ -1096,7 +1152,8 @@ if NODE:
     try:
         out = setup_js(port, """
  await boot();await tick();out.ready=view();await openSetup();out.open=view();out.home=$('#page_home').style.display;
- await closeSetup();out.closed=view();PAGE_WIN=true;await openSetup();out.win={state:$('#su_sched_state').textContent,time:$('#su_time').innerHTML};""", tmp)
+ await closeSetup();out.closed=view();
+ kicked.people=true;const s0_=stage;stage=()=>'people';await tick();out.reopen=$('#steps').innerHTML;stage=s0_;await tick();PAGE_WIN=true;await openSetup();out.win={state:$('#su_sched_state').textContent,time:$('#su_time').innerHTML};""", tmp)
         r, o, c = out["ready"], out["open"], out["closed"]
         check(r["stage"] == "ready" and r["setup"] == "none" and r["lists"] == "", "set up: the loops are the page, Set-up is out of the way")
         check(o["setup"] == "" and o["lists"] == "none" and o["back"] == "" and out["home"] == ""
@@ -1104,6 +1161,7 @@ if NODE:
               f"⚙ → Set-up opens the view on Home, every card done, with Back to your loops ({[o[k]['state'] for k in ('ai', 'src', 'sched')]})")
         check(o["every"] == "" and "Signed in to Claude" in o["steps"], "...and Every check is filled in there too")
         check(c["setup"] == "none" and c["lists"] == "" and c["jobs"] == [], "Back to your loops closes it again; nothing started")
+        check(out["reopen"] == "", f"Who's who reopened after the first scan shows no '3 · First scan' bar (review of #59) ({out['reopen']!r})")
         check(out["win"]["state"] == "Not checked" and "can&#39;t yet see from here whether Windows started it" not in out["win"]["time"]
               and "can't yet see from here whether Windows started it" in out["win"]["time"],
               "on Windows, with no morning-refresh row to go by, the schedule card says Not checked, never Done")
@@ -1115,6 +1173,23 @@ if NODE:
 say("4. install.sh --isolated, and setup.ps1 -Isolated (static)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
 code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+check('python -m openloops.app$(if ($Port) { " --port $Port" })' in code and "Start this copy with: $manual" in code,
+      "setup.ps1: the printed start command carries -Port, as its launch does")
+# ...and that line as PowerShell evaluates it (review of #59): pwsh is on GitHub's Ubuntu and macOS runners; the whole
+# script needs Windows (Scheduled Tasks, shortcuts), which the test matrix does not have, so only this line is run
+pwsh = shutil.which("pwsh")
+if pwsh:
+    line = next(l.strip() for l in code.splitlines() if l.strip().startswith("$manual = "))
+    for port_, want_ in ((8790, 'cd "C:\\OL test"; python -m openloops.app --port 8790'), (0, 'cd "C:\\OL test"; python -m openloops.app')):
+        r_ = subprocess.run([pwsh, "-NoProfile", "-Command", f'$Dest = "C:\\OL test"; $Port = {port_}; $env:OPENLOOPS_PORT = "8791"; {line}; $manual'],
+                            capture_output=True, text=True, timeout=60)
+        check(r_.returncode == 0 and r_.stdout.strip() == want_,
+              f"setup.ps1's printed command, evaluated by PowerShell with -Port {port_} and OPENLOOPS_PORT=8791: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
+else:
+    say("SKIP running setup.ps1's start-command line: no pwsh here (CI's runners have it)")
+check("$TaskRemoved = $true" in code and 'if ($NoTask -and $TaskRemoved) {' in code, "setup.ps1: a removed task is not then called unchanged")
+check("(-NoApp)" not in code and "$(if ($Isolated) { 'test copy' } else { '-NoApp' })" in code
+      and "$(if ($Isolated) { 'test copy' } else { '-NoTask' })" in code, "setup.ps1 -Isolated says 'test copy' too (review of #59)")
 check("[switch]$Isolated" in code and "if ($Isolated) { $NoApp = [switch]$true; $NoTask = [switch]$true }" in code,
       "setup.ps1 takes -Isolated, which implies -NoApp and -NoTask")
 check(code.count("-NotePropertyName isolated -NotePropertyValue $true") == 2 and "PSObject.Properties.Remove('isolated')" in code
@@ -1157,11 +1232,32 @@ try:
           and not (home / "Library" / "LaunchAgents").exists() and not (tmp / "launchctl.log").exists(),
           "--isolated implies --no-app and --no-task: no app, no launchd job, launchctl never called")
     check("Isolated test copy" in r.stdout, "the installer says what kind of copy it made")
+    check("Skipped Open Loops.app (test copy)" in r.stdout and "Skipped the weekday refresh (test copy)" in r.stdout
+          and "(--no-app)" not in r.stdout and "(--no-task)" not in r.stdout,
+          "#56: --isolated says 'test copy', not the flags it implies")
+    check("Start this copy with:" in r.stdout and f'cd "{dest}" && python3 -m openloops.app --port 8790' in r.stdout
+          and "http://localhost:8790 (the --port you gave" in r.stdout and "Your first name: Test (used so messages sound like you)" in r.stdout,
+          f"#56: the output gives the start command, the address with its port, and the --name ({r.stdout[-260:]!r})")
     cursor = datetime.fromisoformat(json.loads((dest / "state.json").read_text(encoding="utf-8"))["cursor"])
     want = datetime.now().astimezone() - timedelta(days=30)
     check(abs((cursor - want).total_seconds()) < 600, f"the first-scan cursor is history_days (30) back, as the page says, not a week ({cursor})")
-    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch")
+    env_ = {k: v for k, v in os.environ.items() if k not in ("OPENLOOPS_DEST", "OPENLOOPS_ISOLATED")}
+    env_.update(HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}", OPENLOOPS_PORT="8791")
+    rp = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(dest), "--isolated", "--no-launch"], env=env_,
+                        capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    check(rp.returncode == 0 and "http://localhost:8791 (the OPENLOOPS_PORT in your environment" in rp.stdout
+          and "python3 -m openloops.app\n" in rp.stdout,
+          f"review of #59: no --port, OPENLOOPS_PORT set: the address is the one the app will use ({rp.stdout[-200:]!r})")
+    rq = subprocess.run(["bash", str(REPO / "install.sh"), "--dest", str(dest), "--isolated", "--no-launch", "--port", "8792"], env=env_,
+                        capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    check(rq.returncode == 0 and "python3 -m openloops.app --port 8792" in rq.stdout and "http://localhost:8792 (the --port you gave" in rq.stdout,
+          f"...--port beats OPENLOOPS_PORT, as in app.py: the command carries it and the address matches ({rq.stdout[-200:]!r})")
+    install(home, "--dest", str(dest), "--isolated", "--no-launch", "--port", "8790")   # back to 8790 for the checks below
+    r = install(home, "--dest", str(dest), "--no-app", "--no-task", "--no-launch", "--name", "Other")
     cfg = json.loads((dest / "config.json").read_text(encoding="utf-8"))
+    check("(--no-app)" in r.stdout and "(--no-task)" in r.stdout and "http://localhost:8790 (the port in its config.json" in r.stdout
+          and "Kept the name this copy already has: Test (--name only names a new copy)" in r.stdout,
+          "without --isolated the flags are named; the port comes from config.json; a later --name is said to be kept out")
     check(r.returncode == 0 and "isolated" not in cfg and cfg.get("test_copy") is True and cfg.get("owner_name") == "Test",
           "a re-run without --isolated takes the mark off (still a test copy by its flags), keeping the rest")
     # a copy that has the weekday job, then made isolated: its job goes
@@ -1173,6 +1269,8 @@ try:
     r = install(home, "--dest", str(dest3), "--isolated", "--no-launch")
     check(r.returncode == 0 and not plist.exists() and "Removed this copy's weekday refresh" in r.stdout,
           "install.sh --isolated over it removes that copy's weekday job, so the pill is true")
+    check("No new weekday refresh registered (test copy)" in r.stdout and "is unchanged" not in r.stdout,
+          "...and does not then say the schedule is unchanged (review of #59)")
     r = install(home, "--dest", str(dest3), "--no-app", "--no-launch")
     install(home, "--dest", str(dest), "--isolated", "--no-launch")
     check(plist.exists(), "...and --isolated on another copy leaves a job that runs a different copy alone")

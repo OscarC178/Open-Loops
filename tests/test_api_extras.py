@@ -8,6 +8,7 @@ Slack id, the day log is written with --digest-only, and every Roadmap mode that
 Miro is refused before it starts (not configured / no confirm).
 """
 import json, shutil, subprocess, sys, time, urllib.error, urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from _helpers import fresh_install, isolated_env, start_app, stop
@@ -26,14 +27,14 @@ def check(cond, what):
     say(f"ok   {what}")
 
 
-def api(path, body=None, method=None, raw=False):
+def api(path, body=None, method=None, raw=False, timeout=10):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         f"http://127.0.0.1:{PORT}{path}", data=data,
         headers={"Content-Type": "application/json"},
         method=method or ("POST" if body is not None else "GET"))
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             b = r.read()
             return r.status, (b.decode("utf-8") if raw else json.loads(b))
     except urllib.error.HTTPError as e:
@@ -214,11 +215,74 @@ try:
     check(code == 200 and d["port"] == PORT and d["build"] == "checkout" and "python" in d and "up_since" in d, "diag names port, build, python, start time")
     check("refresh" in d["jobs"] and "rc" in d["jobs"]["refresh"] and "doctor" in d, "diag carries job results and the last check")
 
+    # ---- "Forget where I was" (#56, review of #59): only unreadable cursors change, each from its own source's record
+    keep = (tmp / "state.json").read_text(encoding="utf-8")
+    s0 = json.loads(keep)
+    hist = lambda v: abs((datetime.fromisoformat(v) - (datetime.now().astimezone() - timedelta(days=30))).total_seconds()) < 600
+    s0.update(cursor="not-a-date", slack_cursor="junk", gmail_cursor="junk", last_refresh="2026-09-20T09:00+01:00",
+              last_slack_refresh="2026-09-18T09:00+01:00")
+    (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
+    code, r = api("/api/cursor/forget", {})
+    s1 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+    check(code == 200 and r["forgot"] == ["cursor", "gmail_cursor", "slack_cursor"] and s1["cursor"] == "2026-09-20T09:00+01:00"
+          and s1["slack_cursor"] == "2026-09-18T09:00+01:00" and hist(s1["gmail_cursor"]) and r["since"] == "history"
+          and s1["loops"] == s0["loops"],
+          f"Forget where I was: shared cursor from last_refresh, Slack from last_slack_refresh, Gmail (nothing records it) from the History window ({r})")
+    s0.update(cursor="2026-09-20T09:00+01:00", slack_cursor="junk", gmail_cursor="2026-09-19T09:00+01:00")
+    (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
+    code, r = api("/api/cursor/forget", {})
+    s1 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+    check(code == 200 and r["since"] == "recorded" and r["forgot"] == ["slack_cursor"] and s1["slack_cursor"] == "2026-09-18T09:00+01:00"
+          and s1["gmail_cursor"] == "2026-09-19T09:00+01:00", f"...a readable cursor is left alone; all recorded: 'recorded' ({r})")
+    s0.update(slack_cursor="junk", last_slack_refresh=None)
+    (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
+    code, r = api("/api/cursor/forget", {})
+    s1 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+    check(code == 200 and r["since"] == "history" and hist(s1["slack_cursor"]),
+          f"...no Slack-only pass recorded: Slack reads the History window, not last_refresh ({r})")
+    # review of #59: /api/action is one locked read-modify-write, so a click cannot write back a cursor repaired meanwhile.
+    # The test holds the state lock (as a repair or a refresh's write does), sends a click, repairs the cursor, lets go.
+    import threading  # noqa: E402
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from openloops.store import _locked  # noqa: E402
+    s0.update(cursor="junk", slack_cursor="2026-09-18T09:00+01:00", gmail_cursor="2026-09-19T09:00+01:00", loops=[{"id": "L1", "status": "waiting", "owner": "Sam", "ask": "x"}])
+    (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
+    got = {}
+    with _locked(tmp / "state.json"):
+        th = threading.Thread(target=lambda: got.update(r=api("/api/action", {"action": "note", "id": "L1", "notes": "hello"})))
+        n0 = sum("waiting for state.json.lock" in ln for ln in srv.lines)
+        th.start()
+        # the app says when a request starts waiting for the lock: repair only once the click is really held there
+        end_ = time.time() + 10
+        while sum("waiting for state.json.lock" in ln for ln in srv.lines) == n0 and time.time() < end_:
+            time.sleep(0.05)
+        waited = th.is_alive() and sum("waiting for state.json.lock" in ln for ln in srv.lines) > n0
+        s2 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+        s2["cursor"] = "2026-09-20T09:00+01:00"   # the repair, written while the click waits
+        (tmp / "state.json").write_text(json.dumps(s2), encoding="utf-8")
+    th.join(10)
+    s3 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+    check(waited and got["r"][0] == 200 and s3["cursor"] == "2026-09-20T09:00+01:00" and s3["loops"][0]["notes"] == "hello",
+          f"a click waits for the state lock and keeps a cursor repaired meanwhile ({waited}, {s3.get('cursor')})")
+    # ...and a click never hangs on it: held past store.LOCK_WAIT_S (10 s), the app answers "busy, try again"
+    from openloops import messages as _m  # noqa: E402
+    with _locked(tmp / "state.json", 30):
+        t1 = time.time()
+        code, r = api("/api/action", {"action": "note", "id": "L1", "notes": "later"}, timeout=30)
+        took = time.time() - t1
+    check(code == 503 and r.get("error") == _m.say("app_busy") and 9 <= took < 15,
+          f"a click that cannot get the lock within 10 s gets the plain busy sentence ({code}, {took:.1f} s, {r})")
+    code, r = api("/api/cursor/forget", {})
+    check(code == 200 and r["forgot"] == [] and r["since"] == "", "...and with nothing unreadable, nothing changes, and it says so (not the History sentence)")
+    (tmp / "state.json").write_text(keep, encoding="utf-8")
+
     # ---- page has the new controls
     html = (tmp / "openloops" / "index.html").read_text(encoding="utf-8")
     for needle in ('id="console_wrap"', "function clog(", "'/api/diag'", 'id="st_checkfail"', "return 'checkfail'", "function personRow(", "class=\"blk ", "function priSel(", "setSort("):
         check(needle in html, f"page has {needle}")
     check("Check failed" not in html, "no bare 'Check failed' anywhere on the page")
+    check("j.failure==='cursor_unreadable'?{undo:forgetCursor,undoLabel:'Forget where I was'" in html and "msg('cursor_fine')" in html and "api('/api/cursor/forget',{})" in html,
+          "the unreadable-cursor toast carries Forget where I was (#56)")
     check("x.id==='self'&&x.ok" in html, "Update Slack is shown only when Slack is connected and the owner's id is known")
     for needle in ('id="uslack"', 'id="cfg_model"', 'id="cfg_effort"', 'id="cfg_standing"', 'standingCreate(', 'id="pins"', 'pinEmbed(', "linkify(", "addLink(", "noteFor(", 'id="dl_run"', 'id="rm_postbtn"', 'id="cfg_rm_board"', 'id="cs_personal"', 'id="cs_app"', 'cfgRestore(', "ol.settings.open", 'id="hs_needs"', 'id="hs_waiting"', 'id="hs_rest"', 'id="n3"'):
         check(needle in html, f"page has {needle}")
