@@ -8,16 +8,19 @@ default install would have something to copy and a morning refresh to pause. The
 regresses: PATH is only a folder of stubs plus /usr/bin and /bin (never the inherited PATH, so no Homebrew), where
 launchctl, curl, rsync, open, osascript and lsof log the call and succeed, and brew, python3, pip3 and git log the
 call and exit 99 - any reach into a real install fails loudly. Any stub call fails the test. Checks:
-  1. --help and -h: exit 0, print the usage line and the flag list; nothing written anywhere, no stub called.
+  1. --help and -h: exit 0, print the usage line and the flag list; nothing written anywhere, no stub called. The
+     list is hand-written (#60): its table must name exactly the flags install.sh's case statement accepts (read from
+     the script, so the two cannot drift), and every line fits an 80-column terminal with no issue numbers in it.
   2. an unknown option (--bogus, a typo --isolatd, a stray word, one after a good option): exit 1, "unknown option:
      <arg>" and the usage line on stderr; nothing written, no stub called, "Paused" never printed.
   3. a value-taking option with no value (--dest last, --dest --isolated, --port last, --at ""): exit 1 the same way,
      and no folder named "--isolated" appears where it was run.
-  4. setup.ps1 (static, PowerShell cannot run here): takes -Help, and it exits before the banner and any check.
+  4. setup.ps1 (static, PowerShell cannot run here): takes -Help, and it exits before the banner and any check; its
+     hand-written list has a row for every parameter in param() (#60), under 80 columns, no issue numbers.
   5. accepted: --name "" (it means "ask for the name"), values with spaces; refused: --dest "" (an empty
      --dest must never mean the copy you use), --, --at 25:00.
 """
-import hashlib, os, plistlib, shutil, stat, subprocess, sys, tempfile, time
+import hashlib, os, plistlib, re, shutil, stat, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -34,6 +37,24 @@ def check(cond, what):
     say(f"ok   {what}")
 
 
+def table_flags(text):
+    """The options named in a help text's table (#60): rows are indented lines starting with "-", the first column
+    ends at the first run of 2+ spaces, and may hold several spellings ("-h, --help"); "--at HH:MM" names --at."""
+    out = []
+    for ln in text.splitlines():
+        if re.match(r"^ +-", ln):
+            first = re.split(r" {2,}", ln.strip(), maxsplit=1)[0]
+            out += [part.split()[0] for part in first.split(", ")]
+    return out
+
+
+def plain_lines(text, what):
+    """Every line of a help text fits an 80-column terminal and carries no issue number such as (#36) (#60)."""
+    long = [ln for ln in text.splitlines() if len(ln) >= 80]
+    check(not long, f"{what}: every line under 80 columns ({long!r})")
+    check(not re.search(r"#\d", text), f"{what}: no issue numbers in it")
+
+
 # ---------- 4 first: the static setup.ps1 check runs on every platform ----------
 say("4. setup.ps1 -Help (static: PowerShell cannot run here)")
 ps = (REPO / "setup.ps1").read_text(encoding="utf-8-sig")
@@ -42,7 +63,13 @@ help_at = ps.find("if ($Help)")
 check("[switch]$Help" in ps[param_at:ps.index(")\n", param_at) + 1], "setup.ps1's param() takes -Help")
 check(0 < help_at < ps.index("Open Loops - setup\"") and help_at < ps.index("$At -notmatch"),
       "-Help is handled before the banner and the first check")
-check("exit 0" in ps[help_at:help_at + 600], "-Help exits 0")
+block_end = ps.index("\n}\n", help_at)   # the end of the if ($Help) { ... } block
+check(0 < ps.find("exit 0", help_at) < block_end, "-Help exits 0")
+ps_help = ps[ps.index("@'", help_at) + 2:ps.index("'@", help_at)].strip("\n")   # the here-string it prints
+params = re.findall(r"\$(\w+)", ps[param_at:ps.index(")\n", param_at)])   # every parameter param() takes
+check(ps_help.startswith("usage: setup.ps1") and sorted(table_flags(ps_help)) == sorted(f"-{n}" for n in params),
+      f"setup.ps1 -Help lists exactly the parameters param() takes ({params})")
+plain_lines(ps_help, "setup.ps1 -Help")
 
 if sys.platform == "win32":
     print("SKIP: install.sh is the Mac installer - setup.ps1 was checked statically above")
@@ -109,11 +136,23 @@ try:
               + ("" if not calls.exists() else f" (called: {calls.read_text().strip()!r})"))
 
     say("1. --help and -h")
+    # the flags the parser accepts, read from install.sh's own case statement: the patterns before ")" in the
+    # `while [[ $# -gt 0 ]]` loop, "-h|--help" split into its spellings, the catch-all "*" left out
+    sh = (REPO / "install.sh").read_text(encoding="utf-8")
+    loop = sh[sh.index("while [[ $# -gt 0 ]]"):]
+    loop = loop[:re.search(r"\n\s*esac\b", loop).start()]
+    accepted = [f for pat in re.findall(r"^\s+([-\w|]+)\)", loop, re.M) for f in pat.split("|")]
+    check(len(accepted) >= 10 and "-h" in accepted and "--isolated" in accepted,
+          f"read the accepted flags from install.sh's case statement ({accepted})")
     for flag in ("--help", "-h", "--no-launch --help"):
         r = run(*flag.split())
         check(r.returncode == 0 and r.stdout.startswith("usage: bash install.sh") and "--isolated" in r.stdout
               and "--dest DIR" in r.stdout and "set -e" not in r.stdout, f"{flag}: exit 0, usage and the flag list")
         check("Checking Python" not in r.stdout and "Installing Open Loops" not in r.stdout, f"{flag}: no install started")
+        check(sorted(table_flags(r.stdout)) == sorted(accepted),
+              f"{flag}: the table lists every flag the parser accepts, and no other ({table_flags(r.stdout)})")
+        plain_lines(r.stdout, flag)
+        check("OPENLOOPS_DEST" in r.stdout and "OPENLOOPS_ISOLATED" in r.stdout, f"{flag}: the two environment settings")
         untouched(flag)
 
     say("2. unknown options")

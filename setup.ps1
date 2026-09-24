@@ -16,7 +16,7 @@
   and its page waits for Start the first scan every time it is opened; once pressed, it still uses the AI you are
   signed in to, so your real accounts (read-only: a scan sends and drafts nothing). $env:OPENLOOPS_ISOLATED = "1"
   does the same for any copy at run time.
-  -Help prints this list and installs nothing.
+  -Help prints a short hand-written list (the -Help block below) and installs nothing.
 
   What it does (all on this computer, nothing sent anywhere):
     1. Installs Python if it's missing (using Windows' own installer, winget). It never installs an AI CLI
@@ -35,14 +35,27 @@ param([string]$At = "09:15", [string]$Name = "", [string]$Dest = "", [switch]$No
 
 $ErrorActionPreference = "Stop"
 
-# -Help (#55): print the flag list and stop before anything is checked, installed or written. The comment block at
-# the top of this file is that list, so it is printed from here rather than kept twice.
+# -Help (#55, reworded #60): a short list written for the person running the installer, one line per option, every
+# line under 80 columns; the same list as install.sh --help. The long comment block at the top is for developers and
+# is not printed. Every parameter in param() above must have a row here: tests/test_install_help.py checks.
 if ($Help) {
-    Write-Host "usage: setup.ps1 [-At HH:MM] [-Name NAME] [-Dest DIR] [-Port N] [-NoApp] [-NoTask] [-NoLaunch] [-Isolated] [-Help]"
-    Write-Host ""
-    $text = Get-Content -LiteralPath $PSCommandPath -Raw
-    $start = $text.IndexOf("<#"); $end = $text.IndexOf("#>")
-    if ($start -ge 0 -and $end -gt $start) { Write-Host $text.Substring($start + 2, $end - $start - 2).Trim("`r", "`n") }
+    Write-Host @'
+usage: setup.ps1 [options]
+
+Options:
+  -At HH:MM     time of the weekday morning refresh (default 09:15)
+  -Name NAME    your first name, so the installer does not ask for it
+  -Dest DIR     install into DIR, not %LOCALAPPDATA%\OpenLoops
+  -Port N       the port this copy answers on (default 8765)
+  -NoApp        no Open Loops icon on the Desktop or in the Start menu
+  -NoTask       leave your weekday morning refresh as it is
+  -NoLaunch     do not start Open Loops at the end
+  -Isolated     a test copy: -NoApp, -NoTask, and it never scans by itself
+  -Help         show this list and install nothing
+
+$env:OPENLOOPS_DEST = "DIR" does the same as -Dest.
+$env:OPENLOOPS_ISOLATED = "1" when starting any copy makes it act as -Isolated.
+'@
     exit 0
 }
 function Say($t) { Write-Host ""; Write-Host "  $t" -ForegroundColor Cyan }

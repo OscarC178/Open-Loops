@@ -14,7 +14,8 @@
 #   4. Sets it to refresh every weekday morning (default 09:15) via launchd.
 #   5. Opens the app - which walks you through connecting Slack and email.
 #
-# Options: --at HH:MM (refresh time), --name <first name> (skips the question), --help (this list, installs nothing).
+# Options: --at HH:MM (refresh time), --name <first name> (skips the question), --help (a short hand-written list,
+# installs nothing; show_help below - keep it in step with the case statement, tests/test_install_help.py checks).
 # Testing a fresh install beside the one you use, without touching it (INSTALL.md "Testing a fresh install"):
 #   bash install.sh --dest ~/OpenLoops-test --no-app --no-task --port 8790 --name "Test"
 #   --dest DIR    install there instead (or env OPENLOOPS_DEST); never reads an older ~/Documents install
@@ -39,16 +40,30 @@ NO_TASK=0
 NO_LAUNCH=0
 ISOLATED=0
 AT_SET=0
-USAGE="usage: bash install.sh [--at HH:MM] [--name NAME] [--dest DIR] [--port N] [--no-app] [--no-task] [--no-launch] [--isolated] [--help]"
+# Short enough for an 80-column terminal: the options are listed by --help, not squeezed onto this line (#60).
+USAGE="usage: bash install.sh [options]"
 
-# --help: the header comment above is the flag list, so print it rather than keep a second copy that drifts (#55).
-# Everything from line 2 up to (not including) `set -e`, with the leading "# " taken off.
+# --help (#55, reworded #60): a short list written for the person running the installer, one line per option, every
+# line under 80 columns. The long header comment above is for developers and is not printed. Every flag the case
+# statement below accepts must have a row here: tests/test_install_help.py reads both and fails if they differ.
 show_help() {
     echo "$USAGE"
-    echo ""
-    if [ -f "${BASH_SOURCE[0]}" ]; then
-        sed -n '2,/^set -e$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed -e 's/^# \{0,1\}//'
-    fi
+    cat <<'EOF'
+
+Options:
+  --at HH:MM     time of the weekday morning refresh (default 09:15)
+  --name NAME    your first name, so the installer does not ask for it
+  --dest DIR     install into DIR, not ~/Library/Application Support/OpenLoops
+  --port N       the port this copy answers on (default 8765)
+  --no-app       do not put Open Loops.app on the Desktop or in Applications
+  --no-task      leave this Mac's weekday morning refresh as it is
+  --no-launch    do not start Open Loops at the end
+  --isolated     a test copy: --no-app, --no-task, and it never scans by itself
+  -h, --help     show this list and install nothing
+
+OPENLOOPS_DEST=DIR in the environment does the same as --dest.
+OPENLOOPS_ISOLATED=1 when starting any copy makes it act as --isolated.
+EOF
 }
 # A bad option stops here, before anything is written, paused or started (#55): an unknown flag used to be dropped
 # silently and the installer carried on with a full default install.
