@@ -191,11 +191,12 @@ CODEX_SEEN_ASK = ("When you have finished, end your reply with one more line: TO
                   "search for each by name first (finding a tool is not calling it), so the line says what this "
                   "session really has. Add the line after everything the instructions ask for, even if they say to "
                   "reply with nothing else: Open Loops removes it before reading your reply.\n")
-# #42 (measured 2026-09-24, Codex 0.156.1, 34 runs): with gpt-5.6-sol the connector tools are deferred, i.e. not in the
-# first request, and only appear once the model searches or lists its tools. Every miss was a single ~13k-token request
-# in which the model answered from its short visible list without looking; every run that looked found both Gmail and
-# Slack (the look-ups seen were the code-mode exec tool running ALL_TOOLS.map(x => x.name)). gpt-6-astra sends them up
-# front (18 of 18). So the preamble's first step is the look-up, not something left to the model's judgement.
+# #42 (measured 2026-09-24, Codex 0.156.1, 33 runs on one Mac): with gpt-5.6-sol the connector tools are deferred,
+# i.e. not in the first request, and only appear once the model searches or lists its tools. Every miss was a single
+# ~13k-token request in which the model answered from its short visible list without looking; every run that looked
+# found both Gmail and Slack (the look-ups seen were the code-mode exec tool running ALL_TOOLS.map(x => x.name)).
+# gpt-6-astra sends them up front (18 of 18). So the preamble's first step is the look-up, not something left to the
+# model's judgement.
 CODEX_LOOKUP_FIRST = ("First step, before anything else: look up your full list of tools. Some of your tools are "
                       "deferred: they are not shown at the start and only appear once you search for them or list them, "
                       "for example by running ALL_TOOLS.map(x => x.name) in the code-mode functions.exec tool (listing "
