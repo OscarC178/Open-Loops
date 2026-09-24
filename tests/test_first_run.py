@@ -1345,7 +1345,9 @@ if NODE:
               f"...the row is back to its Connect button, with no failure sentence ({so['msg']!r})")
         check(not so["open"] and so["note"] == "{}", f"...the pop-up is closed and that run's closed-pop-up note is gone ({so['note']})")
         check(so["why"] == "none" and so["locked"] == 0, f"...the AI picker is free again, with no reason line ({so})")
-        check(so["toasts"] == [messages.say("connect_stopped", party="Slack")], f"...and a toast says it was stopped ({so['toasts']})")
+        # the fake browser was handed the link when the CLI printed it, so the Stop's reply says a tab had opened
+        # (third review of #70) and the toast says it can be closed
+        check(so["toasts"] == [messages.say("connect_stopped_tab", party="Slack")], f"...and a toast says it was stopped ({so['toasts']})")
         check(out["after"] == {"msg": "", "busy": False, "failed": False},
               f"the row's watcher ends on the stopped run without calling it failed ({out['after']})")
         check(out["late"] == {"same": True, "busy": True, "run": "g2", "msg": "new"},

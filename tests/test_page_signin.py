@@ -162,4 +162,14 @@ out = node("""
 check(out["dlgRun"] == "R2" and out["link"] == "", f"R1's link, answered after the pop-up became R2's, is not shown in it ({out})")
 check(out["own"] == "https://example.invalid/r2", "...and R2's own link is")
 check(out["said"] == "", f"a Check again started for R3's pop-up does not put its sentence in R4's ({out['said']!r})")
+# ---------------------------------------------------------------- 6. the Stop toast says whether a tab had opened
+say("6. third review of #70: the Stop toast names the tab that had already opened, and only then")
+for tab in (True, False):
+    out = node(f"""
+ CONN.slack={{busy:true,msg:'Waiting',run:'R1'}};
+ const p=connectStop('slack');await flush();
+ await answer('{STOP}',true,200,{{ok:true,running:false,run_id:'R1',tab_opened:{str(tab).lower()}}});await p;
+ out.toasts=TOASTS.slice();""")
+    want = messages.say("connect_stopped_tab" if tab else "connect_stopped", party="Slack")
+    check(out["toasts"] == [want], f"tab_opened {str(tab).lower()}: the toast is {want!r} ({out['toasts']})")
 say("all passed")

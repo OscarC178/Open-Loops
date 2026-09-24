@@ -163,6 +163,17 @@ with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
     seen["t"].join(5)
     check(seen["stop"][0] == "stopped" and seen["at_reply"].get("opening") is False and seen["at_reply"].get("link_opened") is True,
           "Stop during the browser call: it waits for the call to return, then sees the tab recorded as opened")
+    check(seen["stop"][2] is True, "...and its reply says a tab had opened (tab_opened), so the toast can say so")
+
+    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R2"}   # a Stop before the last check
+    n = len(opened)
+    app._before_open = lambda run: seen.update(early=app.stop_connect("miro", "R2"))
+    try:
+        app._output_handler(me, ARGV, log, "")(printed)
+    finally:
+        app._before_open = None
+    check(seen["early"][0] == "stopped" and seen["early"][2] is False and len(opened) == n,
+          "Stop before the last check: tab_opened false, and no tab opened")
     app.connects.pop("miro", None)
     opened.clear()
     opened.clear()
