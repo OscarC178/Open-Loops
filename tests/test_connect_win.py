@@ -40,10 +40,11 @@ pyw = Path(sys.executable).with_name("pythonw.exe")
 if pyw.exists():
     with tempfile.TemporaryDirectory(prefix="openloops-pyw-") as td:
         probe, seen = Path(td) / "probe.py", Path(td) / "seen.txt"
+        redirect = f' > "{seen}" 2>&1'  # inserted as a Python literal (!r), so a quote in the temp path cannot break probe.py
         probe.write_text(
             "import subprocess, sys\n"
             "child = subprocess.list2cmdline([sys.executable.replace('pythonw.exe', 'python.exe'), '-c', 'import os; print(os.isatty(0))'])\n"
-            f"subprocess.run(child + ' > \"{seen.as_posix()}\" 2>&1', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)\n",
+            f"subprocess.run(child + {redirect!r}, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)\n",
             encoding="utf-8")
         subprocess.run([str(pyw), str(probe)], timeout=60)
         check(seen.exists() and seen.read_text().strip() == "True",
