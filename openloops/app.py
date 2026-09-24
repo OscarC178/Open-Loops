@@ -388,6 +388,9 @@ def stop_connects():
         _drop_out(step, out)
 
 
+STOP_OPENING_WAIT_S = 2  # how long a Stop waits for a browser call already under way to return
+
+
 def stop_connect(step, run_id):
     """#67: the row's "Stop this sign-in": stop that one step's run, the one the row shows (run_id) -> (why, record).
     why: "stopped", "not running" (it had already ended) or "other run" (it ended and another run of the step started
@@ -406,6 +409,9 @@ def stop_connect(step, run_id):
         p = connect_procs.get(step)
     if p is not None:
         kill_tree(p)
+    end = time.time() + STOP_OPENING_WAIT_S  # a browser call under way: let it finish (bounded), so the reply is true
+    while c.get("opening") and time.time() < end:  # read without the lock; _link_found clears it under the lock
+        time.sleep(0.05)
     return "stopped", c
 
 
@@ -524,10 +530,11 @@ def _link_found(me, url, open_it):
     Checked under connect_lock, the lock stop_connect() marks the run under, twice: when the link is taken, and
     again (second review of #70) immediately before the browser is asked to open it, where the run is marked
     "opening". The browser call itself is made outside the lock (it can take a while, and every /api/connect
-    request needs that lock). So a Stop that lands between taking the link and that last check opens nothing; one
-    that lands after it is too late for this link: the tab opens, the sign-in is still stopped, and the page's
-    connect_stopped sentence already allows for a sign-in that got further than the Stop. That window is a few
-    instructions wide and is the one accepted."""
+    request needs that lock). So a Stop that lands between taking the link and that last check opens nothing. One
+    that lands while the browser call is under way cannot take that tab back (third review of #70): "opening" is
+    set just before the call and cleared, under the lock, once it has returned or raised, and "link_opened" records
+    a call that succeeded ("opened" is not used: on a Codex step it means a page was opened instead of a sign-in).
+    stop_connect() waits briefly for "opening" to clear, so its reply can say that a tab had opened."""
     with connect_lock:
         if me.get("stopped") or quit_requested or me.get("url"):
             return False
@@ -540,7 +547,14 @@ def _link_found(me, url, open_it):
             me["url"] = ""  # nor a fallback link on the page for a sign-in that was stopped
             return False
         me["opening"] = True
-    webbrowser.open(url)
+    ok = False
+    try:
+        ok = bool(webbrowser.open(url))
+    finally:
+        with connect_lock:
+            me["opening"] = False
+            if ok:
+                me["link_opened"] = True
     return True
 
 

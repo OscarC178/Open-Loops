@@ -121,9 +121,47 @@ with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
     me = {"running": True, "url": ""}
     saw = app._output_handler(me, ARGV, log, "")
     saw(printed)
-    check(me.get("opening") is True, "a dispatch that won is marked opening (the one window a Stop is too late for)")
+    check(me.get("opening") is False and me.get("link_opened") is True,
+          "a dispatch that went ahead is cleared once the browser call returned, and recorded as link_opened")
     saw(b"again " + LINK.encode() + b"\n")
     check(opened == [LINK] and me["url"] == LINK, "a run nobody stopped: the link is opened, once")
+
+    me = {"running": True, "url": ""}   # third review: a browser call that raises still clears "opening"
+    real_open, app.webbrowser.open = app.webbrowser.open, lambda url, *a, **k: (_ for _ in ()).throw(OSError("no browser"))
+    try:
+        app._output_handler(me, ARGV, log, "")(printed)
+        raise SystemExit("FAIL: the browser's error was swallowed")
+    except OSError:
+        pass
+    finally:
+        app.webbrowser.open = real_open
+    check(me.get("opening") is False and not me.get("link_opened"), "a browser call that raised: opening cleared, nothing recorded as opened")
+
+    # a Stop that lands while the browser call is under way waits for it (bounded) before it answers
+    import threading  # noqa: E402
+    app.connects["miro"] = me = {"running": True, "url": "", "run_id": "R1"}
+    seen = {}
+
+    def slow_open(url, *a, **k):
+        t = threading.Thread(target=lambda: seen.update(stop=app.stop_connect("miro", "R1"), at_reply=dict(me)))
+        t.start()
+        for _ in range(100):   # until the Stop has marked the run (it then waits for "opening" to clear)
+            if me.get("stopped"):
+                break
+            time.sleep(0.01)
+        seen["t"] = t
+        opened.append(url)
+        return True
+    real_open, app.webbrowser.open = app.webbrowser.open, slow_open
+    try:
+        app._output_handler(me, ARGV, log, "")(printed)
+    finally:
+        app.webbrowser.open = real_open
+    seen["t"].join(5)
+    check(seen["stop"][0] == "stopped" and seen["at_reply"].get("opening") is False and seen["at_reply"].get("link_opened") is True,
+          "Stop during the browser call: it waits for the call to return, then sees the tab recorded as opened")
+    app.connects.pop("miro", None)
+    opened.clear()
     opened.clear()
     me = {"running": True, "url": ""}
     app._output_handler(me, ["claude", "auth", "login"], log, "")(printed)
