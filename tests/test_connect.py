@@ -5,7 +5,8 @@
 The API half puts a fake `claude` first on PATH and points BROWSER at a script that only writes down the
 link it was given, so nothing signs in to anything and no browser window opens. The fake refuses
 `mcp login` when stdin is not a terminal, as the real CLI (2.1.280) does, so a pass also proves the app
-runs it on a pseudo-terminal. That half is skipped on Windows, where the app gives the CLI a console window.
+runs it on a pseudo-terminal. That half is skipped on Windows (shell-script fakes); tests/test_connect_win.py covers
+the Windows runner, which gives the CLI a hidden console and reads its output from a file (#27).
 """
 import json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
@@ -270,7 +271,8 @@ check(slack_ok and s_src == "connector" and names.get("slack") == "claude.ai Sla
 for k in ("slack_source", "miro_source", "claude_servers"):
     cfg.pop(k, None)
 agent.WIN = True
-check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail"]], "Windows: no --no-browser (the CLI opens the browser)")
+check(agent.login_cmd("gmail") == [["claude", "mcp", "login", "claude.ai Gmail", "--no-browser"]],
+      "Windows too: --no-browser, the app opens the link it prints (#27)")
 agent.WIN = sys.platform == "win32"
 check(agent.login_cmd("nope") is None, "unknown step -> None")
 cfg["agent"] = "grok"
@@ -278,7 +280,7 @@ check(all(agent.login_cmd(s) is None for s in agent.CONNECT_STEPS), "Grok -> Non
 
 # ---------------------------------------------------------------- /api/connect
 if sys.platform == "win32":
-    say("skip /api/connect: Windows runs the CLI in its own console window")
+    say("SKIP /api/connect: the fakes are shell scripts; tests/test_connect_win.py covers the Windows runner")
     raise SystemExit(0)
 
 FAKE = r'''#!PYTHON

@@ -291,7 +291,7 @@ STOPPABLE = ("login", "slack", "gmail", "miro")
 
 
 def stop_connects():
-    """Quit or exit: stop every setup step still waiting (Windows: its console window too). quit_requested is set
+    """Quit or exit: stop every setup step still waiting (Windows: the hidden console it runs in too). quit_requested is set
     first, and _launch checks it under the same lock, so a step about to start either is in this list or never starts."""
     with connect_lock:
         running = list(connect_procs.values())
@@ -363,17 +363,32 @@ def add_install_dirs():
 
 
 def _connect_one(step, argv, log, deadline):
-    """Run one command of a setup step -> exit code. Off Windows it runs on a pseudo-terminal (stdlib pty):
-    `claude mcp login` gives up at once when stdin is not a terminal, but on one it waits for the browser's
-    callback. With --no-browser it prints the sign-in link instead of opening it; we open it here, and the
-    page shows it too in case no browser window came up. Windows has no stdlib pty: the command gets a
-    console window of its own (a real terminal) and opens the browser itself; its output stays in that window."""
+    """Run one command of a setup step -> exit code. Its output goes to the log as it comes (the sign-in link kept
+    without its query), and the link into connects[step]["url"] for the page's fallback link; with --no-browser
+    the CLI prints the link instead of opening it, and it is opened here, once.
+    The CLI refuses to wait for the browser when stdin is not a terminal (`claude mcp login` gives up at once), so:
+    - off Windows the command runs on a pseudo-terminal (stdlib pty) and its output is read from there;
+    - on Windows (no stdlib pty) it runs in a console of its own that has no window (CREATE_NO_WINDOW): stdin is a
+      real console, so the CLI waits for the browser's callback, and its output is sent to a file beside the log
+      that is read as it grows and removed at the end. Before #27 it ran in a console window of its own with
+      nothing captured: a failed sign-in had nothing to show, there was no fallback link, and closing that window
+      by hand ended the sign-in without a word."""
+    shown = subprocess.list2cmdline(argv) if WIN else " ".join(shlex.quote(a) for a in argv)
+    before = log.read_text(encoding="utf-8") + "$ " + shown + "\n"
+
+    def saw(raw):
+        """The command's output so far (bytes, the last 64 KB) -> the log rewritten from it, the sign-in link kept
+        and opened once. The whole buffer each time: an escape code or the link can straddle two reads."""
+        text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
+        log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
+        u = URL_RE.search(text)
+        if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
+            connects[step]["url"] = u.group(0)
+            if "--no-browser" in argv:
+                webbrowser.open(u.group(0))
+
     if WIN:
-        with open(log, "a", encoding="utf-8") as f:
-            f.write(f"$ {subprocess.list2cmdline(argv)}\n(running in its own window)\n")
-        p = _launch(step, subprocess.list2cmdline(argv), cwd=ROOT, shell=True,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE)
-        return -1 if p is None else _reap(step, p, deadline - time.time())
+        return _connect_one_win(step, argv, log, deadline, saw)
     import os, pty, select
     m, s = pty.openpty()
     try:
@@ -385,7 +400,6 @@ def _connect_one(step, argv, log, deadline):
         return -1
     raw, tail, rc = b"", "", -1
     try:
-        before = log.read_text(encoding="utf-8") + "$ " + " ".join(shlex.quote(a) for a in argv) + "\n"
         while True:
             if time.time() > deadline:
                 kill_tree(p)
@@ -399,19 +413,59 @@ def _connect_one(step, argv, log, deadline):
                 if not chunk:
                     break
                 raw = (raw + chunk)[-64000:]
-                # the whole buffer each time: an escape code or the link can straddle two reads
-                text = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
-                log.write_text(before + REDACT_RE.sub(r"\1?(rest of the link not saved)", text), encoding="utf-8")
-                u = URL_RE.search(text)
-                if u and not connects[step].get("url") and text[u.end():u.end() + 1].isspace():  # the whole link is in
-                    connects[step]["url"] = u.group(0)
-                    if "--no-browser" in argv:
-                        webbrowser.open(u.group(0))
+                saw(raw)
             elif p.poll() is not None:
                 break
     finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
         os.close(m)
         rc = _reap(step, p, 5)
+    if tail:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(tail)
+    return rc
+
+
+def _connect_one_win(step, argv, log, deadline, saw):
+    """_connect_one on Windows (#27): the command in a hidden console (a real terminal for the CLI, no window to
+    close), its output redirected by cmd.exe to state/connect-<step>.out, which is read every quarter second and
+    handed to saw() (the log, the link). The .out file holds the link query and all while the command runs, as
+    the console window did before; it is removed once the command has ended."""
+    out = log.with_suffix(".out")
+    try:
+        out.unlink()
+    except OSError:
+        pass
+    # argv is quoted for cmd.exe by list2cmdline; the server names it can hold are limited to plain characters
+    # (agent.usable_name), so nothing in it means anything to cmd
+    p = _launch(step, f'{subprocess.list2cmdline(argv)} > "{out}" 2>&1', cwd=ROOT, shell=True,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+    if p is None:  # Open Loops is closing, or this run was stopped from its row
+        return -1
+    tail, rc = "", -1
+    try:
+        while True:
+            ended = p.poll() is not None  # looked at before the read, so the last lines are never missed
+            try:
+                saw(out.read_bytes()[-64000:])
+            except OSError:  # not created yet
+                pass
+            if ended:
+                break
+            if time.time() > deadline:
+                kill_tree(p)
+                tail = "\nstopped: no answer from the browser within 5 minutes\n"
+                break
+            time.sleep(0.25)
+    finally:
+        rc = _reap(step, p, 5)
+        for _ in range(10):  # cmd.exe may still hold the file for a moment after taskkill
+            try:
+                out.unlink()
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                time.sleep(0.2)
     if tail:
         with open(log, "a", encoding="utf-8") as f:
             f.write(tail)
