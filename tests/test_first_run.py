@@ -663,7 +663,8 @@ def setup_js(port, scenario, tmp, session=None):
         cut("// Update Slack needs Slack", "\n// ---------- lists"),
         cut("const counts=()=>", "\n// ---------- day log"),
         grab("async function openClaude("), grab("async function learnVoice("),
-        cut("const MODELS={", "\nfunction modelUI("), grab("let dirty=false;"), cut("async function saveCfg(", "\n// the to-do file box"),   # Settings' Save (#62: its AI lock)
+        cut("const MODELS={", "\nfunction modelUI("), grab("let dirty=false;"), cut("// -> true once saved, false", "\n// the to-do file box"),   # Settings' Save (#62: its AI lock)
+        cut("async function standingCreate(", "\n// Zeigarnik"),   # a Save that must succeed before it acts (review of #65)
         cut("let docAt=0", "document.addEventListener('visibilitychange'"),
         """const CALLS=[];const realFetch=global.fetch;
 const FAKE={};   // url -> [answer to a POST, answer to a GET]: a setup step the app itself never runs (no browser opens)
@@ -1157,6 +1158,9 @@ if NODE:
  await tick();out.why={text:$('#su_ai_why').textContent,shown:$('#su_ai_why').style.display,disabled:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length};
  let n=CALLS.length;TOASTS.length=0;form('codex');await saveCfg();
  out.settings={calls:CALLS.slice(n),toasts:TOASTS.slice(),said:$('#cfg_msg').textContent,agent:C.agent,cfg:JSON.parse(fs.readFileSync(BIN+'/../config.json','utf8')).agent};
+ // review of #65: "Create a starter file there" saves first; a refused Save creates nothing (it would use the old path)
+ dirty=true;form('codex');$('#cfg_standing').value='/tmp/new-todo.md';n=CALLS.length;const saved=await saveCfg();await standingCreate();
+ out.create={saved,calls:CALLS.slice(n),disabled:$('#standing_create').disabled};dirty=false;
 """, tmp)
         check(out["status"] == {"agent": "claude", "running": True}, f"the app's status says which AI a running sign-in is for ({out['status']})")
         check(out["switched"] == {"agent": "codex", "doc": "codex", "pend": False}, "the change to Codex is saved and checked")
@@ -1173,6 +1177,8 @@ if NODE:
         check(s["calls"] == [] and s["toasts"] == [messages.say("ai_change_signin")] and s["said"] == "not saved: " + messages.say("ai_change_signin")
               and s["agent"] == "claude" and s["cfg"] == "claude",
               f"#62: Settings refuses a change of AI with the same sentence while the sign-in waits; nothing is saved ({s})")
+        check(out["create"] == {"saved": False, "calls": [], "disabled": False},
+              f"review of #65: a Save refused for the waiting sign-in returns false, and Create a starter file posts nothing ({out['create']})")
         # a new page (a reload), the sign-in still waiting: Settings' Save is the way the AI changes, there and back
         out = setup_js(port, SWEEP_JS + """
  await boot();await tick();
@@ -1183,8 +1189,8 @@ if NODE:
  const i=btnAt(s1);CONN.slack={msg:'Something to say'};await tick();const s2=kids('#su_src_rows');delete CONN.slack;await tick();
  out.nodes={rows:s0.length,same:s0.every((k,j)=>k===s1[j]),sameSteps:c0.length>0&&c0.every((k,j)=>k===c1[j]),slack:i,
   slackNew:i>=0&&s2[i]!==s1[i]&&s2[i]._sig.includes('Something to say'),others:s2.every((k,j)=>j===i||k===s1[j])};
- let n=CALLS.length;form('codex');await saveCfg();await until(swept('codex'),20000);
- out.codex={calls:CALLS.slice(n).map(c=>c.split(' ')[0]),agent:C.agent,...busy(),said:forCl()};
+ let n=CALLS.length;form('codex');const saved=await saveCfg();await until(swept('codex'),20000);
+ out.codex={saved,calls:CALLS.slice(n).map(c=>c.split(' ')[0]),agent:C.agent,...busy(),said:forCl()};
  form('claude');await saveCfg();await until(()=>CONN.slack&&CONN.slack.busy,20000);out.claude={agent:C.agent,...busy(),picked:picked()};
  // #62 wording: all ok with the optional Miro row red says so in the Console
  const green={all_ok:true,agent:'claude',steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:true,title:'Signed in'},
@@ -1194,7 +1200,7 @@ if NODE:
         check(nd["rows"] >= 3 and nd["same"] and nd["sameSteps"] and nd["slack"] >= 0 and nd["slackNew"] and nd["others"],
               f"#62: two ticks with nothing changed keep every row's node, Connect Slack's included; a row that changed is replaced, only that one ({nd})")
         c = out["codex"]
-        check(c["calls"][:2] == ["/api/config", "/api/doctor"] and c["agent"] == "codex" and not c["busy"] and not c["open"] and c["said"] == 1,
+        check(c["saved"] is True and c["calls"][:2] == ["/api/config", "/api/doctor"] and c["agent"] == "codex" and not c["busy"] and not c["open"] and c["said"] == 1,
               f"Settings' Save to Codex: saved and checked, and its sweep does not take Claude's sign-in as Codex's ({c})")
         check(out["claude"] == {"agent": "claude", "busy": True, "open": True, "picked": 1},
               f"#62: Settings' Save back to Claude: the page sweeps again by itself and the waiting sign-in is picked up ({out['claude']})")
