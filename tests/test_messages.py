@@ -444,6 +444,20 @@ for how, conf, extra in (("test_copy", {"test_copy": True}, {}), ("isolated (env
     check(tc_msg == messages.for_page(sys.platform == "win32", test=True) and "openloops.app" in tc_msg["server_offline"]["fix"],
           f"{how}: the served table says to start it with python -m openloops.app in its folder")
 served = json.loads(m.group(1))
+# #67: the labels table (button names, Console marks) is filled in the same way; the Stop button's name is the one the
+# picker's reason line tells you to press, and nothing on the page spells it out by hand
+lab = re.search(r"^const LABEL=(.*);$", html, re.M)
+check(lab and "/*OL_LABELS*/" not in html and json.loads(lab.group(1)) == messages.LABELS,
+      "#67: the app fills in the page's labels table (messages.LABELS) as it serves it")
+check(messages.LABELS["stop_signin"] in messages.say("ai_change_signin") and "quit" not in messages.say("ai_change_signin")
+      and not re.search(r"""['"`>]Stop this sign-in""", (REPO / "openloops" / "index.html").read_text(encoding="utf-8"))
+      and "esc(c.stopping?LABEL.stopping:LABEL.stop_signin)" in html,
+      "#67: the picker's reason names the row's Stop button, not quitting; the page takes the button's name from messages.py")
+check("function toast(msg,opt){opt=opt||{};if(!opt.quiet)clog((opt.err?'error: ':'')+msg);" in html
+      and "clog('not saved: '+lock);toast(lock,{err:true,quiet:true})" in html,
+      "#67: Settings' refused Save writes its own 'not saved: …' Console line, and its toast adds no 'error: …' line")
+check(all("quit" not in messages.say(k) and "Stop" not in messages.say(k) for k in ("ai_change_install", "ai_change_plugin")),
+      "#67: an install is left to finish: its reason says wait, offers no Stop and no quit")
 check(cache == "no-store", "the page is served with Cache-Control: no-store, so a cached copy never keeps old wording")
 check(served == messages.for_page(sys.platform == "win32"), "...with exactly messages.for_page() for this platform")
 check('<div id="lists" style="display:none">' in html, "before the first check, the lists are hidden (#34)")

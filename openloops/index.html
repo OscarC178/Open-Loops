@@ -279,6 +279,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   <div class="sub" id="allow_msg" style="margin-top:8px"></div>
   <div style="margin-top:14px;display:flex;gap:8px">
    <button class="primary" id="allow_check" onclick="allowCheck()" style="display:none">Check again</button>
+   <button type="button" id="allow_stop" onclick="allowStop()" style="display:none"></button>
    <button type="button" onclick="allowDismiss()">Close</button>
   </div>
 </div></dialog>
@@ -440,6 +441,8 @@ const PAGE=Math.random().toString(36).slice(2)+Date.now().toString(36);let stopp
 const MSG=/*OL_MESSAGES*/{};
 // A card click the app could not save: "Couldn't snooze that: <why>" (messages.py ACTION_FAILED, #64)
 const ACT_FAILED=/*OL_ACTION_FAILED*/{};
+// messages.py LABELS (#67): words that are not sentences (a button's name, a Console mark), filled in the same way
+const LABEL=/*OL_LABELS*/{};
 const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
 function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
 function msgFollow(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_follow&&f&&f.row?' '+fill(m.fix_follow,f):''):''}   // "what" + "follow the <row> row": for a row with no button
@@ -460,7 +463,11 @@ const errSaid=e=>(e&&e.local&&e.message)||(e&&e.body&&(e.body.said||e.body.error
 const CON_KEY='ol.console',CON_MAX=400;let CON=[];
 try{CON=JSON.parse(localStorage.getItem(CON_KEY)||'[]');if(!Array.isArray(CON))CON=[]}catch(e){CON=[]}
 const stamp=(d=new Date())=>{const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`};   // local time, as the rest of the page (#34)
-function clog(msg){const line=stamp()+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);if(CON.length>CON_MAX)CON=CON.slice(-CON_MAX);
+// Trimmed to CON_MAX lines, but never past the last restart mark (review of #68): dropped, a reload would find no mark
+// for the running start and announce it again. The mark then heads the kept lines, which all come after it.
+function clog(msg){const line=stamp()+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);
+ if(CON.length>CON_MAX){let m=-1;for(let i=CON.length-1;i>=0;i--)if(CON[i].includes(LABEL.console_started)){m=i;break}
+  const mark=m>=0&&m<CON.length-CON_MAX?CON[m]:'';CON=CON.slice(-CON_MAX);if(mark)CON[0]=mark}
  try{localStorage.setItem(CON_KEY,JSON.stringify(CON))}catch(e){}conPaint()}
 function conPaint(){const p=$('#con');if(!p)return;p.textContent=CON.join('\n')||'(nothing yet)';p.scrollTop=p.scrollHeight;
  $('#con_meta').textContent=CON.length?`${CON.length} line${CON.length===1?'':'s'} · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
@@ -477,7 +484,8 @@ window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e
 const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
 // under 600 px wide three toasts took about 40% of the screen (#56): two there
 const toastMax=()=>typeof innerWidth==='number'&&innerWidth<600?2:TOAST_MAX;
-function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
+function toast(msg,opt){opt=opt||{};if(!opt.quiet)clog((opt.err?'error: ':'')+msg);   // quiet: the caller logged its own line (#67)
+ const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
  // The header grows by the toast; with the page scrolled, the browser's scroll anchoring would keep the rows where they
  // were, i.e. under the grown header. Off for this one layout, the rows move down with it and stay in view (#52 review).
@@ -520,7 +528,16 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
 async function loadState(){const my=++ST_SEQ,r=await api('/api/state');if(my<ST_DONE)return;ST_DONE=my;S=r.state;const jobs=r.jobs||{};
  for(const k of Object.keys(PENDING_START)){const t=PENDING_START[k],j=jobs[k]||{};
   if((my>t.req&&(j.running||(j.seq||0)>t.seq||(j.finished_at&&Date.parse(j.finished_at)>t.at)))||Date.now()-t.at>15000)delete PENDING_START[k];else jobs[k]=Object.assign({},j,{running:true})}
- J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||''}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
+ J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||'';conBoundary(INST)}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
+// #67: the Console is kept across reloads and restarts, so its "no answer" lines from while the app was not running
+// stayed until Clear. The first answer from a new start of the app (its /api/state "instance", new at every start)
+// adds one line, "— Open Loops started — (<first 8 of the instance>)": what is above it is from before. Nothing is
+// deleted. Whether this start is marked is read from the Console itself, its last mark (review of #68): the mark lives
+// in the buffer that is saved, so another tab saving its own copy cannot leave the saved Console without one.
+let conInstSeen='';
+function conBoundary(inst){if(!inst||inst===conInstSeen)return;conInstSeen=inst;const mark=LABEL.console_started+' ('+inst.slice(0,8)+')';
+ for(let i=CON.length-1;i>=0;i--)if(CON[i].includes(LABEL.console_started)){if(CON[i].endsWith(mark))return;break}
+ clog(mark)}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
 const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
 function agentUI(){if(!$('#agent_btn'))return;
@@ -685,9 +702,14 @@ function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!
  const shown=c.busy&&c.command?c.command:s.command;   // while it runs: the command the app captured for this run, not what the row says now
  // shown before the press (nothing runs unseen), folded away: a non-technical user needs the button, not the shell (#25)
  const cmd=shown?`<details class="sub" style="margin-top:4px"${CMD_OPEN[s.connect]?' open':''} ontoggle="CMD_OPEN['${s.connect}']=this.open"><summary>Show the exact command${c.busy?' that is running':''}</summary><code style="display:block;white-space:pre-wrap;word-break:break-all">${esc(shown)}</code></details>`:'';
- if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}</div>${cmd}`;
+ // #67: a sign-in waiting in the browser can be stopped from its row (not an install: app.py STOPPABLE)
+ const stop=canStop(s.connect)?` <button onclick="connectStop('${s.connect}')"${c.stopping||!c.run?' disabled':''}>${esc(c.stopping?LABEL.stopping:LABEL.stop_signin)}</button>`:'';   // disabled until the app has said which run it is
+ if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}${stop}</div>${cmd}`;
  const label=s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect];   // the same row identity the press sends
  return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
+// #67: which rows offer Stop this sign-in: a sign-in waiting in the browser (app.py STOPPABLE), not Codex's Gmail / Slack
+// (a page that opens and is done) and not an install (left to finish)
+const canStop=step=>['login','slack','gmail','miro'].includes(step)&&!pageStep(step);
 const CMD_OPEN={};   // which rows have "Show the exact command" open: the rows are repainted on every tick
 const PARTY=step=>({login:(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),slack:'Slack',slack_install:'Slack',gmail:'Google',miro:'Miro'})[step]||agentLabel();   // who the sign-in is with
 const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
@@ -695,39 +717,102 @@ const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
 const connectWaitSaid=(step,a)=>step==='install'?installing(a):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.';
 async function connectStep(step){
  const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
- CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
+ delete RUN_OVER[step];   // a new run of the step from here: what ended before is forgotten (#67 review)
+ const mine=CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
+ const ours=()=>CONN[step]===mine;   // #67 review: after each await, only a row still showing this press is written to
  let rid='';   // the run's id (#27), from the app's answer: the run it started, or the one already running
- try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});rid=r.run_id||'';if(CONN[step])CONN[step].run=rid;
-  clog('setup: '+step+(r.started?' started':' already running'));if(!r.started&&r.said){CONN[step].msg=r.said;repaint()}}
+ try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});rid=r.run_id||'';
+  clog('setup: '+step+(r.started?' started':' already running'));if(!ours())return;mine.run=rid;if(!r.started&&r.said)mine.msg=r.said;repaint()}
  catch(e){const changed=inst&&e.status===409;   // the app says which: the AI changed in Settings, or Open Loops was updated
+  if(!ours())return;
   CONN[step]={msg:changed?((e.body&&e.body.said)||msg('app_updated'))
    :inst?msg('install_start',{ai:aiName(row.agent)}):msg('connect_start_failed')};repaint();if(changed)doctor(true);return}
  // a step that waits for Allow in the browser opens the pop-up (the Set-up cards' and the checklist's buttons alike), once
  // the app has said which run it is, so a closed pop-up is remembered for that run and no other
- if(ALLOW_ROW[step]&&CONN[step]&&CONN[step].busy)allowOpen(step,rid);
+ if(ALLOW_ROW[step]&&mine.busy)allowOpen(step,rid);
  return connectWatch(step,row)}
+// #67 review: whether the row for step still shows run, waiting. Every callback that was started for a run (a Stop's
+// answer, the watcher's poll, a 409) checks this after each await and changes nothing otherwise: the row may have taken
+// another run meanwhile (adoption keeps the row object and changes its run), been replaced by a new press, or removed by
+// a change of AI. The run id, not the object, is what says "still this run".
+// #67 review: the runs this page has seen end or be replaced, per step. A late 409 or status naming one of them is old
+// news and is never adopted (the row would go backwards, and the newer run's closed-pop-up note would go with it).
+// Cleared when this page starts a new run of the step.
+const RUN_OVER={};
+// Capped at RUN_OVER_MAX ids per step, the oldest going first (a Set keeps the order they were added in): repeated
+// adoptions from other tabs cannot grow it for ever, and a run that old is not coming back in a late answer.
+const RUN_OVER_MAX=20;
+function runOver(step,run){if(!run)return;const set=RUN_OVER[step]=RUN_OVER[step]||new Set();set.delete(run);set.add(run);
+ while(set.size>RUN_OVER_MAX)set.delete(set.values().next().value)}
+const runIsOver=(step,run)=>!!(RUN_OVER[step]&&RUN_OVER[step].has(run));
+const liveRun=(step,run)=>!!run&&!!CONN[step]&&!!CONN[step].busy&&CONN[step].run===run;
+// #67: the end of a stopped run, whoever sees it first (the Stop's answer, or the row's watcher polling): only while the
+// row still shows that run, it goes back to its button (which unlocks the AI picker), the pop-up closes if it is for that
+// step, the run's closed-pop-up note goes, and the connections are checked again: a sign-in can finish just before Stop
+// lands, and nothing undoes it (review of #68). -> true if it did this, false if the row had moved on.
+function connectStopped(step,run){if(!liveRun(step,run))return false;runOver(step,run);CONN[step]={};
+ if(ALLOW&&ALLOW.step===step)allowClose();if(run)allowClosedEnd(step,run);repaint();
+ doctor(true).catch(e=>clog('setup: '+step+' stopped, and the check after it did not answer: '+e.message));return true}
+// #67: Stop this sign-in. The app stops that one run and answers once it has ended; then connectStopped() above.
+// The POST names the run this row shows (run_id): the app stops that one, or none (409, another run holds the step now).
+// The answer changes the row only if it still shows that run (#67 review): the watcher may have cleared it meanwhile,
+// another run may hold it, or a change of AI may have removed it.
+// #67 review: the row shows run c.run, but the app says another run (s: its status, or a 409's body) holds the step now
+// (the shown one ended, another tab started a new one). The row takes the new run: its id (so the next Stop targets
+// it), its fallback link and start time, and the pop-up's run if the pop-up is open for this step. The ended run's
+// closed-pop-up note goes. -> true if the row changed.
+function connectAdopt(step,s){const c=CONN[step];if(!c||!c.busy||!s||!s.run_id||s.run_id===c.run||runIsOver(step,s.run_id))return false;const was=c.run;runOver(step,was);
+ Object.assign(c,{run:s.run_id,url:s.url||'',started:s.started||c.started,stopping:false});
+ if(was)allowClosedEnd(step,was);if(ALLOW&&ALLOW.step===step)Object.assign(ALLOW,{run:s.run_id,url:''});
+ clog('setup: '+step+' is now run '+s.run_id.slice(0,8)+' (the one shown had ended)');repaint();allowPaint();return true}
+// run: the run the caller shows (the pop-up's); given, a row that shows another run is not stopped for it.
+async function connectStop(step,run_){const c=CONN[step];if(!c||!c.busy||c.stopping||!c.run||(run_&&run_!==c.run))return;const run=c.run;c.stopping=true;repaint();allowPaint();
+ try{const r=await api('/api/connect/'+step+'/stop',{run_id:run});clog('setup: '+step+(r.ok?' stopped':' was not running'));
+  if(!liveRun(step,run))return;   // the row has moved on (another run, a new press, a change of AI): not this answer's
+  if(r.ok)toast(msg('connect_stopped',{party:PARTY(step)}));
+  if(r.running){CONN[step].stopping=false;repaint();allowPaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
+  connectStopped(step,run)}
+ catch(e){if(!liveRun(step,run))return;   // as above: a late failure or 409 for a run the row no longer shows says nothing
+  CONN[step].stopping=false;   // a 409 names the run that holds the step now: the row takes it (#67 review)
+  if(!(e.status===409&&connectAdopt(step,e.body))){repaint();allowPaint()}toast(errSaid(e),{err:true})}}
 // Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
-// row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload.
-async function connectWatch(step,row){const inst=step==='install',run=(CONN[step]&&CONN[step].run)||'';try{   // finally: this run is over, forget a pop-up closed for it (only it)
- const t0=Date.now();
- while(Date.now()-t0<(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS)){await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
+// row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload. It writes only to
+// the row it was started for (#67 review): once that row is replaced (a new run, a Stop's answer) or removed (a change
+// of AI), the watcher stops, touching nothing. When the row takes another run (adoption, from the watcher's own poll or
+// from a Stop's 409: the row object stays, its run changes), the watcher follows it: that run is the one it watches
+// from then on, with a time limit of its own, taken up before the limit is tested so the old run's deadline never ends it.
+async function connectWatch(step,row){const inst=step==='install',mine=CONN[step],ours=()=>!!mine&&CONN[step]===mine;let run=(mine&&mine.run)||'';
+ try{   // finally: this run is over, forget a pop-up closed for it (only it)
+ let t0=Date.now();
+ const follow=()=>{if(ours()&&mine.run!==run){run=mine.run;t0=Date.now()}};   // the row took another run: watch that one, afresh
+ for(;;){follow();if(Date.now()-t0>=(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS))break;
+  await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
+  if(!ours())return;
   let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
-  if(s.url&&!CONN[step].url){CONN[step].url=s.url;repaint()}
-  if(inst&&s.running&&(s.agent!==CONN[step].agent||s.command!==CONN[step].command)){Object.assign(CONN[step],{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
-  if(inst&&s.running&&s.last&&s.last!==CONN[step].last){CONN[step].last=s.last;clog('install: '+s.last)}   // raw progress: Console only
+  if(!ours())return;
+  if(mine.run!==run)continue;   // adopted while asking (a Stop's 409): this answer may be about the old run
+  // #67 review: another run holds the step now (the one shown ended, another tab started one): watch that one instead,
+  // with its own time limit, so the row's Stop and link are for the run that is really waiting
+  if(!inst&&s.running&&run&&s.run_id&&s.run_id!==run&&connectAdopt(step,s)){run=mine.run;t0=Date.now();continue}
+  if(s.url&&!mine.url){mine.url=s.url;repaint()}
+  if(inst&&s.running&&(s.agent!==mine.agent||s.command!==mine.command)){Object.assign(mine,{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
+  if(inst&&s.running&&s.last&&s.last!==mine.last){mine.last=s.last;clog('install: '+s.last)}   // raw progress: Console only
   if(s.running)continue;
+  if(s.stopped){connectStopped(step,run);return}   // #67: stopped (here or in another tab), not failed
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
   if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
    CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
     :msg('codex_browser_failed',{service:n})};CONN[step].opened=s.rc===0;repaint();return}
-  const ai=aiName(CONN[step].agent||row.agent);
-  CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
+  const ai=aiName(mine.agent||row.agent);
+  const after=CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
    :step==='slack_install'?msg('slack_install_failed'):msg('connect_failed',{party:PARTY(step)})};
   await doctor(true);   // repaints the checklist: the row goes green, or offers its next step
+  if(CONN[step]!==after)return;   // changed meanwhile: not this watcher's to say more
   if(s.rc===0&&!inst&&DOC&&DOC.steps&&DOC.steps.some(x=>!x.ok&&x.connect===step)){CONN[step]={msg:msg('connect_no_change',{party:PARTY(step)})};repaint()}   // finished fine, row still red: say so
   return}
- CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(CONN[step].agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
- finally{if(run)allowClosedEnd(step,run)}}
+ if(!ours()||mine.run!==run)return;
+ CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(mine.agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
+ finally{if(run)allowClosedEnd(step,run);if(!liveRun(step,run))runOver(step,run)}}   // over, unless the row still waits on it
 
 // #27: the page reloaded (or the app came back after the "not running" banner) while a step was still running: ask the
 // app about each step and pick up any still running, as if its button had just been pressed here. One GET per step:
@@ -914,10 +999,16 @@ function allowPaint(){if(!ALLOW)return;const c=CONN[ALLOW.step]||{},u=ALLOW.url|
  // what went wrong, in the app's words: the step's own failure (a Codex page that would not open included), or what the row
  // said after a Check again pressed here. A Codex page that did open needs no second sentence: the title says what to do.
  $('#allow_msg').textContent=ALLOW.said||(!c.busy&&c.msg&&!c.opened?c.msg:'');
- $('#allow_check').style.display=page||(!c.busy&&c.msg)?'':'none'}
+ $('#allow_check').style.display=page||(!c.busy&&c.msg)?'':'none';
+ // #67 review: the pop-up covers the row, so it has the row's Stop too: the same handler, for the run the pop-up is for
+ const st=$('#allow_stop'),can=c.busy&&canStop(ALLOW.step);st.style.display=can?'':'none';st.textContent=c.stopping?LABEL.stopping:LABEL.stop_signin;
+ st.disabled=!can||!!c.stopping||!c.run||(!!ALLOW.run&&ALLOW.run!==c.run)}
+function allowStop(){const a=ALLOW;return a?connectStop(a.step,a.run):Promise.resolve()}
 async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
  if(row&&row.ok){allowClose();toast(row.title.replace(/ \(optional.*\)$/,'')+'.');return}
- if(!a.url){try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&s.url)a.url=s.url}catch(e){}}   // the fallback link, from the run's own status
+ // the fallback link, from the run's own status. The pop-up object stays when its row takes another run (adoption changes
+ // a.run in place), so the answer is used only while the pop-up is still for the run it was asked for (review of #68)
+ if(!a.url){const run=a.run;try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&a.run===run&&s.url&&(!s.run_id||!run||s.run_id===run))a.url=s.url}catch(e){}}
  allowPaint()}
 function allowClose(){const a=ALLOW;ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close();if(a)allowFocus(a.step)}
 // #27: the person closed the pop-up (Close, or Escape) while its step still runs: remember that run for this tab, as
@@ -935,10 +1026,10 @@ function allowDismiss(){if(ALLOW)allowForget(ALLOW);allowClose()}
 // after the pop-up: focus back on that step's Connect / Sign in button, or on its card once the row has gone green
 function allowFocus(step){if(typeof document==='undefined'||!document.querySelector)return;
  const b=document.querySelector(`#setup button[onclick="connectStep('${step}')"]`),t=b||document.querySelector(step==='login'?'#su_ai':'#su_src');if(t&&t.focus)t.focus()}
-async function allowCheck(){const a=ALLOW,b=$('#allow_check');if(!a)return;b.disabled=true;a.said='';$('#allow_msg').textContent='Checking…';
+async function allowCheck(){const a=ALLOW,run=a&&a.run,b=$('#allow_check');if(!a)return;b.disabled=true;a.said='';$('#allow_msg').textContent='Checking…';
  try{await doctor(true)}finally{b.disabled=false}
  const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
- if(ALLOW===a&&!(row&&row.ok))a.said=DOC&&DOC.error?msg('check_failed'):(row&&row.fix)||'';   // still not ticked: the row's own sentence, here
+ if(ALLOW===a&&a.run===run&&!(row&&row.ok))a.said=DOC&&DOC.error?msg('check_failed'):(row&&row.fix)||'';   // still not ticked: the row's own sentence, here
  await allowPoll()}
 // ---------- end of the Set-up view
 
@@ -1208,7 +1299,7 @@ function paintVoice(){if(V&&haveVoice()){$('#voice_meta').textContent='learned '
 async function saveCfg(){
  // #62: as the set-up page's picker, no change of AI while a sign-in or install runs: that run is the old AI's. Nothing
  // is saved; the form keeps its edits, so Save works once the sign-in is over.
- const lock=C&&$('#cfg_agent').value!==(C.agent||'claude')?aiLockSaid(false):'';if(lock){$('#cfg_msg').textContent='not saved: '+lock;toast(lock,{err:true});return false}
+ const lock=C&&$('#cfg_agent').value!==(C.agent||'claude')?aiLockSaid(false):'';if(lock){$('#cfg_msg').textContent='not saved: '+lock;clog('not saved: '+lock);toast(lock,{err:true,quiet:true});return false}   // #67: a note, not an error
  try{const tone={};document.querySelectorAll('[data-tone]').forEach(t=>tone[t.dataset.tone]=t.value);
  // people: radios in the table win; the JSON box is the fallback for adding/removing entries
  let people=JSON.parse($('#cfg_people').value);Object.keys(C.people||{}).forEach((n,i)=>{const v=document.querySelector(`input[name="pp${i}"]:checked`);if(v&&people[n])people[n].level=v.value});
@@ -1345,7 +1436,9 @@ cfgRestore();
 $('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';
 $('#cfg_agent').setAttribute('aria-label','Your AI');
 clog('page opened '+location.host+' · page '+PAGE);conPaint();
-// Busy saving at the first load (#66 review): no banner; try the first load again once, then the poll loop carries on
-(async()=>{for(let i=0;i<2;i++){try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm();break}
- catch(e){if(!appBusy(e)){appDown(e);break}}}loop()})();
+// Busy saving at the first load (#66 review): no banner; try the first load again once, then the poll loop carries on.
+// Any other failure counts as offline, as in loop() (#67), so whatever answers next, busy included, clears its banner.
+async function pageStart(){for(let i=0;i<2;i++){try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm();break}
+ catch(e){if(!appBusy(e)){offline=true;appDown(e);break}}}loop()}
+pageStart();
 </script></body></html>

@@ -75,7 +75,7 @@ global.fetch=(u,o)=>{const q=ON[u]&&ON[u].shift(),mode=q?q.mode:REPLY;return new
  res({ok:true,status:200,json:async()=>u==='/api/state'?JSON.parse(JSON.stringify(STATE)):{ok:true}})},q?q.ms:DELAY[u]||0))};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 """
-BASE = [grab("const esc="), grab("const MSG="), grab("const ACT_FAILED="), grab("const fill="), grab("function msg("),
+BASE = [grab("const esc="), grab("const MSG="), grab("const LABEL="), grab("const ACT_FAILED="), grab("const fill="), grab("function msg("),
         grab("const errSaid="), cut("const api=async", "// The page could not talk to the app"), grab("const appDown="),
         cut("async function loadState(", "async function loadCfg(")]
 
@@ -132,6 +132,18 @@ if NODE:
         r = out["r"]
         check(r["banner"] == want_banner and r["looped"] == 1 and r["loads"] == (2 if mode == "busy" else 1),
               f"first load answered {mode}: banner {want_banner}, " + ("tried once more, " if mode == "busy" else "") + f"then the poll loop ({r})")
+
+    # #67 (Codex check on #66): a first load that failed (not busy) put the banner up without setting offline, so a
+    # later busy poll, which clears the banner only when coming back from offline, left it up. The real first load
+    # and the real poll loop: the first load's request not answered, the loop's first poll (straight after) busy.
+    out = node(loop_parts + ["let SAID=[];const _bn=banner;banner=m=>{if(m)SAID.push(m);_bn(m)};",   # every banner raised
+                             "REPLY='busy';ON['/api/state']=[{ms:0,mode:'down'}];", cut("// Busy saving at the first load", "</script>")], """
+      await sleep(300);out.r={said:SAID.slice(),banner:$('#banner').style.display,offline,next:NEXT.pop()};""")
+    r = out["r"]
+    check(len(r["said"]) == 1 and r["said"][0].startswith(messages.part("server_offline", "what")),
+          f"#67: a first load the app did not answer puts the 'isn't running' banner up ({r['said']})")
+    check({k: r[k] for k in ("banner", "offline", "next")} == {"banner": "none", "offline": False, "next": 4000},
+          f"#67: ...and counts as offline, so the busy poll that follows clears that banner at the usual pace ({r})")
 
     # ------------------------------------------------------------ 2. a card click (#64)
     say("2. a failed click says what it could not do; a slow one says Saving…")
@@ -235,4 +247,35 @@ if NODE:   # Check again with Codex already chosen (review of #66): the same hal
     check(messages.part("codex_checking", "fix") in out["codex"] and out["claude"] == "" and out["idle"] == "",
           f"Check again with Codex says it can take about half a minute; not for Claude, not when idle ({out})")
 check(html.count("'Check again'}</button>${codexWait(a)}") == 2, "...on both Check again buttons of the Set-up view")
+
+# ---------------------------------------------------------------- 5. the Console's restart mark with two tabs (#67 review)
+if NODE:
+    say("5. the Console's restart mark survives two tabs saving their own copies")
+    # The page's real Console code (load, clog, the mark), run in one node vm context per tab; the tabs share one
+    # localStorage, as two tabs of one browser do. Both were open before the restart, so both hold the old lines.
+    CONSOLE = "\n".join([grab("const LABEL="), grab("const CON_KEY="), grab("try{CON=JSON.parse"), grab("const stamp="),
+                         cut("function clog(", "function conClear("), cut("let conInstSeen=", "async function loadCfg(")])
+    out = node([f"const CODE={json.dumps(CONSOLE)};", """
+const vm=require('vm'),store={};
+const localStorage={getItem:k=>k in store?store[k]:null,setItem:(k,v)=>{store[k]=String(v)},removeItem:k=>{delete store[k]}};
+const tab=()=>{const c=vm.createContext({localStorage,$:()=>({style:{},textContent:''}),Array,JSON,String,Date});vm.runInContext(CODE,c);return c};
+const saved=()=>JSON.parse(store['ol.console']||'[]'),marks=l=>l.filter(x=>x.includes('Open Loops started')).length;"""],
+               """store['ol.console']=JSON.stringify(['2026-09-24 09:00:00  no answer from /api/state: fetch failed']);
+      const A=tab(),B=tab();   // both open, both holding the old lines
+      vm.runInContext("conBoundary('new-instance-1')",A);                       // A hears from the new start first
+      vm.runInContext("conBoundary('new-instance-1');clog('B polled')",B);     // then B, which saves its own copy
+      out.afterB=saved();vm.runInContext("clog('A polled')",A);out.afterA=saved();
+      const C=tab();vm.runInContext("conBoundary('new-instance-1')",C);out.reload=saved();
+      vm.runInContext("for(let i=0;i<450;i++)clog('poll '+i)",C);out.capped=saved();   // past CON_MAX: the mark must not go
+      const D=tab();vm.runInContext("conBoundary('new-instance-1')",D);out.capReload=saved();\n""")   # C: a reload, which must add no second mark
+    for k in ("afterB", "afterA", "reload"):
+        got = out[k]
+        check(sum("Open Loops started" in x for x in got) == 1 and got[0].endswith("fetch failed")
+              and any(x.endswith(messages.LABELS["console_started"] + " (new-inst)") for x in got),
+              f"#67 review: two tabs saving their own Console copies across a restart: the saved Console keeps one mark, after the old lines ({k}: {got})")
+    for k in ("capped", "capReload"):
+        got = out[k]
+        check(len(got) == 400 and sum("Open Loops started" in x for x in got) == 1
+              and got[0].endswith(messages.LABELS["console_started"] + " (new-inst)") and got[-1].endswith("poll 449"),
+              f"#67 review: 450 more lines trim the Console to 400 but keep the restart mark at its head, so a reload adds no second one ({k}: {got[:2]}, {len(got)})")
 say("all passed")

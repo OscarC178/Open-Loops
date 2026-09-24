@@ -147,7 +147,7 @@ def page_js(port, session, scenario, tmp):
         "async function loadDaylog(){}async function loadRm(){}function agentUI(){}const PAGE='t';let stopped=false;",
         "async function connectReattach(){return true}function reattachSweep(){}",   # the Setup-buttons section is not cut in here (#27 is tested in 7k, #62 in 7l)
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
-        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
+        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const LABEL="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
         cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="), grab("function msgFollow("),
         grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("), grab("function msgBusy("), "const CONN={};",
@@ -650,7 +650,7 @@ def setup_js(port, scenario, tmp, session=None):
         "function renderLists(){}function paintVoice(){}function banner(){}function appDown(e){CON.push('appDown '+e)}function paintDaylog(){}function paintRm(){}",
         "function paintForm(){}async function loadDaylog(){}async function loadRm(){}function agentUI(){}function agentFormUI(){}const PAGE='t';let stopped=false;",
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
-        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
+        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const LABEL="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
         cut("let formPainted=false;", "\n\n// ---------- data"),
         cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="),
@@ -1195,8 +1195,8 @@ if NODE:
               f"#62: while the sign-in waits, the greyed-out picker says why, in plain words from messages.py ({out['why']})")
         check(out["whyPlugin"] == messages.say("ai_change_plugin"),
               f"review of #65: the Slack plugin's install is not called a sign-in waiting in the browser ({out['whyPlugin']})")
-        check("close" not in messages.say("ai_change_signin") and "quit Open Loops" in messages.say("ai_change_signin"),
-              "review of #65: the sentence does not promise that closing the pop-up frees the AI choice (the run keeps waiting)")
+        check("close" not in messages.say("ai_change_signin") and messages.LABELS["stop_signin"] in messages.say("ai_change_signin"),
+              "review of #65, #67: the sentence does not promise that closing the pop-up frees the AI choice; it names the row's Stop")
         s = out["settings"]
         check(s["calls"] == [] and s["toasts"] == [messages.say("ai_change_signin")] and s["said"] == "not saved: " + messages.say("ai_change_signin")
               and s["agent"] == "claude" and s["cfg"] == "claude",
@@ -1247,6 +1247,130 @@ if NODE:
                               "all ok (Miro optional, not connected; Gmail optional, unavailable to Open Loops)", "all ok"],
               f"#62: the Console's 'all ok' names an optional source whose row is red (Connect or alert), not a green or grey one, "
               f"nor a red row that is not a source ({out['head']})")
+    finally:
+        quit_app(port, srv)
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7m. #67: Stop this sign-in. A Slack sign-in pressed on the page waits (the fake `claude mcp login` on a terminal);
+    # its row offers Stop next to the fallback link, and the picker's reason says to press it. Settings' refused Save is
+    # a Console note, not an error. Stop posts to the app, which kills the fake child: the row is back to its button,
+    # the pop-up closed, that run's closed-pop-up note gone, the picker free, and the watcher ends without a failure.
+    # Then the Console's restart mark (once per app start, old lines kept). The first load's failure: test_page_busy.py.
+    tmp = setup_install("openloops-setup-stop-")
+    (tmp / "bin" / "signin_secs").write_text("600")   # waits until stopped (or the app quits), never on a timer
+    srv, port = start_app(tmp, setup_env(tmp))
+    waiting = lambda: subprocess.run(["pgrep", "-f", str(tmp / "bin" / "claude") + ".*mcp login"], capture_output=True).returncode == 0
+    try:
+        out = setup_js(port, SWEEP_JS + """
+ await boot();await tick();const marks=()=>CON.filter(l=>l.startsWith(LABEL.console_started)).length,started=marks();
+ // #67 review: a row pressed here is busy before the app has said which run it is: its Stop waits for that
+ CONN.gmail={busy:true,msg:'x'};out.norun=connectBtn({connect:'gmail'},false);CONN.gmail.run='r1';out.withrun=connectBtn({connect:'gmail'},false);delete CONN.gmail;
+ const w=connectStep('slack');await until(()=>CONN.slack&&CONN.slack.busy&&CONN.slack.url,20000);
+ const run=CONN.slack.run;out.run=run;allowDismiss();out.note=JSON.parse(SS['ol.allowDismissed']||'{}').slack===run;
+ allowOpen('slack',run);paintSetup(stage());   // the pop-up open again, as a reload would bring it back
+ const rows=$('#su_src_rows').innerHTML;
+ out.wait={stop:rows.includes(`<button onclick="connectStop('slack')">${LABEL.stop_signin}</button>`),link:rows.includes('Open the sign-in page'),
+  why:$('#su_ai_why').textContent,locked:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length,
+  steps:$('#setup_steps').innerHTML.includes("connectStop('slack')"),miro:rows.includes("connectStop('miro')")};
+ // Settings refuses a change of AI while it waits: the Console says "not saved: …", never "error: …"
+ form('codex');const con0=CON.length;await saveCfg();out.refused=CON.slice(con0);
+ // #67 review: the pop-up covers the row, so it carries the same Stop: for another run it is disabled and posts nothing
+ const dlg=()=>({open:$('#allow_dlg').open,shown:$('#allow_stop').style.display,text:$('#allow_stop').textContent,disabled:$('#allow_stop').disabled});
+ ALLOW.run='another';allowPaint();out.dlgOther=dlg();let n=CALLS.length;await allowStop();out.dlgOtherCalls=CALLS.slice(n);ALLOW.run=run;allowPaint();
+ out.dlg=dlg();n=CALLS.length;await allowStop();   // what its onclick runs: connectStop(step, the pop-up's run)
+ out.stopped={calls:CALLS.slice(n),busy:!!(CONN.slack&&CONN.slack.busy),msg:(CONN.slack||{}).msg||'',open:$('#allow_dlg').open,
+  note:SS['ol.allowDismissed'],rows:$('#su_src_rows').innerHTML,why:$('#su_ai_why').style.display,
+  locked:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length,toasts:TOASTS.slice(-1),con:CON.slice(-1)};
+ await Promise.race([w,sleep(8000).then(()=>{throw new Error('the watcher did not end after Stop')})]);
+ out.after={msg:(CONN.slack||{}).msg||'',busy:!!(CONN.slack&&CONN.slack.busy),failed:CON.some(l=>l.startsWith('setup: slack finished'))};
+ out.status=await (await realFetch(BASE+'/api/connect/slack')).json();
+ // #67 review, round 3: the row shows R1; on the app R1 ends and R2 starts (another tab). Stop -> 409, and the row now
+ // shows R2 -> Stop again -> R2 stopped.
+ const post=(u,b)=>realFetch(BASE+u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}).then(r=>r.json());
+ const waitLink=async()=>{for(let i=0;i<150;i++){const s=await (await realFetch(BASE+'/api/connect/slack')).json();if(s.running&&s.url)return s;await sleep(100)}throw new Error('no sign-in link')};
+ const r1=(await post('/api/connect/slack')).run_id;await waitLink();const c1=CONN.slack={busy:true,msg:'Waiting',run:r1,url:'https://example.invalid/old'};
+ await post('/api/connect/slack/stop',{run_id:r1});const r2=(await post('/api/connect/slack')).run_id;const s2=await waitLink();
+ let n5=CALLS.length;TOASTS.length=0;await connectStop('slack');
+ out.adopt={r1:r1!==r2,same:CONN.slack===c1,run:c1.run===r2,busy:c1.busy,stopping:!!c1.stopping,url:c1.url===s2.url,
+  calls:CALLS.slice(n5).map(c=>c.split(' ')[0]+(c.includes(r1)?' R1':c.includes(r2)?' R2':'')),toasts:TOASTS.slice(),
+  btn:$('#su_src_rows').innerHTML.includes(`<button onclick="connectStop('slack')">`)};
+ n5=CALLS.length;await connectStop('slack');const s3=await (await realFetch(BASE+'/api/connect/slack')).json();
+ out.adopt2={calls:CALLS.slice(n5).map(c=>c.split(' ')[0]+(c.includes(r2)?' R2':'')),busy:!!(CONN.slack&&CONN.slack.busy),
+  stopped:s3.stopped===true&&s3.run_id===r2&&s3.running===false};
+ // #67 review, stale callbacks. (a) A Stop whose answer arrives after the row has moved on to a new run leaves the new
+ // row alone. (b) A watcher whose row went away (a change of AI deletes the rows) ends without touching anything.
+ const f0=global.fetch;let release;global.fetch=(u,o)=>u==='/api/connect/gmail/stop'?new Promise(r=>{release=()=>r(new Response('{"ok":true,"running":false}',{status:200}))}):f0(u,o);
+ CONN.gmail={busy:true,msg:'x',run:'g1'};const pa=connectStop('gmail');await until(()=>release,5000);
+ const g2=CONN.gmail={busy:true,msg:'new',run:'g2'};release();await pa;global.fetch=f0;
+ out.late={same:CONN.gmail===g2,busy:CONN.gmail.busy,run:CONN.gmail.run,msg:CONN.gmail.msg};delete CONN.gmail;
+ FAKE['/api/connect/gmail']=[{},{running:true,run_id:'g3',url:'https://example.invalid/g3',agent:'claude'}];
+ CONN.gmail={busy:true,msg:'x',run:'g3'};const pb=connectWatch('gmail',{});delete CONN.gmail;await pb;
+ out.gone={row:CONN.gmail===undefined};
+ // #67 review, round 3: the watcher finds another run holding the step (the one shown ended, another tab started one):
+ // the row takes that run's id and link
+ FAKE['/api/connect/gmail']=[{},{running:true,run_id:'g6',url:'https://example.invalid/g6',agent:'claude'}];
+ const g5=CONN.gmail={busy:true,msg:'x',run:'g5',url:'https://example.invalid/g5'};const pw=connectWatch('gmail',{});
+ await until(()=>g5.run==='g6',8000);out.watchAdopt={run:g5.run,url:g5.url,busy:g5.busy};delete CONN.gmail;await pw;
+ // (c) the watcher seeing the stop first (another tab pressed it) cleans up the same way: row, note, a fresh check
+ FAKE['/api/connect/gmail']=[{},{running:false,stopped:true,rc:-15,run_id:'g4',agent:'claude'}];
+ const g4=CONN.gmail={busy:true,msg:'x',run:'g4'};allowGoneSet('gmail','g4');let n4=CALLS.length;await connectWatch('gmail',{});
+ out.watchStop={busy:!!(CONN.gmail&&CONN.gmail.busy),msg:(CONN.gmail||{}).msg||'',note:allowGone().gmail||'',calls:CALLS.slice(n4).map(c=>c.split(' ')[0])};
+ delete FAKE['/api/connect/gmail'];
+ // the Console's restart mark: once per app start, whatever polls in between; a new start adds one after the old lines
+ await loadState();await loadState();out.once=[started,marks()];
+ CON.push('no answer from /api/state: fetch failed');const st=await api('/api/state');
+ FAKE['/api/state']=[{},Object.assign({},st,{instance:'another-start-0000'})];await loadState();delete FAKE['/api/state'];
+ out.restart=CON.slice(-2);await loadState();out.back=CON[CON.length-1];""", tmp)
+        check(f"<button onclick=\"connectStop('gmail')\" disabled>{messages.LABELS['stop_signin']}</button>" in out["norun"]
+              and f"<button onclick=\"connectStop('gmail')\">{messages.LABELS['stop_signin']}</button>" in out["withrun"],
+              "#67 review: Stop is disabled until the app's answer has named the run, then enabled")
+        check(out["note"] is True, "the pop-up closed for this run is remembered for it, as before (#27)")
+        wt = out["wait"]
+        check(wt["stop"] and wt["link"] and wt["steps"] and not wt["miro"],
+              f"#67: the waiting Slack row offers {messages.LABELS['stop_signin']!r} next to the fallback link (in the checklist too); a row not waiting does not ({wt})")
+        check(wt["why"] == messages.say("ai_change_signin") and wt["why"].endswith("or press Stop this sign-in on its row.") and wt["locked"] == 3,
+              f"#67: the greyed-out picker's reason says to finish it or press Stop on its row ({wt['why']!r})")
+        check(out["refused"] == ["not saved: " + messages.say("ai_change_signin")],
+              f"#67: Settings' refused Save is a Console note (not saved: …), with no error: line ({out['refused']})")
+        so = out["stopped"]
+        check(so["calls"][0] == f'/api/connect/slack/stop {{"run_id":"{out["run"]}"}}' and so["con"] == ["setup: slack stopped"]
+              and [c.split(" ")[0] for c in so["calls"]] == ["/api/connect/slack/stop", "/api/doctor"],
+              f"#67: Stop posts to /api/connect/slack/stop, once, and then checks the connections again ({so['calls']})")
+        check(out["dlg"] == {"open": True, "shown": "", "text": messages.LABELS["stop_signin"], "disabled": False}
+              and out["dlgOther"]["disabled"] is True and out["dlgOtherCalls"] == []
+              and 'id="allow_stop" onclick="allowStop()"' in page and "function allowStop(){const a=ALLOW;return a?connectStop(a.step,a.run)" in page,
+              f"#67 review: the Allow pop-up has Stop this sign-in too, calling the row's handler with the pop-up's run; for another run it is disabled and posts nothing ({out['dlg']}, {out['dlgOther']})")
+        check(not so["busy"] and so["msg"] == "" and "connectStep('slack')" in so["rows"] and "connectStop(" not in so["rows"],
+              f"...the row is back to its Connect button, with no failure sentence ({so['msg']!r})")
+        check(not so["open"] and so["note"] == "{}", f"...the pop-up is closed and that run's closed-pop-up note is gone ({so['note']})")
+        check(so["why"] == "none" and so["locked"] == 0, f"...the AI picker is free again, with no reason line ({so})")
+        check(so["toasts"] == [messages.say("connect_stopped", party="Slack")], f"...and a toast says it was stopped ({so['toasts']})")
+        check(out["after"] == {"msg": "", "busy": False, "failed": False},
+              f"the row's watcher ends on the stopped run without calling it failed ({out['after']})")
+        check(out["late"] == {"same": True, "busy": True, "run": "g2", "msg": "new"},
+              f"#67 review: a Stop's answer that arrives after the row moved on to a new run leaves the new run's row alone ({out['late']})")
+        check(out["watchStop"] == {"busy": False, "msg": "", "note": "", "calls": ["/api/doctor"]},
+              f"#67 review: a stop the watcher sees first is cleaned up by the same function: row, closed-pop-up note, a fresh check ({out['watchStop']})")
+        check("so nothing changed" not in messages.say("connect_stopped", party="Slack"),
+              "#67 review: the stop's toast does not claim nothing changed (a sign-in can finish just before Stop)")
+        check(out["watchAdopt"] == {"run": "g6", "url": "https://example.invalid/g6", "busy": True},
+              f"#67 review: the watcher finding another run on the step makes the row show that run (id and link) ({out['watchAdopt']})")
+        ad = out["adopt"]
+        check(ad["r1"] and ad["calls"] == ["/api/connect/slack/stop R1"] and ad["toasts"] == [messages.say("connect_stop_other")],
+              f"#67 review: Stop on a row still showing an ended run R1 while R2 waits: 409, in plain words ({ad})")
+        check(ad["same"] and ad["run"] and ad["busy"] and not ad["stopping"] and ad["url"] and ad["btn"],
+              f"#67 review: ...and the row now shows R2 (its id and link), with Stop ready again ({ad})")
+        check(out["adopt2"]["calls"][0] == "/api/connect/slack/stop R2" and not out["adopt2"]["busy"] and out["adopt2"]["stopped"],
+              f"#67 review: Stop again posts R2 and stops it ({out['adopt2']})")
+        check(out["gone"] == {"row": True},
+              "#67 review: a watcher whose row was removed (a change of AI) ends quietly: no TypeError, nothing written back")
+        check(out["status"]["running"] is False and out["status"].get("stopped") is True and not waiting(),
+              f"the app says the run is over (stopped), and the fake sign-in's process is gone ({out['status'].get('running')}, {out['status'].get('stopped')})")
+        check(out["once"] == [1, 1], f"#67: the Console's restart mark is written once for this app start, however often it polls ({out['once']})")
+        check(out["restart"] == ["no answer from /api/state: fetch failed", messages.LABELS["console_started"] + " (another-)"]
+              and out["back"].startswith(messages.LABELS["console_started"] + " (") and out["back"] != out["restart"][1],
+              f"#67: a new start of the app (another instance) adds the mark after the old 'no answer' lines, which are kept ({out['restart']})")
     finally:
         quit_app(port, srv)
         stop(srv)

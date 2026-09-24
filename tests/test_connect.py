@@ -384,6 +384,53 @@ if which == "agent_race":
     assert ok, why
     assert settle("login")
     assert app.connects["login"]["agent"] == "claude" and launched == [["claude", "auth", "login"]], (app.connects["login"], launched)
+if which == "stop":
+    # #67: Stop this sign-in stops that run for good: the command running is killed (mid-command) and the next never starts
+    marker = os.path.join(os.getcwd(), "second-ran")
+    agent.login_cmd = lambda step, *a: [["sleep", "30"], ["touch", marker]]
+    ok, why = app.run_connect("miro")
+    assert ok, why
+    end = time.time() + 5
+    while "miro" not in app.connect_procs and time.time() < end:
+        time.sleep(0.05)
+    rid = app.connects["miro"]["run_id"]
+    assert app.stop_connect("miro", "not-this-run")[0] == "other run" and not app.connects["miro"].get("stopped"), "a stale id stopped the run"
+    assert app.stop_connect("miro", rid)[0] == "stopped"
+    assert settle("miro", 10) and app.connects["miro"]["rc"] != 0 and not os.path.exists(marker), app.connects["miro"]
+    assert app.stop_connect("miro", rid)[0] == "not running", "a second stop found a run"
+    # ...and a Stop that lands before the worker has started its command: nothing starts afterwards
+    ready = threading.Event()
+    agent.login_cmd = lambda step, *a: (ready.wait(5), [["touch", marker]])[1]
+    ok, why = app.run_connect("gmail")
+    assert ok, why
+    assert app.stop_connect("gmail", app.connects["gmail"]["run_id"])[0] == "stopped"
+    ready.set()
+    assert settle("gmail") and not os.path.exists(marker) and not app.connect_procs, "the worker started its command after Stop"
+    last = app.connect_log("gmail").read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert last == "stopped: Stop this sign-in was pressed", "a stop before the first command left no line in the log: " + last
+    # ...and a Stop that lands BETWEEN two commands (review of #68): the first ends 0, Stop lands, the second never starts
+    first_done, go_on, real_one = threading.Event(), threading.Event(), app._connect_one
+    def one(step, argv, log, deadline):   # the real runner; after the first command it holds until the Stop has landed
+        rc = real_one(step, argv, log, deadline)
+        if argv == ["true"]:
+            first_done.set()
+            go_on.wait(5)
+        return rc
+    app._connect_one = one
+    agent.login_cmd = lambda step, *a: [["true"], ["touch", marker]]
+    ok, why = app.run_connect("slack")
+    assert ok and first_done.wait(5), why
+    assert app.connects["slack"]["running"] and not app.connect_procs, "not between the two commands"
+    assert app.stop_connect("slack", app.connects["slack"]["run_id"])[0] == "stopped"
+    go_on.set()
+    assert settle("slack") and app.connects["slack"]["rc"] == -1 and not os.path.exists(marker), app.connects["slack"]
+    last = app.connect_log("slack").read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert last == "stopped: Stop this sign-in was pressed", "a stop between commands left no line in the log: " + last
+    app._connect_one = real_one
+    # the next run of that step is a new run, not a stopped one
+    agent.login_cmd = lambda step, *a: [["true"]]
+    ok, why = app.run_connect("gmail")
+    assert ok and settle("gmail") and app.connects["gmail"]["rc"] == 0 and not app.connects["gmail"].get("stopped"), app.connects["gmail"]
 print("HARNESS OK " + which)
 '''
 
@@ -434,6 +481,8 @@ out = harness("rollback")
 check(out.endswith("HARNESS OK rollback"), f"a setup step whose start fails is not left 'already running' ({out[-300:]})")
 out = harness("agent_race")
 check(out.endswith("HARNESS OK agent_race"), f"the AI is read once at the press: a switch before the worker starts cannot run Codex under a Claude label ({out[-300:]})")
+out = harness("stop")
+check(out.endswith("HARNESS OK stop"), f"#67: Stop kills the run's command and no later command of that run starts: mid-command, before the first, between two; each logs why ({out[-300:]})")
 out = harness("quit")
 check(out.endswith("HARNESS OK quit"), f"Quit owns every setup-step process, however late it starts or ends ({out[-300:]})")
 
@@ -550,10 +599,62 @@ try:
           f"reset with an unreadable config.json refuses and deletes nothing (code {code}, state changed={state_after != state_before})")
     cfg.write_text(good, encoding="utf-8")
 
+    # #67: /api/diag reports the model of the AI chosen now: Claude's "model", Codex's "codex_model", none for Grok
+    api("/api/config", {"agent": "claude", "model": "sonnet", "codex_model": "gpt-5.6-sol"})
+    d1 = api("/api/diag")[1]
+    api("/api/config", {"agent": "codex"})
+    d2 = api("/api/diag")[1]
     # Grok: no setup buttons
     api("/api/config", {"agent": "grok"})
+    d3 = api("/api/diag")[1]
+    check((d1["agent"], d1["model"], d2["agent"], d2["model"], d3["agent"], d3["model"]) == ("claude", "sonnet", "codex", "gpt-5.6-sol", "grok", ""),
+          f"#67: /api/diag's model is the active AI's: sonnet under Claude, codex_model under Codex, none under Grok ({d1['model']!r}, {d2['model']!r}, {d3['model']!r})")
     code, out = api("/api/connect/login", {})
     check(code == 400 and "Grok" in out.get("error", ""), "with Grok selected the endpoint refuses")
+
+    # #67: Stop this sign-in stops that one waiting sign-in: its fake `claude mcp login` is gone and the status says
+    # it is over (stopped, not failed); a second Stop finds nothing running; installs are not stoppable
+    api("/api/config", {"agent": "claude"})
+    (tmp / "bin" / "hang").touch()
+    waiting = lambda: subprocess.run(["pgrep", "-f", str(tmp / "bin" / "claude") + ".*mcp login"], capture_output=True).returncode == 0
+    def start_miro():  # -> the new run's id, once its sign-in is waiting (its link printed)
+        r = api("/api/connect/miro", {})[1]
+        for _ in range(50):
+            if api("/api/connect/miro")[1].get("url"):
+                break
+            time.sleep(0.1)
+        return r.get("run_id")
+    rid = start_miro()
+    check(waiting() and api("/api/connect/miro")[1]["running"] is True, "a Miro sign-in is waiting in the browser")
+    code, out = api("/api/connect/miro/stop", {})
+    check(code == 400 and out.get("error") == "no run_id" and waiting(), f"#67 review: a Stop that names no run stops nothing (400) ({out})")
+    t = time.time()
+    code, out = api("/api/connect/miro/stop", {"run_id": rid})
+    s = api("/api/connect/miro")[1]
+    check(code == 200 and out == {"ok": True, "running": False, "run_id": rid} and time.time() - t < 8,
+          f"POST /api/connect/miro/stop answers once the run has ended ({code}, {out})")
+    check(not waiting() and s["running"] is False and s.get("stopped") is True and s["last"] == "stopped: Stop this sign-in was pressed",
+          f"...the fake claude child is gone, and the status shows running false, stopped, and why in its last line ({s})")
+    code, out = api("/api/connect/miro/stop", {"run_id": rid})
+    check(code == 200 and out == {"ok": False, "running": False, "run_id": rid, "error": "not running"}, f"a second Stop: nothing running ({out})")
+    rid2 = start_miro()
+    check(rid2 and rid2 != rid and waiting(), "the row's button starts a new run afterwards (the stop was for that run only)")
+    # #67 review: a Stop for the old run (a tab that has not polled since) lands while the new run waits: 409, in plain
+    # words, and the new run keeps running
+    code, out = api("/api/connect/miro/stop", {"run_id": rid})
+    s = api("/api/connect/miro")[1]
+    check(code == 409 and out.get("ok") is False and out.get("said") == messages.say("connect_stop_other")
+          and s["running"] is True and s["run_id"] == rid2 and not s.get("stopped") and waiting()
+          and out.get("run_id") == rid2 and out.get("url") == s["url"],
+          f"#67 review: a Stop naming an earlier run is refused (409, plain words) and the newer run keeps waiting ({code}, {out})")
+    api("/api/connect/miro/stop", {"run_id": rid2})
+    (tmp / "bin" / "hang").unlink()
+    for bad in ("install", "slack_install", "bogus"):
+        code, out = api(f"/api/connect/{bad}/stop", {"run_id": "x"})
+        check(code == 400 and out.get("ok") is False, f"#67: {bad!r} cannot be stopped from its row (400)")
+    code, _ = api("/api/connect/miro/stop", {"run_id": "x"}, origin="http://evil.example")
+    check(code == 403, "a Stop from another site is refused (403), as every POST")
+    api("/api/config", {"agent": "grok"})
 
     # quitting stops a sign-in still waiting in the browser, and the server does not wait for it
     api("/api/config", {"agent": "claude"})

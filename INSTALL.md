@@ -27,6 +27,10 @@ If you reload the page while a sign-in waits for *Allow*, the row's spinner come
 pop-up unless you closed it, in that browser tab, while that same sign-in was waiting (closing it is remembered
 for that one sign-in only: each new sign-in shows it again). A sign-in started for an AI you have since changed away from is not picked up. On a Mac the sign-in link
 comes back too; on Windows the command runs in a window of its own and Open Loops never sees the link.
+Changed your mind, or closed the *Allow* tab? **Stop this sign-in**, next to the link on the waiting row and in the
+*Allow* pop-up, stops that one sign-in: the row goes back to its button, the connections are checked again (in
+case you had already clicked *Allow*), and you can change your AI again. Installs (Claude's own, the Slack
+plugin) have no Stop: they finish, or fail, by themselves.
 If a later Claude Code renames a server, it is still found when its name keeps the usual shape (`plugin:…` or
 `claude.ai …`, naming the service), and jobs and sign-in use the name `claude mcp list` prints. A name Open Loops
 can't use (shell characters, or over 100 characters) shows as a red row saying so, never as a tick.
@@ -364,7 +368,9 @@ switch).
   **priority** select (high / normal / low, guessed by the refresh, yours once you change it) and lists can
   be sorted oldest-first or by priority.
 - A **Console** section sits at the bottom of both tabs: a timestamped record of checks, jobs and errors, with
-  *Copy*, *Copy all* (adds build, port, last check and job output from `/api/diag`) and *Clear*.
+  *Copy*, *Copy all* (adds build, port, the chosen AI and its model, last check and job output from `/api/diag`) and
+  *Clear*. The first time the page hears from a new start of Open Loops it adds one line, *— Open Loops
+  started —* with that start's id: lines above it (a "no answer" from while it was closed, say) are from before.
 - **draft chase** → warm, seniority-aware nudge appears as a draft in the same Slack DM / email thread. The card then shows *"✎ chase drafted <time>"* so you don't draft twice.
 - **done / snooze / reopen** are local only, and each one shows a toast with **Undo** for a few seconds. Snooze offers
   tomorrow / 2 days / next Monday / a week or a date. Recently-closed loops are still watched for 5 days and reopen if the

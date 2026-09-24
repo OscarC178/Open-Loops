@@ -285,6 +285,9 @@ connects = {}  # step -> {"running", "rc", "url", "started", "agent", "run_id"}
 # keys a run on (a closed Allow pop-up is remembered for one run_id); "started" is for display only (to the second).
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
 connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
+# #67: the sign-ins that wait in the browser, which the row's "Stop this sign-in" may stop. The installs (the AI's own
+# and the Slack plugin's) are left to finish: cut short they could leave a half-installed CLI, and they end by themselves.
+STOPPABLE = ("login", "slack", "gmail", "miro")
 
 
 def stop_connects():
@@ -296,10 +299,32 @@ def stop_connects():
         kill_tree(p)
 
 
-def _launch(step, *args, **kw):
-    """Popen for a setup step, registered for stop_connects() in the same breath -> Popen, or None once quitting."""
+def stop_connect(step, run_id):
+    """#67: the row's "Stop this sign-in": stop that one step's run, the one the row shows (run_id) -> (why, record).
+    why: "stopped", "not running" (it had already ended) or "other run" (it ended and another run of the step started
+    since, perhaps in another tab: that one is never stopped for it). record: the run's own connects entry, so a caller
+    waiting for it to end watches that run, not whatever holds the step by then. The run is marked "stopped" under the
+    same lock _launch checks, so a run between two commands (or not yet started) starts nothing more; the command
+    running now is killed as stop_connects() does. The worker then ends the run as usual (running false, and the log
+    says why)."""
     with connect_lock:
-        if quit_requested:
+        c = connects.get(step)
+        if not c or c.get("run_id") != run_id:
+            return ("other run" if c and c.get("running") else "not running"), c
+        if not c.get("running"):
+            return "not running", c
+        c["stopped"] = True
+        p = connect_procs.get(step)
+    if p is not None:
+        kill_tree(p)
+    return "stopped", c
+
+
+def _launch(step, *args, **kw):
+    """Popen for a setup step, registered for stop_connects() in the same breath -> Popen, or None once quitting
+    (or once this step's run was stopped from its row, #67)."""
+    with connect_lock:
+        if quit_requested or (connects.get(step) or {}).get("stopped"):
             return None
         p = connect_procs[step] = subprocess.Popen(*args, **kw)
         return p
@@ -410,7 +435,7 @@ def run_connect(step):
     log = connect_log(step)
 
     def go():
-        rc, deadline = -1, time.time() + CONNECT_TIMEOUT_S
+        rc, deadline, me = -1, time.time() + CONNECT_TIMEOUT_S, connects[step]  # me: this run's record
         try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
             url = agent.connect_url(step, who)
             if url:  # a page to open, not a command: done once the browser has it; the user presses Check again after
@@ -429,7 +454,13 @@ def run_connect(step):
         finally:
             doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
             doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
-            connects[step].update(running=False, rc=rc)
+            if me.get("stopped"):  # #67: however it was stopped (mid-command, between two, before the first, Windows),
+                try:               # the log's last line says why, for the Console and /api/diag
+                    with open(log, "a", encoding="utf-8") as f:
+                        f.write("\nstopped: Stop this sign-in was pressed\n")
+                except OSError:
+                    pass
+            me.update(running=False, rc=rc)
 
     try:  # anything failing between the claim and the worker would leave the step "already running" for good
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -585,6 +616,13 @@ def connect_status(step):
     return c
 
 
+def _diag_model():
+    """/api/diag's "model" (#67): the model the jobs run on now, as agent.model() reads it for the chosen AI, so Codex
+    reports codex_model rather than Claude's "sonnet". Grok ignores both keys: ""."""
+    from . import agent
+    return "" if agent.name() == "grok" else agent.model()
+
+
 def test_copy():
     """Whether this install is a test copy: config.json "test_copy" (install.sh --dest --no-app --no-task) or an isolated
     one (#36). Such a copy has no Desktop or Applications icon, so the page's "not running" banner names the command."""
@@ -597,7 +635,8 @@ def index_bytes(table=None):
     its own "not running" fix, #50), escaped for an inline <script>."""
     return (INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
             # a failed card click's verb ("Couldn't snooze that", #64)
-            .replace(b"/*OL_ACTION_FAILED*/{}", messages.page_action_failed_json().encode("utf-8"), 1))
+            .replace(b"/*OL_ACTION_FAILED*/{}", messages.page_action_failed_json().encode("utf-8"), 1)
+            .replace(b"/*OL_LABELS*/{}", messages.page_json(WIN, messages.LABELS).encode("utf-8"), 1))  # #67: button names, Console marks
 
 
 class H(BaseHTTPRequestHandler):
@@ -673,7 +712,9 @@ class H(BaseHTTPRequestHandler):
             self._json({"app": "openloops",   # identity: install.sh only asks a server to quit if this is here and root matches
                         "python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
-                        "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
+                        # #67: the active AI's model (Codex: codex_model); Grok takes none, so none is reported
+                        "up_since": STARTED, "agent": c.get("agent") or "claude",
+                        "model": _diag_model(),
                         "isolated": isolated(),   # #36: a test copy that reads no to-do file and starts no scan by itself
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
                         "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
@@ -829,6 +870,23 @@ class H(BaseHTTPRequestHandler):
                     else messages.say("install_busy", ai=agent.display_name(busy)) if why == "already running" else "")
             rid = (connects.get(agent.INSTALL_STEP) or {}).get("run_id", "") if started or why == "already running" else ""
             return self._json({"started": started, "run_id": rid, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
+        if self.path.startswith("/api/connect/") and self.path.endswith("/stop"):  # #67: the row's Stop this sign-in
+            step = self.path[len("/api/connect/"):-len("/stop")]
+            if step not in STOPPABLE:  # an install, or not a step at all: nothing here stops it
+                return self._json({"ok": False, "error": "not a sign-in that can be stopped"}, 400)
+            rid = str(body.get("run_id") or "")
+            if not rid:  # the page sends the run it shows; nothing else is stopped on its behalf
+                return self._json({"ok": False, "error": "no run_id"}, 400)
+            why, c = stop_connect(step, rid)
+            if why == "other run":  # the run the row showed is over, and another has started since: left alone
+                # ...with the run that holds the step now, so the row can show it and a second Stop targets it
+                return self._json({"ok": False, "error": why, "running": True, "said": messages.say("connect_stop_other"),
+                                   "run_id": c.get("run_id", ""), "url": c.get("url", ""), "started": c.get("started")}, 409)
+            end = time.time() + 8  # kill_tree waits up to 3 s, the worker's reap up to 5 s: answer once it has ended
+            while why == "stopped" and c.get("running") and time.time() < end:  # this run's own record, not the step's
+                time.sleep(0.1)
+            return self._json({"ok": why == "stopped", "running": bool(c and c.get("running")), "run_id": (c or {}).get("run_id", ""),
+                               **({} if why == "stopped" else {"error": why})})
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)
