@@ -181,7 +181,9 @@ fi
 if [ "$SRC" = "$DEST" ]; then
     say "Already installed here - updating."
 else
-    say "Installing Open Loops to $DEST ..."
+    # The folder is printed once per run (#60): here, unless the "Start this copy with" command at the end (a copy with
+    # no app, --no-app or --isolated) is going to name it anyway.
+    if [ "$NO_APP" -eq 1 ]; then say "Installing Open Loops..."; else say "Installing Open Loops to $DEST ..."; fi
     mkdir -p "$DEST"
     # Personal files are never copied over: the list, settings, tone, logs, the Grok project config the
     # person may have edited (.grok), a Google OAuth client they downloaded, and anything private.
@@ -303,7 +305,7 @@ else PORT_FROM="port in its config.json"; fi
 # Why a step was skipped, in the words the person typed: --isolated is "test copy", not the flags it implies (#56)
 if [ "$ISOLATED" -eq 1 ]; then SKIP_APP="test copy"; SKIP_TASK="test copy"; else SKIP_APP="--no-app"; SKIP_TASK="--no-task"; fi
 if [ "$ISOLATED" -eq 1 ]; then
-    ok "Isolated test copy: it reads no to-do file and starts no scan until you press Start the first scan"
+    ok "Isolated test copy: it reads no to-do file and starts no scan until you press \"Start the first scan\""
 fi
 
 # ---------- 4. App with logo (Dock + Desktop) ----------
@@ -354,7 +356,7 @@ fi
 
 # ---------- 6. Open it ----------
 if [ "$NO_LAUNCH" -eq 1 ]; then
-    ok "Installed in $DEST (--no-launch: not started)"
+    ok "Not started (--no-launch)"   # the folder was already named above, or is in the start command below (#60)
 else
     say "Opening Open Loops - it will guide you through connecting Slack and email."
     cd "$DEST"
@@ -369,5 +371,7 @@ if [ "$NO_APP" -eq 1 ]; then
     echo "  It opens at http://localhost:$SHOW_PORT (the $PORT_FROM; the next free port if that one is taken)"
 fi
 echo ""
-echo "  Done. You can close this window."
+# Just "Done." (#60): this is often a terminal the person keeps using. "Open Loops.command", the double-click
+# wrapper that opens a window of its own, says the window can be closed.
+echo "  Done."
 echo ""

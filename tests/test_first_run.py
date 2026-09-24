@@ -18,7 +18,8 @@ So a pass means the served page, the app and the jobs agree, not that a copy of 
      still starts it. The same install without the mark does read the to-do file (so the check means something).
   4. install.sh --isolated: writes "isolated" and "test_copy", no app and no launchd job, the first-scan cursor is
      history_days back (not a week); a re-run without it takes the mark off. Over an old ~/Documents install it
-     copies without sending anything to a port (the stub curl logs nothing). setup.ps1 -Isolated: static check.
+     copies without sending anything to a port (the stub curl logs nothing). It names its folder once and ends with a
+     plain "Done." (#60). setup.ps1 -Isolated: static check.
   5. #49: a job that fails within a second (signed out) is in /api/state with its sentence and a new seq within
      3 s; the page, set up and idle on its 60 s poll, shows that sentence, logs it in the Console and re-checks,
      which brings back Sign in, with "Knows who you are on Slack" unticked and "At least one source" saying sign in
@@ -1238,6 +1239,9 @@ try:
     check("Start this copy with:" in r.stdout and f'cd "{dest}" && python3 -m openloops.app --port 8790' in r.stdout
           and "http://localhost:8790 (the --port you gave" in r.stdout and "Your first name: Test (used so messages sound like you)" in r.stdout,
           f"#56: the output gives the start command, the address with its port, and the --name ({r.stdout[-260:]!r})")
+    check(r.stdout.count(str(dest)) == 1 and r.stdout.rstrip().endswith("Done.") and "close this window" not in r.stdout
+          and "Not started (--no-launch)" in r.stdout,
+          f"#60: the folder is printed once (in the start command), and the run ends with a plain \"Done.\" ({r.stdout!r})")
     cursor = datetime.fromisoformat(json.loads((dest / "state.json").read_text(encoding="utf-8"))["cursor"])
     want = datetime.now().astimezone() - timedelta(days=30)
     check(abs((cursor - want).total_seconds()) < 600, f"the first-scan cursor is history_days (30) back, as the page says, not a week ({cursor})")

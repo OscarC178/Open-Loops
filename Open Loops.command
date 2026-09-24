@@ -22,3 +22,5 @@ fi
 echo "Installing Open Loops..."
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "$DIR/install.sh"
+echo "  You can close this window."   # install.sh says only "Done.": this window was opened by the double-click (#60)
+echo ""
