@@ -208,6 +208,11 @@ FAILURES = {
         "what": "The sign-in finished, but {party} still doesn't show as connected.",
         "fix": "Press the button again, and make sure you click Allow in your browser.",
         "button": None},
+    # #67: the toast once Stop this sign-in has stopped a waiting sign-in. {party}: who the sign-in was with
+    "connect_stopped": {
+        "what": "The {party} sign-in was stopped, so nothing changed.",
+        "fix": "Press its button again whenever you are ready.",
+        "button": None},
     "connect_timeout": {
         "what": "Open Loops stopped waiting for your browser after 5 minutes.",
         "fix": "Press the button again when you're ready to sign in.",
@@ -467,11 +472,13 @@ FAILURES = {
     # Why the set-up page's AI picker is greyed out (#62), in the line under it; Settings refuses a change of AI with
     # the same sentence while a sign-in or install runs. {ai}: the AI being installed, or the one the job runs with.
     # Closing the Allow pop-up does not stop the sign-in (it keeps waiting in the browser), so the fix names what does:
-    # finishing it, or quitting Open Loops, which stops every setup step still waiting (review of #65).
+    # finishing it, or the row's Stop this sign-in (LABELS["stop_signin"], #67; it was "quit Open Loops" before).
     "ai_change_signin": {
         "what": "A sign-in is still waiting for you in your browser.",
-        "fix": "Finish it there first, then you can change your AI; to stop it instead, quit Open Loops and open it again.",
+        "fix": "Finish it there first, or press Stop this sign-in on its row.",
         "button": None},
+    # The installs below are not stoppable from their row (app.py STOPPABLE): cut short, a half-installed CLI is worse
+    # than the wait, and they end by themselves. So their fix is to wait, and no Stop is offered (#67).
     # the Slack plugin's install (slack_install): nothing to do in the browser, it finishes by itself
     "ai_change_plugin": {
         "what": "Open Loops is still installing the Slack plugin.",
@@ -527,6 +534,16 @@ ACTION_FAILED = {
     "auto_off": "Couldn't turn auto-chase off",
     "auto_on": "Couldn't turn auto-chase on",
     "other": "Couldn't save that",
+}
+
+# Words on the page that are not sentences (#67): a button's name, a Console mark. The page gets this table as LABEL,
+# next to MSG. "stop_signin" is named in ai_change_signin's fix, so the two must match (tests/test_messages.py).
+LABELS = {
+    "stop_signin": "Stop this sign-in",
+    "stopping": "Stopping…",
+    # one Console line where a new start of the app begins: the lines above it (a "no answer" while it was not
+    # running, say) are from before, and are kept
+    "console_started": "— Open Loops started —",
 }
 
 # What each job is called in a sentence (the page's toasts and app.py's job_failure()).

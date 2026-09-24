@@ -27,6 +27,9 @@ If you reload the page while a sign-in waits for *Allow*, the row's spinner come
 pop-up unless you closed it, in that browser tab, while that same sign-in was waiting (closing it is remembered
 for that one sign-in only: each new sign-in shows it again). A sign-in started for an AI you have since changed away from is not picked up. On a Mac the sign-in link
 comes back too; on Windows the command runs in a window of its own and Open Loops never sees the link.
+Changed your mind, or closed the *Allow* tab? **Stop this sign-in**, next to the link on the waiting row, stops that
+one sign-in: the row goes back to its button and you can change your AI again. Installs (Claude's own, the Slack
+plugin) have no Stop: they finish, or fail, by themselves.
 If a later Claude Code renames a server, it is still found when its name keeps the usual shape (`plugin:…` or
 `claude.ai …`, naming the service), and jobs and sign-in use the name `claude mcp list` prints. A name Open Loops
 can't use (shell characters, or over 100 characters) shows as a red row saying so, never as a tick.

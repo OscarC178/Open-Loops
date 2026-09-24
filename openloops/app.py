@@ -285,6 +285,9 @@ connects = {}  # step -> {"running", "rc", "url", "started", "agent", "run_id"}
 # keys a run on (a closed Allow pop-up is remembered for one run_id); "started" is for display only (to the second).
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
 connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
+# #67: the sign-ins that wait in the browser, which the row's "Stop this sign-in" may stop. The installs (the AI's own
+# and the Slack plugin's) are left to finish: cut short they could leave a half-installed CLI, and they end by themselves.
+STOPPABLE = ("login", "slack", "gmail", "miro")
 
 
 def stop_connects():
@@ -296,10 +299,27 @@ def stop_connects():
         kill_tree(p)
 
 
-def _launch(step, *args, **kw):
-    """Popen for a setup step, registered for stop_connects() in the same breath -> Popen, or None once quitting."""
+def stop_connect(step):
+    """#67: the row's "Stop this sign-in": stop that one step's run -> True if it was running. The run is marked
+    "stopped" under the same lock _launch checks, so a run between two commands (or not yet started) starts nothing
+    more; the command running now is killed as stop_connects() does. The worker then ends the run as usual (running
+    false, and the log says why)."""
     with connect_lock:
-        if quit_requested:
+        c = connects.get(step)
+        if not c or not c.get("running"):
+            return False
+        c["stopped"] = True
+        p = connect_procs.get(step)
+    if p is not None:
+        kill_tree(p)
+    return True
+
+
+def _launch(step, *args, **kw):
+    """Popen for a setup step, registered for stop_connects() in the same breath -> Popen, or None once quitting
+    (or once this step's run was stopped from its row, #67)."""
+    with connect_lock:
+        if quit_requested or (connects.get(step) or {}).get("stopped"):
             return None
         p = connect_procs[step] = subprocess.Popen(*args, **kw)
         return p
@@ -387,6 +407,8 @@ def _connect_one(step, argv, log, deadline):
     finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
         os.close(m)
         rc = _reap(step, p, 5)
+    if not tail and connects[step].get("stopped"):  # #67: the Console and /api/diag say why it ended
+        tail = "\nstopped: Stop this sign-in was pressed\n"
     if tail:
         with open(log, "a", encoding="utf-8") as f:
             f.write(tail)
@@ -604,7 +626,8 @@ def index_bytes(table=None):
     its own "not running" fix, #50), escaped for an inline <script>."""
     return (INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
             # a failed card click's verb ("Couldn't snooze that", #64)
-            .replace(b"/*OL_ACTION_FAILED*/{}", messages.page_action_failed_json().encode("utf-8"), 1))
+            .replace(b"/*OL_ACTION_FAILED*/{}", messages.page_action_failed_json().encode("utf-8"), 1)
+            .replace(b"/*OL_LABELS*/{}", messages.page_json(WIN, messages.LABELS).encode("utf-8"), 1))  # #67: button names, Console marks
 
 
 class H(BaseHTTPRequestHandler):
@@ -838,6 +861,16 @@ class H(BaseHTTPRequestHandler):
                     else messages.say("install_busy", ai=agent.display_name(busy)) if why == "already running" else "")
             rid = (connects.get(agent.INSTALL_STEP) or {}).get("run_id", "") if started or why == "already running" else ""
             return self._json({"started": started, "run_id": rid, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
+        if self.path.startswith("/api/connect/") and self.path.endswith("/stop"):  # #67: the row's Stop this sign-in
+            step = self.path[len("/api/connect/"):-len("/stop")]
+            if step not in STOPPABLE:  # an install, or not a step at all: nothing here stops it
+                return self._json({"ok": False, "error": "not a sign-in that can be stopped"}, 400)
+            ok = stop_connect(step)
+            end = time.time() + 8  # kill_tree waits up to 3 s, the worker's reap up to 5 s: answer once it has ended
+            while ok and (connects.get(step) or {}).get("running") and time.time() < end:
+                time.sleep(0.1)
+            return self._json({"ok": ok, "running": bool((connects.get(step) or {}).get("running")),
+                               **({} if ok else {"error": "not running"})})
         if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
             step = self.path.rsplit("/", 1)[1]
             started, why = run_connect(step)

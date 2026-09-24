@@ -147,7 +147,7 @@ def page_js(port, session, scenario, tmp):
         "async function loadDaylog(){}async function loadRm(){}function agentUI(){}const PAGE='t';let stopped=false;",
         "async function connectReattach(){return true}function reattachSweep(){}",   # the Setup-buttons section is not cut in here (#27 is tested in 7k, #62 in 7l)
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
-        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
+        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const LABEL="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
         cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="), grab("function msgFollow("),
         grab("const CONNECT_LABEL="), grab("const AI_NAME="), grab("function setupBtn("), grab("function msgBusy("), "const CONN={};",
@@ -650,7 +650,7 @@ def setup_js(port, scenario, tmp, session=None):
         "function renderLists(){}function paintVoice(){}function banner(){}function appDown(e){CON.push('appDown '+e)}function paintDaylog(){}function paintRm(){}",
         "function paintForm(){}async function loadDaylog(){}async function loadRm(){}function agentUI(){}function agentFormUI(){}const PAGE='t';let stopped=false;",
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
-        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
+        grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const LABEL="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
         cut("let formPainted=false;", "\n\n// ---------- data"),
         cut("async function loadState(", "async function loadCfg("), grab("async function loadCfg("), grab("const agentLabel="),
@@ -1195,8 +1195,8 @@ if NODE:
               f"#62: while the sign-in waits, the greyed-out picker says why, in plain words from messages.py ({out['why']})")
         check(out["whyPlugin"] == messages.say("ai_change_plugin"),
               f"review of #65: the Slack plugin's install is not called a sign-in waiting in the browser ({out['whyPlugin']})")
-        check("close" not in messages.say("ai_change_signin") and "quit Open Loops" in messages.say("ai_change_signin"),
-              "review of #65: the sentence does not promise that closing the pop-up frees the AI choice (the run keeps waiting)")
+        check("close" not in messages.say("ai_change_signin") and messages.LABELS["stop_signin"] in messages.say("ai_change_signin"),
+              "review of #65, #67: the sentence does not promise that closing the pop-up frees the AI choice; it names the row's Stop")
         s = out["settings"]
         check(s["calls"] == [] and s["toasts"] == [messages.say("ai_change_signin")] and s["said"] == "not saved: " + messages.say("ai_change_signin")
               and s["agent"] == "claude" and s["cfg"] == "claude",
@@ -1247,6 +1247,54 @@ if NODE:
                               "all ok (Miro optional, not connected; Gmail optional, unavailable to Open Loops)", "all ok"],
               f"#62: the Console's 'all ok' names an optional source whose row is red (Connect or alert), not a green or grey one, "
               f"nor a red row that is not a source ({out['head']})")
+    finally:
+        quit_app(port, srv)
+        stop(srv)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 7m. #67: Stop this sign-in. A Slack sign-in pressed on the page waits (the fake `claude mcp login` on a terminal);
+    # its row offers Stop next to the fallback link, and the picker's reason says to press it. Stop posts to the app, which kills the fake child: the row is back to its button,
+    # the pop-up closed, that run's closed-pop-up note gone, the picker free, and the watcher ends without a failure.
+    tmp = setup_install("openloops-setup-stop-")
+    (tmp / "bin" / "signin_secs").write_text("600")   # waits until stopped (or the app quits), never on a timer
+    srv, port = start_app(tmp, setup_env(tmp))
+    waiting = lambda: subprocess.run(["pgrep", "-f", str(tmp / "bin" / "claude") + ".*mcp login"], capture_output=True).returncode == 0
+    try:
+        out = setup_js(port, SWEEP_JS + """
+ await boot();await tick();const started=CON.filter(l=>l===LABEL.console_started).length;
+ const w=connectStep('slack');await until(()=>CONN.slack&&CONN.slack.busy&&CONN.slack.url,20000);
+ const run=CONN.slack.run;allowDismiss();out.note=JSON.parse(SS['ol.allowDismissed']||'{}').slack===run;
+ allowOpen('slack',run);paintSetup(stage());   // the pop-up open again, as a reload would bring it back
+ const rows=$('#su_src_rows').innerHTML;
+ out.wait={stop:rows.includes(`<button onclick="connectStop('slack')">${LABEL.stop_signin}</button>`),link:rows.includes('Open the sign-in page'),
+  why:$('#su_ai_why').textContent,locked:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length,
+  steps:$('#setup_steps').innerHTML.includes("connectStop('slack')"),miro:rows.includes("connectStop('miro')")};
+ const n=CALLS.length;await connectStop('slack');
+ out.stopped={calls:CALLS.slice(n),busy:!!(CONN.slack&&CONN.slack.busy),msg:(CONN.slack||{}).msg||'',open:$('#allow_dlg').open,
+  note:SS['ol.allowDismissed'],rows:$('#su_src_rows').innerHTML,why:$('#su_ai_why').style.display,
+  locked:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length,toasts:TOASTS.slice(-1),con:CON.slice(-1)};
+ await Promise.race([w,sleep(8000).then(()=>{throw new Error('the watcher did not end after Stop')})]);
+ out.after={msg:(CONN.slack||{}).msg||'',busy:!!(CONN.slack&&CONN.slack.busy),failed:CON.some(l=>l.startsWith('setup: slack finished'))};
+ out.status=await (await realFetch(BASE+'/api/connect/slack')).json();
+""", tmp)
+        check(out["note"] is True, "the pop-up closed for this run is remembered for it, as before (#27)")
+        wt = out["wait"]
+        check(wt["stop"] and wt["link"] and wt["steps"] and not wt["miro"],
+              f"#67: the waiting Slack row offers {messages.LABELS['stop_signin']!r} next to the fallback link (in the checklist too); a row not waiting does not ({wt})")
+        check(wt["why"] == messages.say("ai_change_signin") and wt["why"].endswith("or press Stop this sign-in on its row.") and wt["locked"] == 3,
+              f"#67: the greyed-out picker's reason says to finish it or press Stop on its row ({wt['why']!r})")
+        so = out["stopped"]
+        check(so["calls"] == ["/api/connect/slack/stop {}"] and so["con"] == ["setup: slack stopped"],
+              f"#67: Stop posts to /api/connect/slack/stop, once ({so['calls']})")
+        check(not so["busy"] and so["msg"] == "" and "connectStep('slack')" in so["rows"] and "connectStop(" not in so["rows"],
+              f"...the row is back to its Connect button, with no failure sentence ({so['msg']!r})")
+        check(not so["open"] and so["note"] == "{}", f"...the pop-up is closed and that run's closed-pop-up note is gone ({so['note']})")
+        check(so["why"] == "none" and so["locked"] == 0, f"...the AI picker is free again, with no reason line ({so})")
+        check(so["toasts"] == [messages.say("connect_stopped", party="Slack")], f"...and a toast says it was stopped ({so['toasts']})")
+        check(out["after"] == {"msg": "", "busy": False, "failed": False},
+              f"the row's watcher ends on the stopped run without calling it failed ({out['after']})")
+        check(out["status"]["running"] is False and out["status"].get("stopped") is True and not waiting(),
+              f"the app says the run is over (stopped), and the fake sign-in's process is gone ({out['status'].get('running')}, {out['status'].get('stopped')})")
     finally:
         quit_app(port, srv)
         stop(srv)

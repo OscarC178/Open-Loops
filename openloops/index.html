@@ -440,6 +440,8 @@ const PAGE=Math.random().toString(36).slice(2)+Date.now().toString(36);let stopp
 const MSG=/*OL_MESSAGES*/{};
 // A card click the app could not save: "Couldn't snooze that: <why>" (messages.py ACTION_FAILED, #64)
 const ACT_FAILED=/*OL_ACTION_FAILED*/{};
+// messages.py LABELS (#67): words that are not sentences (a button's name, a Console mark), filled in the same way
+const LABEL=/*OL_LABELS*/{};
 const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
 function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
 function msgFollow(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_follow&&f&&f.row?' '+fill(m.fix_follow,f):''):''}   // "what" + "follow the <row> row": for a row with no button
@@ -685,9 +687,14 @@ function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!
  const shown=c.busy&&c.command?c.command:s.command;   // while it runs: the command the app captured for this run, not what the row says now
  // shown before the press (nothing runs unseen), folded away: a non-technical user needs the button, not the shell (#25)
  const cmd=shown?`<details class="sub" style="margin-top:4px"${CMD_OPEN[s.connect]?' open':''} ontoggle="CMD_OPEN['${s.connect}']=this.open"><summary>Show the exact command${c.busy?' that is running':''}</summary><code style="display:block;white-space:pre-wrap;word-break:break-all">${esc(shown)}</code></details>`:'';
- if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}</div>${cmd}`;
+ // #67: a sign-in waiting in the browser can be stopped from its row (not an install: app.py STOPPABLE)
+ const stop=canStop(s.connect)?` <button onclick="connectStop('${s.connect}')"${c.stopping?' disabled':''}>${esc(c.stopping?LABEL.stopping:LABEL.stop_signin)}</button>`:'';
+ if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}${stop}</div>${cmd}`;
  const label=s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect];   // the same row identity the press sends
  return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
+// #67: which rows offer Stop this sign-in: a sign-in waiting in the browser (app.py STOPPABLE), not Codex's Gmail / Slack
+// (a page that opens and is done) and not an install (left to finish)
+const canStop=step=>['login','slack','gmail','miro'].includes(step)&&!pageStep(step);
 const CMD_OPEN={};   // which rows have "Show the exact command" open: the rows are repainted on every tick
 const PARTY=step=>({login:(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),slack:'Slack',slack_install:'Slack',gmail:'Google',miro:'Miro'})[step]||agentLabel();   // who the sign-in is with
 const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
@@ -706,6 +713,14 @@ async function connectStep(step){
  // the app has said which run it is, so a closed pop-up is remembered for that run and no other
  if(ALLOW_ROW[step]&&CONN[step]&&CONN[step].busy)allowOpen(step,rid);
  return connectWatch(step,row)}
+// #67: Stop this sign-in. The app stops that one run and answers once it has ended; the row goes back to its button,
+// the pop-up (if open for it) closes, this run's closed-pop-up note goes, and the AI picker unlocks with the repaint.
+async function connectStop(step){const c=CONN[step];if(!c||!c.busy||c.stopping)return;const run=c.run||'';c.stopping=true;repaint();
+ try{const r=await api('/api/connect/'+step+'/stop',{});clog('setup: '+step+(r.ok?' stopped':' was not running'));
+  if(r.running){c.stopping=false;repaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
+  CONN[step]={};if(ALLOW&&ALLOW.step===step)allowClose();if(run)allowClosedEnd(step,run);repaint();
+  if(r.ok)toast(msg('connect_stopped',{party:PARTY(step)}))}
+ catch(e){if(CONN[step]===c){c.stopping=false;repaint()}toast(errSaid(e),{err:true})}}
 // Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
 // row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload.
 async function connectWatch(step,row){const inst=step==='install',run=(CONN[step]&&CONN[step].run)||'';try{   // finally: this run is over, forget a pop-up closed for it (only it)
@@ -716,6 +731,7 @@ async function connectWatch(step,row){const inst=step==='install',run=(CONN[step
   if(inst&&s.running&&(s.agent!==CONN[step].agent||s.command!==CONN[step].command)){Object.assign(CONN[step],{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
   if(inst&&s.running&&s.last&&s.last!==CONN[step].last){CONN[step].last=s.last;clog('install: '+s.last)}   // raw progress: Console only
   if(s.running)continue;
+  if(s.stopped){if(!CONN[step]||!CONN[step].busy||CONN[step].run===s.run_id){CONN[step]={};repaint()}return}   // #67: stopped, not failed
   clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
   if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
    CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
