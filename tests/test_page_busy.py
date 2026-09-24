@@ -18,7 +18,7 @@ node with a stub DOM and a stub fetch. Checks:
 import json, os, re, shutil, subprocess, sys, time
 from pathlib import Path
 
-from _helpers import isolate_this_process
+from _helpers import isolate_this_process, run_node
 isolate_this_process("openloops-pagebusy-")   # importing app writes config/state into a throwaway copy
 from openloops import app, doctor, messages  # noqa: E402
 
@@ -50,7 +50,7 @@ def node(parts, scenario):
     """Run the page parts plus a scenario in node -> the scenario's `out` object."""
     js = "\n".join(parts + ["(async()=>{const out={};try{" + scenario + "}catch(e){out.error=String(e&&e.stack||e)}"
                             "console.log(JSON.stringify(out));process.exit(0)})();"])
-    r = subprocess.run([NODE, "-e", js], capture_output=True, text=True, timeout=60)
+    r = run_node(js)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"FAIL: node could not run the page's code: {r.stderr.strip()[-800:]}")
     out = json.loads(r.stdout.strip().split("\n")[-1])   # split on newlines only: the output may hold U+2028

@@ -1,6 +1,6 @@
 """Shared by the tests: a throwaway install with its own HOME, and the app started on a port of its own.
 
-    from _helpers import fresh_install, isolated_env, start_app, stop
+    from _helpers import fresh_install, isolated_env, run_node, start_app, stop
 
 Nothing here touches the developer's files or ports. The install is a temp folder built from
 config.template.json, HOME points at an empty folder inside it (so nothing is read from the real ~), and the
@@ -187,6 +187,20 @@ def start_app(cwd, env=None, extra_args=(), port=None, port_arg=False, tries=5, 
         stop(p)
         print(f"(openloops.app did not come up as ours from port {want}: {p.lines[-3:]}; trying again)", flush=True)
     raise SystemExit("FAIL: openloops.app did not come up on a port of its own")
+
+
+def run_node(js, timeout=60, check=False):
+    """Run JavaScript in node -> CompletedProcess (stdout and stderr as text). The code goes in a script file, never
+    `node -e`: the page's code is far longer than a Windows command line may be (WinError 206). utf-8 both ways,
+    whatever the console's code page (a piped stdout is cp1252 on Windows, and node writes utf-8)."""
+    node = shutil.which("node")
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+        f.write(js)
+    try:
+        return subprocess.run([node, f.name], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, check=check)
+    finally:
+        os.unlink(f.name)
 
 
 def stop(p):

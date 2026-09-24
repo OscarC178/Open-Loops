@@ -40,7 +40,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from openloops import messages  # noqa: E402  (the wording table only; importing it writes nothing)
-from _helpers import fresh_install, isolated_env, start_app, stop  # noqa: E402
+from _helpers import fresh_install, isolated_env, run_node, start_app, stop  # noqa: E402
 
 t0 = time.time()
 
@@ -176,7 +176,7 @@ const snap=()=>({stage:stage(),shown:shown(),jobs:jobCalls(),said:$('#start_said
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);out.SS=SS;console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
-    r = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=300)
+    r = run_node("\n".join(parts), timeout=300)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"FAIL: node could not run the page's setup code: {r.stderr.strip()[-800:]}")
     out = json.loads(r.stdout.strip().splitlines()[-1])
@@ -703,7 +703,7 @@ const view=()=>({stage:stage(),setup:$('#setup').style.display,lists:$('#lists')
 (async()=>{const out={};try{""" + scenario + """}catch(e){out.error=String(e&&e.stack||e)}
  stopped=true;clearTimeout(loopT);clearInterval(allowT);console.log(JSON.stringify(out));process.exit(0)})();""",
     ]
-    r = subprocess.run([NODE, "-e", "\n".join(parts)], capture_output=True, text=True, timeout=300)
+    r = run_node("\n".join(parts), timeout=300)
     if r.returncode != 0 or not r.stdout.strip():
         raise SystemExit(f"FAIL: node could not run the page's Set-up code: {r.stderr.strip()[-800:]}")
     out = json.loads(r.stdout.strip().splitlines()[-1])

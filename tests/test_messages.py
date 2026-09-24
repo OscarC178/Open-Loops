@@ -18,7 +18,8 @@ import json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-from _helpers import fresh_install, isolate_this_process, isolated_env, start_app, stop, wait_until  # noqa: E402
+from _helpers import fresh_install, isolate_this_process, isolated_env, run_node, start_app, stop, wait_until  # noqa: E402
+REAL_PROFILE = os.environ.get("USERPROFILE", "")  # before isolation: headless Chrome (the layout check) needs the real one
 isolate_this_process("openloops-messages-parent-")
 from openloops import agent, messages  # noqa: E402
 from openloops.messages import FAILURES, say  # noqa: E402
@@ -428,7 +429,7 @@ try:
 finally:
     stop(srv)
     shutil.rmtree(tmp, ignore_errors=True)
-m = re.search(r"^const MSG=(.*);$", html, re.M)
+m = re.search(r"^const MSG=(.*);\r?$", html, re.M)  # \r?: index.html has CRLF line ends in a Windows checkout (autocrlf)
 check(m and "/*OL_MESSAGES*/" not in html, "the app fills in the page's failure table as it serves it")
 # #50: the table is per install: a test copy's page names the command that starts it, not the icon it does not have
 for how, conf, extra in (("test_copy", {"test_copy": True}, {}), ("isolated (env)", {}, {"OPENLOOPS_ISOLATED": "1"})):
@@ -437,7 +438,7 @@ for how, conf, extra in (("test_copy", {"test_copy": True}, {}), ("isolated (env
     try:
         srv_tc, port_tc = start_app(tc, isolated_env(tc, BROWSER="true", **extra))
         with urllib.request.urlopen(f"http://127.0.0.1:{port_tc}/", timeout=10) as r:
-            tc_msg = json.loads(re.search(r"^const MSG=(.*);$", r.read().decode("utf-8"), re.M).group(1))
+            tc_msg = json.loads(re.search(r"^const MSG=(.*);\r?$", r.read().decode("utf-8"), re.M).group(1))
     finally:
         stop(srv_tc)
         shutil.rmtree(tc, ignore_errors=True)
@@ -446,7 +447,7 @@ for how, conf, extra in (("test_copy", {"test_copy": True}, {}), ("isolated (env
 served = json.loads(m.group(1))
 # #67: the labels table (button names, Console marks) is filled in the same way; the Stop button's name is the one the
 # picker's reason line tells you to press, and nothing on the page spells it out by hand
-lab = re.search(r"^const LABEL=(.*);$", html, re.M)
+lab = re.search(r"^const LABEL=(.*);\r?$", html, re.M)
 check(lab and "/*OL_LABELS*/" not in html and json.loads(lab.group(1)) == messages.LABELS,
       "#67: the app fills in the page's labels table (messages.LABELS) as it serves it")
 check(messages.LABELS["stop_signin"] in messages.say("ai_change_signin") and "quit" not in messages.say("ai_change_signin")
@@ -505,11 +506,17 @@ check("st==='ready'||scanned()||(setupDone()&&(st==='connect'||st==='checkfail')
 # #52 review: toasts never lie over a checklist row, at 400 px and at 1280 px, even with more arriving than the cap.
 # Layout needs a real browser: headless Chrome renders the served page from a file (the app is not needed: the check
 # paints the checklist itself), then measures every .row against every toast.
-import pwd  # noqa: E402
 def find_chrome():
-    home = Path(pwd.getpwuid(os.getuid()).pw_dir) if hasattr(os, "getuid") else Path.home()   # HOME is a temp folder here
+    if hasattr(os, "getuid"):  # the real home, not this test's temp HOME; pwd is not a Windows module (#27 review)
+        import pwd  # noqa: E402
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    else:  # Windows: a temp folder here too, but Chrome's own spots below come from folders isolation leaves alone
+        home = Path.home()
     names = [os.environ.get("CHROME_BIN") or ""] + [shutil.which(n) or "" for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")]
     names += ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"]
+    for pf in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")):
+        if pf:  # Windows: Chrome's usual folders (per-machine and per-user)
+            names.append(str(Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe"))
     names += [str(x) for x in sorted((home / ".agent-browser" / "browsers").glob("**/Google Chrome for Testing"))]
     return next((n for n in names if n and Path(n).is_file() and os.access(n, os.X_OK)), "")
 chrome = find_chrome()
@@ -553,8 +560,11 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
             (work / "page.html").write_text(html.replace("</body>", LAYOUT + "</body>"), encoding="utf-8")
             wait_ = ("new Promise(r=>{const f=()=>document.body.getAttribute('data-layout')?r(document.body.getAttribute('data-layout'))"
                      ":setTimeout(f,100);f()})")
+            # Chrome on Windows never opens its DevTools port with USERPROFILE pointed away from the user's profile; the
+            # page is a file and the app takes no part here, so the browser gets the real one back
+            env_ = dict(os.environ, USERPROFILE=REAL_PROFILE) if REAL_PROFILE else None
             rc_ = subprocess.run([node_, str(REPO / "tests" / "_chrome_layout.js"), chrome, (work / "page.html").as_uri(), str(w_), wait_],
-                                 capture_output=True, text=True, timeout=120)
+                                 capture_output=True, text=True, timeout=120, env=env_)
         finally:
             shutil.rmtree(work, ignore_errors=True)
         try:
@@ -635,10 +645,10 @@ JS = "\n".join([
  out.local=errSaid(localErr('pick a date'));out.bare=errSaid(new Error('boom -> 500 {"x":1}'));
  try{await (async()=>{throw localErr('already pinned')})()}catch(e){out.pinned=errSaid(e)}
  console.log(JSON.stringify(out))})();"""])
-r2 = subprocess.run([node, "-e", msg_line + "\nconsole.log(JSON.stringify(MSG.server_offline.what))"], capture_output=True, text=True, timeout=30)
+r2 = run_node(msg_line + "\nconsole.log(JSON.stringify(MSG.server_offline.what))", timeout=30)
 check(r2.returncode == 0 and json.loads(r2.stdout) == NASTY,
       f"...and JavaScript reads it back exactly: quotes, backslashes, <!--, & and U+2028 intact ({r2.stderr.strip()[-200:]})")
-r = subprocess.run([node, "-e", JS], capture_output=True, text=True, timeout=30)
+r = run_node(JS, timeout=30)
 check(r.returncode == 0, f"node ran the page's own functions ({r.stderr.strip()[-300:]})")
 out = json.loads(r.stdout.strip().splitlines()[-1])
 want = say("server_offline")
@@ -648,7 +658,7 @@ check(out["error"]["display"] == "block" and out["error"]["text"] == say("server
       and out["body"] == {"error": "boom"}, "app answered with an error: a different sentence, and the error carries status and body")
 check(out["cleared"] == "none", "banner('') hides it again")
 tc_line = "const MSG=" + messages.page_json(False, test=True) + ";"
-r4 = subprocess.run([node, "-e", JS.replace(grab("const MSG="), tc_line)], capture_output=True, text=True, timeout=30)
+r4 = run_node(JS.replace(grab("const MSG="), tc_line), timeout=30)
 tc_out = json.loads(r4.stdout.strip().splitlines()[-1])
 check(tc_out["offline"] == {"display": "block", "text": "Open Loops isn't running on this computer. Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder."},
       f"on a test copy the banner says how to start it again, in its folder (#50) ({tc_out['offline']})")
@@ -688,7 +698,7 @@ for name_, (ai_, steps_, want_) in SD_CASES.items():
           ("\nCONN.login={busy:true};" if name_ == "sign-in under way" else "") +
           "\npaintSetupDone();const a=$('#st_connect_h').textContent,i=$('#st_connect_intro').style.display;S.setup_done=false;paintSetupDone();"
           "console.log(JSON.stringify([a,i,$('#st_connect_h').textContent,$('#st_connect_intro').style.display]))")
-    r6 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    r6 = run_node(js, timeout=30)
     got = json.loads(r6.stdout.strip().splitlines()[-1]) if r6.returncode == 0 else [r6.stderr.strip()[-300:]]
     check(got == [want_, "none", "1 · Let's get you connected", ""], f"after setup, {name_}: {got[0]!r}")
 check("$('#st_connect_h')" in html and "$('#st_connect_intro')" in html and "#st_connect h3" not in html
@@ -697,7 +707,7 @@ CP = "\n".join([grab("function conPaint("), next(lines[i + 1] for i, l in enumer
 for n, want_ in ((1, "1 line · last"), (2, "2 lines · last")):
     js = ("const els={};const $=s=>els[s]||(els[s]={textContent:'',scrollTop:0,scrollHeight:0});let CON=" +
           json.dumps(["2026-09-23 10:00:0%d  x" % i for i in range(n)]) + ";\n" + CP + "\nconPaint();console.log($('#con_meta').textContent)")
-    r5 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    r5 = run_node(js, timeout=30)
     check(r5.returncode == 0 and r5.stdout.strip().startswith(want_), f"Console header with {n} line(s): {r5.stdout.strip()!r} {r5.stderr.strip()[-150:]}")
 # review of #59: three toasts up at 1280 px, the window narrowed to 400 px: the resize handler keeps the newest two
 TR = "\n".join([grab("const TOAST_MAX="), grab("const toastMax="), grab("function trimToasts("), grab("let toastRT=null;")])
@@ -705,7 +715,7 @@ js = ("let innerWidth=1280;const L={};function addEventListener(k,f){L[k]=f}cons
       "const box={children:kids,get firstElementChild(){return {remove(){kids.shift()}}}};const $=()=>box;\n" + TR +
       "\ntrimToasts();const wide=kids.length;innerWidth=400;L.resize();L.resize();"
       "setTimeout(()=>console.log(JSON.stringify([wide,kids])),300)")
-r7 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+r7 = run_node(js, timeout=30)
 check(r7.returncode == 0 and json.loads(r7.stdout.strip()) == [3, ["t1", "t2"]],
       f"toasts: three stay at 1280 px; narrowing to 400 px trims to the newest two ({r7.stdout.strip()!r} {r7.stderr.strip()[-150:]})")
 PS = grab("window.addEventListener('pageshow'")
@@ -713,7 +723,7 @@ for ok_, want_ in ((True, "reload"), (False, "loop")):
     js = ("let did=[];const location={reload:()=>did.push('reload')};const loop=()=>did.push('loop');let stopped=false;const H={};"
           "const window={addEventListener:(n,f)=>H[n]=f};global.fetch=async()=>" + ("({ok:true})" if ok_ else "{throw new TypeError('x')}") + ";\n"
           + PS + "\nH.pageshow({persisted:true});H.pageshow({persisted:false});setTimeout(()=>console.log(JSON.stringify(did)),50);")
-    r3 = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
+    r3 = run_node(js, timeout=30)
     check(r3.returncode == 0 and json.loads(r3.stdout) == [want_], f"restored page, app {'up' if ok_ else 'gone'}: {want_} ({r3.stdout.strip()} {r3.stderr.strip()[-150:]})")
 check(out["said400"] == "Open Loops cannot create a file in that folder. Check the folder exists." and out["said409"] == "Open Loops was updated."
       and out["saidOff"] == want, "a failed request shows the app's own sentence (said, else error), or 'not running' when offline")

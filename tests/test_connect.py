@@ -14,7 +14,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PORT = 0  # set by start_app(): the port our own server says it bound, never just one that looked free
 t0 = time.time()
-from _helpers import isolate_this_process, isolated_env, start_app  # noqa: E402
+from _helpers import isolate_this_process, isolated_env, run_node, start_app  # noqa: E402
 isolate_this_process("openloops-connect-parent-")  # doctor reads ~/.claude.json in-process: a throwaway one
 from openloops import agent, doctor, messages  # noqa: E402
 
@@ -231,7 +231,7 @@ if NODE:
     grab = lambda start: next(l for l in page if l.startswith(start))
     js = "\n".join([grab("const esc="), "function connectBtn(){return ''}", grab("const checkRow="),
                     f"console.log(checkRow({json.dumps(rows['miro'])}))"])
-    html = subprocess.run([NODE, "-e", js], capture_output=True, text=True, timeout=60).stdout
+    html = run_node(js, timeout=60).stdout
     check('style="color:var(--r)" title="needs attention"' in html and "nothing to do here yet" not in html,
           "the unsupported row renders as the red 'needs attention' cross, not the grey optional dash")
 elif os.environ.get("GITHUB_ACTIONS"):
