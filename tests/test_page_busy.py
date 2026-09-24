@@ -65,12 +65,13 @@ const els={};const $=s=>els[s]||(els[s]={style:{},textContent:'',innerHTML:'',cl
 let CON=[];function clog(m){CON.push(String(m))}const TOASTS=[];function toast(m,o){TOASTS.push({m:String(m),err:!!(o&&o.err)})}
 const PAGE='t';let stopped=false;let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null,ISO=false;
 const STATE={state:{loops:[{id:'L1',owner:'Sam',ask:'the budget',status:'waiting'}]},jobs:{},today:'2026-09-24',instance:'i1'};
-let REPLY='ok';const DELAY={};
-global.fetch=(u,o)=>new Promise((res,rej)=>setTimeout(()=>{
- if(REPLY==='down')return rej(new TypeError('Failed to fetch'));
- if(REPLY==='busy')return res({ok:false,status:503,text:async()=>JSON.stringify({error:BUSY})});
- if(REPLY==='boom')return res({ok:false,status:500,text:async()=>'{"error":"boom"}'});
- res({ok:true,status:200,json:async()=>u==='/api/state'?JSON.parse(JSON.stringify(STATE)):{ok:true}})},DELAY[u]||0));
+// REPLY / DELAY: how every request is answered; ON[url]: a queue of {ms, mode} for the next requests to that url
+let REPLY='ok';const DELAY={},ON={};
+global.fetch=(u,o)=>{const q=ON[u]&&ON[u].shift(),mode=q?q.mode:REPLY;return new Promise((res,rej)=>setTimeout(()=>{
+ if(mode==='down')return rej(new TypeError('Failed to fetch'));
+ if(mode==='busy')return res({ok:false,status:503,text:async()=>JSON.stringify({error:BUSY,code:'app_busy'})});
+ if(mode==='boom')return res({ok:false,status:500,text:async()=>'{"error":"boom"}'});
+ res({ok:true,status:200,json:async()=>u==='/api/state'?JSON.parse(JSON.stringify(STATE)):{ok:true}})},q?q.ms:DELAY[u]||0))};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 """
 BASE = [grab("const esc="), grab("const MSG="), grab("const ACT_FAILED="), grab("const fill="), grab("function msg("),
@@ -114,29 +115,52 @@ if NODE:
     # ------------------------------------------------------------ 2. a card click (#64)
     say("2. a failed click says what it could not do; a slow one says Saving…")
     act_parts = [f"const BUSY={json.dumps(BUSY)};", STUBS, *BASE,
-                 # the card: its classes are what the test reads
-                 "const CARD={cls:new Set()};CARD.classList={add:(...c)=>c.forEach(x=>CARD.cls.add(x)),remove:(...c)=>c.forEach(x=>CARD.cls.delete(x))};",
-                 "let INST='';const document={querySelector:()=>({closest:()=>CARD})};const CSS={escape:x=>x};function renderLists(){CARD.cls.clear()}",
+                 # the card for L1, as the page draws it: renderLists() replaces it with a new element whose classes
+                 # come from the card markup's actCls(), as the real renderLists does; the test reads CARD's classes
+                 "function mkCard(cls){const c={cls:new Set(cls.split(' ').filter(Boolean))};c.classList={add:(...x)=>x.forEach(k=>c.cls.add(k)),"
+                 "remove:(...x)=>x.forEach(k=>c.cls.delete(k)),toggle:(k,on)=>on?c.cls.add(k):c.cls.delete(k)};return c}",
+                 "let CARD=mkCard(''),DRAWS=0;function renderLists(){DRAWS++;CARD=mkCard(actCls('L1'))}",
+                 "let INST='';const document={querySelector:()=>({closest:()=>CARD})};const CSS={escape:x=>x};",
+                 "const cls=()=>[...CARD.cls].sort();",
                  cut("const who=l=>", "\nfunction snooze(")]
     out = node(act_parts, """
       await loadState();
-      REPLY='busy';DELAY['/api/action']=1500;const p=act('L1','snooze',{until:'2026-09-30'}).catch(e=>'threw');
-      await sleep(400);out.early=[...CARD.cls];await sleep(900);out.waiting=[...CARD.cls];out.r=await p;out.after=[...CARD.cls];out.toasts=TOASTS.slice();
+      ON['/api/action']=[{ms:1500,mode:'busy'}];const p=act('L1','snooze',{until:'2026-09-30'}).catch(e=>'threw');
+      await sleep(400);out.early=cls();await sleep(900);out.waiting=cls();out.r=await p;out.after=cls();out.toasts=TOASTS.slice();
+      // saved (slowly), then the refresh after it fails: the card must not keep Saving…
+      TOASTS.length=0;ON['/api/action']=[{ms:1300,mode:'ok'}];ON['/api/state']=[{ms:0,mode:'busy'}];
+      out.refresh={r:await act('L1','done').catch(e=>'threw'),cls:cls(),pending:PENDING_ACT.size,toasts:TOASTS.length};
+      // two clicks on one card: the first fails while the second still waits; the second keeps its look
+      ON['/api/action']=[{ms:1200,mode:'busy'},{ms:2500,mode:'ok'}];
+      const p1=act('L1','snooze',{until:'2026-09-30'}).catch(()=>'threw');await sleep(100);const p2=act('L1','note',{notes:'x'});
+      await p1;out.overlap={afterFirst:cls()};await p2;out.overlap.afterBoth=cls();out.overlap.pending=PENDING_ACT.size;
+      // a redraw (a poll) while a click waits: the new card is drawn busy and Saving…, and loses it once it is over
+      ON['/api/action']=[{ms:1600,mode:'ok'}];const p3=act('L1','done');await sleep(1200);renderLists();out.redraw={during:cls()};
+      await p3;out.redraw.after=cls();
       TOASTS.length=0;REPLY='busy';DELAY['/api/action']=0;
       for(const a of ['done','reopen','priority','note','add_link','drop_link','auto_off','auto_on','unsnooze','mystery'])await act('L1',a,{}).catch(()=>{});
       out.each=TOASTS.map(t=>t.m);
-      TOASTS.length=0;REPLY='ok';DELAY['/api/action']=200;CARD.cls.clear();await act('L1','done');await sleep(1200);out.quick=[...CARD.cls];out.okToast=TOASTS.map(t=>t.m);
+      TOASTS.length=0;REPLY='ok';DELAY['/api/action']=200;await act('L1','done');await sleep(1200);out.quick=cls();out.okToast=TOASTS.map(t=>t.m);
     """)
     check(out["early"] == ["busy"], f"a click dims the card at once, no note yet ({out['early']})")
-    check(sorted(out["waiting"]) == ["busy", "saving"], f"...still waiting after a second: the card says Saving… ({out['waiting']})")
+    check(out["waiting"] == ["busy", "saving"], f"...still waiting after a second: the card says Saving… ({out['waiting']})")
     check(out["r"] == "threw" and out["after"] == [], f"...and once the answer comes, both go ({out['after']})")
     t = out["toasts"]
     check(len(t) == 1 and t[0]["err"] and t[0]["m"] == f"Couldn't snooze that: {BUSY}", f"a failed snooze: \"Couldn't snooze that: <why>\" ({t})")
+    r = out["refresh"]
+    check(r == {"r": "threw", "cls": [], "pending": 0, "toasts": 0},
+          f"saved after a second, then the refresh fails: no Saving… or dimming left behind, no 'couldn't' toast ({r})")
+    o = out["overlap"]
+    check(o["afterFirst"] == ["busy", "saving"], f"two clicks on one card: the first failing leaves the second's look alone ({o})")
+    check(o["afterBoth"] == [] and o["pending"] == 0, f"...which goes when the second is over ({o})")
+    d = out["redraw"]
+    check(d["during"] == ["busy", "saving"] and d["after"] == [], f"a redraw while a click waits keeps it busy and Saving… ({d})")
     want = [messages.ACTION_FAILED[a] + ": " + BUSY for a in ("done", "reopen", "priority", "note", "add_link", "drop_link",
                                                               "auto_off", "auto_on", "unsnooze", "other")]
     check(out["each"] == want, f"every action has its own verb, and one the table does not know gets the plain one ({out['each']})")
     check(not any(" failed:" in m for m in out["each"] + [t[0]["m"]]), "no past-tense label used as a verb ('Snoozed failed')")
     check(out["quick"] == [] and out["okToast"] and out["okToast"][0].startswith("Marked done"), f"a quick click never shows Saving… ({out['quick']})")
+    check("${actCls(l.id)}" in html, "the card markup takes its busy / Saving… look from the pending clicks")
 else:
     say("SKIP parts 1-2: node not installed")
 

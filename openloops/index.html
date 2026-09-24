@@ -1020,7 +1020,7 @@ function priSel(l){const id=esc(l.id);return `<div class="sub" title="${l.priori
 function card(l,dim){const w=workdays(l.asked_at);const sn=l.snooze_until&&l.snooze_until>TODAY;
  const vault=l.channel==='vault';
  const note=l.channel==='note'||(l.manual&&!vault);
- return `<div class="card ${dim||sn?'snoozed':''}"><div class="dot ${col(l)}"></div>
+ return `<div class="card ${dim||sn?'snoozed':''}${actCls(l.id)}"><div class="dot ${col(l)}"></div>
  <div><div class="who">${esc(l.owner || (note?'note':''))}</div><div class="sub">${vault?esc(l.vault_id||l.notes||''):note?(l.owner?'note':''):`${esc(l.channel)} · ${w}wd`}${l.chases?` · chased ${l.chases}x`:''}${l.last_chase_at?(l.last_chase_mode==='send'?`<br><b style="color:var(--g)">➤ chase sent ${fmt(l.last_chase_at)}</b>`:`<br><b style="color:var(--a)" title="a draft is waiting in Slack/Gmail - check it before drafting again">✎ chase drafted ${fmt(l.last_chase_at)}</b>`):''}${sn?` · snoozed → ${esc(l.snooze_until)}`:''}${vault&&l.vault_flag?` · <span class="pill">${esc(l.vault_flag)}</span>`:''}</div>${l.status!=='done'?priSel(l):''}</div>
  <div><div>${esc(l.ask)}</div><div class="sub">${vault?`from ${esc(l.source||'your to-do file')} · added ${fmt(l.asked_at)}${l.vault_changed_at?` · wording changed ${fmt(l.vault_changed_at)}`:''}`:note?`added ${fmt(l.asked_at)}`:`asked ${fmt(l.asked_at)}`}${l.last_reply_at?` · they: <i>"${esc((l.reply_snippet||'').slice(0,100))}"</i> ${fmt(l.last_reply_at)}`:vault||note?'':l.inbound?` · you haven't replied yet`:` · they haven't replied yet`}${l.link?` · <a href="${esc(l.link)}" target="_blank" rel="noopener">open</a>`:''}${!vault&&l.notes?`<br>${linkify(l.notes)}`:''}${(l.links||[]).length?`<br>${l.links.map(x=>`<a class="chip" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.url)}"><span>${esc(x.label||host(x.url))}</span><button type="button" aria-label="remove link" title="remove link" onclick="event.preventDefault();dropLink('${esc(l.id)}','${esc(x.url)}')">×</button></a>`).join('')}`:''}</div></div>
  <div class="acts" data-id="${esc(l.id)}">${(()=>{
@@ -1051,13 +1051,22 @@ const who=l=>l?((l.owner?l.owner+' — ':'')+(l.ask||'')).slice(0,60):'';
 // every card action: card dims at once (pending), then a toast says what happened; done/snooze/reopen offer Undo
 const UNDO={done:'reopen',reopen:'done',snooze:'unsnooze',unsnooze:'snooze',auto_off:'auto_on',auto_on:'auto_off'};
 const SAID={priority:'Priority set',done:'Marked done',reopen:'Reopened',snooze:'Snoozed',unsnooze:'Unsnoozed',note:'Note saved',add_link:'Link added',drop_link:'Link removed',auto_off:'Auto-chase off for',auto_on:'Auto-chase on for'};
-async function act(id,action,extra,quiet){const l=S&&S.loops.find(x=>x.id===id);const card=document.querySelector(`.acts[data-id="${CSS.escape(id)}"]`);if(card)card.closest('.card').classList.add('busy');
+// Card clicks still waiting for the app, by card id (#64, review of #66): how many, and whether "Saving…" is due. The
+// lists are drawn afresh on every refresh, so a card takes its busy / saving look from here (actCls, in the card's
+// markup) and never only from an element a redraw may already have replaced. Cleared when the last click on it is over.
+const PENDING_ACT=new Map();
+const actCls=id=>{const p=PENDING_ACT.get(id);return p?' busy'+(p.saving?' saving':''):''};
+function actPaint(id){const a=document.querySelector(`.acts[data-id="${CSS.escape(id)}"]`),c=a&&a.closest('.card');if(!c)return;
+ const p=PENDING_ACT.get(id);c.classList.toggle('busy',!!p);c.classList.toggle('saving',!!(p&&p.saving))}
+async function act(id,action,extra,quiet){const l=S&&S.loops.find(x=>x.id===id);
+ const p=PENDING_ACT.get(id)||{n:0,saving:false};p.n++;PENDING_ACT.set(id,p);actPaint(id);   // dims at once
  // no answer after a second: "Saving…" on the card until there is one (the app waits up to 10 s for its lock, #64)
- const slow=card?setTimeout(()=>card.closest('.card').classList.add('saving'),1000):null;
- try{await api('/api/action',Object.assign({id,action},extra||{}))}
- catch(e){if(card)card.closest('.card').classList.remove('busy','saving');toast((ACT_FAILED[action]||ACT_FAILED.other||"Couldn't save that")+': '+errSaid(e),{err:true});throw e}
- finally{clearTimeout(slow)}   // the lists are drawn again below: the card comes back without its note
- await loadState();renderLists();
+ const slow=setTimeout(()=>{if(PENDING_ACT.get(id)===p){p.saving=true;actPaint(id)}},1000);
+ try{
+  try{await api('/api/action',Object.assign({id,action},extra||{}))}
+  catch(e){toast((ACT_FAILED[action]||ACT_FAILED.other||"Couldn't save that")+': '+errSaid(e),{err:true});throw e}
+  await loadState();renderLists();
+ }finally{clearTimeout(slow);if(--p.n<=0)PENDING_ACT.delete(id);actPaint(id)}   // also when the refresh after it fails
  if(quiet)return;const undoTo=UNDO[action];
  if(undoTo)toast(`${SAID[action]}: ${who(l)}${action==='snooze'?' until '+extra.until:''}`,{undo:()=>act(id,undoTo,undoTo==='snooze'?{until:l.snooze_until||extra.until}:null,true)});
  else toast(`${SAID[action]||action}: ${who(l)}`)}
