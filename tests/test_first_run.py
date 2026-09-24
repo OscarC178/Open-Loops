@@ -91,6 +91,10 @@ if a[:1] == ["-p"]:
     if kind == "slack-id":
         print("SLACK_ID: U0TEST12345\nSLACK_NAME: Test Person")
     elif kind == "people":
+        import time   # a test barrier: while hold_people exists the job stays running (up to 60 s), so its running state can be seen
+        end = time.time() + 60
+        while os.path.exists(os.path.join(here, "hold_people")) and time.time() < end:
+            time.sleep(0.1)
         print('<<<PEOPLE>>>{"people": [{"name": "Sam Lee", "email": null, "channel": "slack", "count": 9, "guess": "peer", "example": "can you send the deck?"}]}<<<END>>>')
     elif kind == "voice":
         print('<<<VOICE>>>{"general": "Short and warm.", "people": {"Sam Lee": {"level": "peer", "style": "Brief.", "examples": ["ta"]}}, "samples": {"peer": "Any news?"}}<<<END>>>')
@@ -198,7 +202,8 @@ if NODE:
         out = page_js(port, {}, """
  await boot();await tick();await tick();await tick();out.before=snap();out.seen=seen();out.doc=DOC.steps.map(x=>x.id+':'+x.ok);out.all_ok=DOC.all_ok;
  const me=DOC.steps.find(x=>x.id==='self');out.self={title:me.title,detail:me.detail};
- startScan();await until(()=>jobCalls().length>0);await tick();out.peopleRun=snap();await waitJob('people');await loadCfg();await tick();out.people=snap();out.P=P&&P.people.length;
+ const HOLD=PF.replace('prompts.txt','hold_people');fs.writeFileSync(HOLD,'');   // the people job waits until the snapshot is taken
+ startScan();await until(()=>jobCalls().length>0);await tick();out.peopleRun=snap();fs.unlinkSync(HOLD);await waitJob('people');await loadCfg();await tick();out.people=snap();out.P=P&&P.people.length;
  await api('/api/config',{people:{'Sam Lee':{level:'peer',aliases:['Sam'],email:null}},voice_sample_people:['Sam Lee']});
  await loadCfg();await tick();out.voice=snap();await waitJob('voice');await loadCfg();
  await tick();out.scan=snap();out.scanTitle=$('#auto_title').innerHTML;out.scanSub=$('#auto_sub').textContent;
