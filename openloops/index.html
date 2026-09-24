@@ -1223,7 +1223,9 @@ async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'
    // the marker is set only once the re-read worked: a failed one is tried again on the next good check (review of #59)
    try{await loadCfg();docReread=r.agent;clog('set-up: the check was for '+r.agent+', settings re-read')}catch(e){clog('set-up: the check was for '+r.agent+', settings not re-read, trying on the next check')}}
   else if(r.agent&&C&&r.agent===(C.agent||'claude'))docReread='';
-  const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
+  // all ok with an optional source red (Miro, say): the line says so, so it doesn't read as everything connected (#62)
+  const off=r.all_ok?r.steps.filter(x=>!x.ok&&x.optional&&x.connect).map(x=>({slack:'Slack',gmail:'Gmail',miro:'Miro'})[x.id]||x.title):[];
+  const said=r.all_ok?'all ok'+(off.length&&MSG.check_optional_off?' ('+fill(MSG.check_optional_off.what,{names:off.join(', ')}).replace(/\.$/,'')+')':''):'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
 let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set(),reattached=false,reattaching=false;   // #27: a whole connectReattach() sweep has answered / one is under way
 const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job>:<seq>"): never handled twice at once

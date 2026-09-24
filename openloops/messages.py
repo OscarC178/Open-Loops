@@ -470,6 +470,12 @@ FAILURES = {
         "what": "Open Loops is still running a job with {ai}.",
         "fix": "Change your AI once it has finished.",
         "button": None},
+    # The Console's "connection check: all ok" line when an optional row is red (#62): only "what" is shown, in
+    # brackets after "all ok". {names}: the optional sources not connected, e.g. "Miro".
+    "check_optional_off": {
+        "what": "{names} optional, not connected.",
+        "fix": "Nothing to do unless you want it; its row says how to connect it.",
+        "button": None},
 
     # ---- your own to-do file (standing.py, #37)
     "standing_no_path": {
