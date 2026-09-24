@@ -385,7 +385,7 @@ if which == "agent_race":
     assert settle("login")
     assert app.connects["login"]["agent"] == "claude" and launched == [["claude", "auth", "login"]], (app.connects["login"], launched)
 if which == "stop":
-    # #67: Stop this sign-in stops that run for good: the command running is killed and the next one never starts
+    # #67: Stop this sign-in stops that run for good: the command running is killed (mid-command) and the next never starts
     marker = os.path.join(os.getcwd(), "second-ran")
     agent.login_cmd = lambda step, *a: [["sleep", "30"], ["touch", marker]]
     ok, why = app.run_connect("miro")
@@ -408,6 +408,25 @@ if which == "stop":
     assert settle("gmail") and not os.path.exists(marker) and not app.connect_procs, "the worker started its command after Stop"
     last = app.connect_log("gmail").read_text(encoding="utf-8").strip().splitlines()[-1]
     assert last == "stopped: Stop this sign-in was pressed", "a stop before the first command left no line in the log: " + last
+    # ...and a Stop that lands BETWEEN two commands (review of #68): the first ends 0, Stop lands, the second never starts
+    first_done, go_on, real_one = threading.Event(), threading.Event(), app._connect_one
+    def one(step, argv, log, deadline):   # the real runner; after the first command it holds until the Stop has landed
+        rc = real_one(step, argv, log, deadline)
+        if argv == ["true"]:
+            first_done.set()
+            go_on.wait(5)
+        return rc
+    app._connect_one = one
+    agent.login_cmd = lambda step, *a: [["true"], ["touch", marker]]
+    ok, why = app.run_connect("slack")
+    assert ok and first_done.wait(5), why
+    assert app.connects["slack"]["running"] and not app.connect_procs, "not between the two commands"
+    assert app.stop_connect("slack", app.connects["slack"]["run_id"])[0] == "stopped"
+    go_on.set()
+    assert settle("slack") and app.connects["slack"]["rc"] == -1 and not os.path.exists(marker), app.connects["slack"]
+    last = app.connect_log("slack").read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert last == "stopped: Stop this sign-in was pressed", "a stop between commands left no line in the log: " + last
+    app._connect_one = real_one
     # the next run of that step is a new run, not a stopped one
     agent.login_cmd = lambda step, *a: [["true"]]
     ok, why = app.run_connect("gmail")
@@ -463,7 +482,7 @@ check(out.endswith("HARNESS OK rollback"), f"a setup step whose start fails is n
 out = harness("agent_race")
 check(out.endswith("HARNESS OK agent_race"), f"the AI is read once at the press: a switch before the worker starts cannot run Codex under a Claude label ({out[-300:]})")
 out = harness("stop")
-check(out.endswith("HARNESS OK stop"), f"#67: Stop kills the run's command and no later command of that run starts, even one not yet begun ({out[-300:]})")
+check(out.endswith("HARNESS OK stop"), f"#67: Stop kills the run's command and no later command of that run starts: mid-command, before the first, between two; each logs why ({out[-300:]})")
 out = harness("quit")
 check(out.endswith("HARNESS OK quit"), f"Quit owns every setup-step process, however late it starts or ends ({out[-300:]})")
 

@@ -247,4 +247,28 @@ if NODE:   # Check again with Codex already chosen (review of #66): the same hal
     check(messages.part("codex_checking", "fix") in out["codex"] and out["claude"] == "" and out["idle"] == "",
           f"Check again with Codex says it can take about half a minute; not for Claude, not when idle ({out})")
 check(html.count("'Check again'}</button>${codexWait(a)}") == 2, "...on both Check again buttons of the Set-up view")
+
+# ---------------------------------------------------------------- 5. the Console's restart mark with two tabs (#67 review)
+if NODE:
+    say("5. the Console's restart mark survives two tabs saving their own copies")
+    # The page's real Console code (load, clog, the mark), run in one node vm context per tab; the tabs share one
+    # localStorage, as two tabs of one browser do. Both were open before the restart, so both hold the old lines.
+    CONSOLE = "\n".join([grab("const LABEL="), grab("const CON_KEY="), grab("try{CON=JSON.parse"), grab("const stamp="),
+                         cut("function clog(", "function conClear("), cut("let conInstSeen=", "async function loadCfg(")])
+    out = node([f"const CODE={json.dumps(CONSOLE)};", """
+const vm=require('vm'),store={};
+const localStorage={getItem:k=>k in store?store[k]:null,setItem:(k,v)=>{store[k]=String(v)},removeItem:k=>{delete store[k]}};
+const tab=()=>{const c=vm.createContext({localStorage,$:()=>({style:{},textContent:''}),Array,JSON,String,Date});vm.runInContext(CODE,c);return c};
+const saved=()=>JSON.parse(store['ol.console']||'[]'),marks=l=>l.filter(x=>x.includes('Open Loops started')).length;"""],
+               """store['ol.console']=JSON.stringify(['2026-09-24 09:00:00  no answer from /api/state: fetch failed']);
+      const A=tab(),B=tab();   // both open, both holding the old lines
+      vm.runInContext("conBoundary('new-instance-1')",A);                       // A hears from the new start first
+      vm.runInContext("conBoundary('new-instance-1');clog('B polled')",B);     // then B, which saves its own copy
+      out.afterB=saved();vm.runInContext("clog('A polled')",A);out.afterA=saved();
+      const C=tab();vm.runInContext("conBoundary('new-instance-1')",C);out.reload=saved();\n""")   # C: a reload, which must add no second mark
+    for k in ("afterB", "afterA", "reload"):
+        got = out[k]
+        check(sum("Open Loops started" in x for x in got) == 1 and got[0].endswith("fetch failed")
+              and any(x.endswith(messages.LABELS["console_started"] + " (new-inst)") for x in got),
+              f"#67 review: two tabs saving their own Console copies across a restart: the saved Console keeps one mark, after the old lines ({k}: {got})")
 say("all passed")
