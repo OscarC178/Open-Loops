@@ -339,7 +339,10 @@ The other flags:
 Start it again later with `cd ~/OpenLoops-test && python3 -m openloops.app`; delete the folder when you are done.
 Windows: `powershell -ExecutionPolicy Bypass -File setup.ps1 -Dest $HOME\OpenLoops-test -Isolated -Port 8790 -Name Test`
 (`-Isolated` implies `-NoApp -NoTask`; `-NoLaunch` as before; `$env:OPENLOOPS_ISOLATED = "1"` for the run-time
-switch).
+switch). It prints the command that starts the copy and its address; stop it with
+`python -m openloops.app --stop --port 8790` in its folder. Installing without `-Isolated` (or `-NoApp -NoTask`)
+takes over the Desktop and Start menu icons and the weekday refresh, which are one per user; the installer then says
+which copy they opened before.
 
 ## 3. Daily use
 
