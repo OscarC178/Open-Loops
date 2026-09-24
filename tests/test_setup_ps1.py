@@ -70,7 +70,9 @@ check("Start this copy with: $manual" not in src, "the start command is printed 
 m = re.search(r"^function OtherCopy\(\$path\) \{.*?^\}\r?$", src, re.M | re.S)
 check(m, "setup.ps1 defines OtherCopy (is this working folder another copy that still exists?)")
 with tempfile.TemporaryDirectory(prefix="openloops-setup-") as td:
-    tmp = Path(td)
+    # the long form: GitHub's Windows runners set TEMP to an 8.3 short path (C:\Users\RUNNER~1\...), which
+    # [IO.Path]::GetFullPath in Windows PowerShell expands, so OtherCopy would rightly name a different spelling
+    tmp = Path(td).resolve()
     dest = tmp / "copy"
     other = tmp / "other"
     other.mkdir()
