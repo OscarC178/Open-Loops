@@ -1424,14 +1424,18 @@ if pwsh:
     start_ = next(i for i, l in enumerate(lines_) if l.strip() == "$cfgPort = 8765")
     end_ = next(i for i, l in enumerate(lines_) if i > start_ and l.strip().startswith("else { $showPort = $cfgPort"))
     block_ = "\n".join(lines_[start_:end_ + 1])
-    for port_, want_, port_want_ in ((8790, 'cd "C:\\OL test"; python -m openloops.app --port 8790', "8790"),
-                                     (0, 'cd "C:\\OL test"; python -m openloops.app', "8791")):
-        cmd_ = (f'$Dest = "C:\\OL test"; $CfgFile = "C:\\OL test\\no-such-config.json"; $Port = {port_}; $env:OPENLOOPS_PORT = "8791"; '
+    cfg_ = Path(tempfile.mkdtemp(prefix="openloops-firstrun-cfg-")) / "config.json"
+    cfg_.write_text('{"port": 99999}', encoding="utf-8")  # a saved port the app could never listen on: it uses 8765
+    for port_, env_port_, want_, port_want_ in ((8790, "8791", 'cd "C:\\OL test"; python -m openloops.app --port 8790', "8790"),
+                                                (0, "8791", 'cd "C:\\OL test"; python -m openloops.app', "8791"),
+                                                (0, "", 'cd "C:\\OL test"; python -m openloops.app', "8765")):
+        cmd_ = (f'$Dest = "C:\\OL test"; $CfgFile = "{cfg_}"; $Port = {port_}; $env:OPENLOOPS_PORT = "{env_port_}"; '
                 f'{block_}\n"cd `"$Dest`"; python -m openloops.app$portArg"; $showPort')
         r_ = subprocess.run([pwsh, "-NoProfile", "-Command", cmd_], capture_output=True, text=True, timeout=60)
         got_ = r_.stdout.split()
         check(r_.returncode == 0 and r_.stdout.strip().splitlines()[:1] == [want_] and got_[-1:] == [port_want_],
-              f"setup.ps1's printed command and port, evaluated by PowerShell with -Port {port_} and OPENLOOPS_PORT=8791: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
+              f"setup.ps1's printed command and port, evaluated by PowerShell with -Port {port_}, OPENLOOPS_PORT={env_port_!r} and a saved port 99999: {r_.stdout.strip()!r} {r_.stderr.strip()[-200:]}")
+    shutil.rmtree(cfg_.parent, ignore_errors=True)
 else:
     say("SKIP running setup.ps1's start-command lines: no pwsh here (CI's runners have it)")
 check("$TaskRemoved = $true" in code and 'if ($NoTask -and $TaskRemoved) {' in code, "setup.ps1: a removed task is not then called unchanged")

@@ -270,6 +270,7 @@ if ($NoApp) {
     # command passes --port as the launch above does, so the address matches both (review of #59)
     $cfgPort = 8765
     try { $cp = (Get-Content -LiteralPath $CfgFile -Raw -ErrorAction Stop | ConvertFrom-Json).port; if ($cp) { $cfgPort = [int]$cp } } catch {}
+    if ($cfgPort -lt 1024 -or $cfgPort -gt 65535) { $cfgPort = 8765 }   # as app.py _port_arg: a port it could never listen on
     if ($Port) { $showPort = $Port; $portArg = " --port $Port"; $portFrom = "-Port you gave" }
     elseif ($env:OPENLOOPS_PORT -match '^\d{1,5}$') { $showPort = [int]$env:OPENLOOPS_PORT; $portArg = ""; $portFrom = "OPENLOOPS_PORT in your environment" }
     else { $showPort = $cfgPort; $portArg = ""; $portFrom = "port in its config.json" }
