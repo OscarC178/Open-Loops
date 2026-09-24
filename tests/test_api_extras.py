@@ -240,6 +240,26 @@ try:
     s1 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
     check(code == 200 and r["since"] == "history" and hist(s1["slack_cursor"]),
           f"...no Slack-only pass recorded: Slack reads the History window, not last_refresh ({r})")
+    # review of #59: /api/action is one locked read-modify-write, so a click cannot write back a cursor repaired meanwhile.
+    # The test holds the state lock (as a repair or a refresh's write does), sends a click, repairs the cursor, lets go.
+    import threading  # noqa: E402
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from openloops.store import _locked  # noqa: E402
+    s0.update(cursor="junk", slack_cursor="2026-09-18T09:00+01:00", gmail_cursor="2026-09-19T09:00+01:00", loops=[{"id": "L1", "status": "waiting", "owner": "Sam", "ask": "x"}])
+    (tmp / "state.json").write_text(json.dumps(s0), encoding="utf-8")
+    got = {}
+    with _locked(tmp / "state.json"):
+        th = threading.Thread(target=lambda: got.update(r=api("/api/action", {"action": "note", "id": "L1", "notes": "hello"})))
+        th.start()
+        time.sleep(0.6)
+        waited = th.is_alive()
+        s2 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+        s2["cursor"] = "2026-09-20T09:00+01:00"   # the repair, written while the click waits
+        (tmp / "state.json").write_text(json.dumps(s2), encoding="utf-8")
+    th.join(10)
+    s3 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
+    check(waited and got["r"][0] == 200 and s3["cursor"] == "2026-09-20T09:00+01:00" and s3["loops"][0]["notes"] == "hello",
+          f"a click waits for the state lock and keeps a cursor repaired meanwhile ({waited}, {s3.get('cursor')})")
     code, r = api("/api/cursor/forget", {})
     check(code == 200 and r["forgot"] == [] and r["since"] == "", "...and with nothing unreadable, nothing changes, and it says so (not the History sentence)")
     (tmp / "state.json").write_text(keep, encoding="utf-8")

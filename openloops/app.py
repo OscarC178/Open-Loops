@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import messages
 from .paths import PKG, ROOT
-from .store import isolated, load_cfg, norm_date, read_json, update_json, write_json
+from .store import _locked, isolated, load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
@@ -101,6 +101,13 @@ def load():
 
 def save(s):
     write_json(STATE, s)
+
+
+def state_lock():
+    """The lock every state.json read-modify-write holds (store.update_state for the jobs, update_json for Forget
+    where I was): a click saved here can no longer write back a copy read before a cursor repair or a refresh's
+    write, undoing it (review of #59). Held only around the file work, never around a job start or an AI run."""
+    return _locked(STATE)
 
 
 def kill_tree(p):
@@ -573,11 +580,12 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b)
         elif self.path == "/api/state":
             from . import standing
-            s = load()
-            s = dict(s)
-            vault_loops, dirty = standing.as_loops(s)
-            if dirty:
-                save(s)
+            with state_lock():
+                s = load()
+                s = dict(s)
+                vault_loops, dirty = standing.as_loops(s)
+                if dirty:
+                    save(s)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
                         "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
@@ -784,10 +792,11 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "config.json could not be read, so the new time was not saved there"}, 500)
             return self._json({"ok": r.returncode == 0, "out": (r.stdout + r.stderr)[-500:]})
         if self.path == "/api/setup-done":  # the page reached "ready" (#38 review): setup stays done, whatever is connected later
-            s = load()
-            if not s.get("setup_done"):
-                s["setup_done"] = True
-                save(s)
+            with state_lock():
+                s = load()
+                if not s.get("setup_done"):
+                    s["setup_done"] = True
+                    save(s)
             return self._json({"ok": True})
         if self.path == "/api/cursor/forget":
             # "Forget where I was" (#56), offered on the cursor_unreadable toast: a cursor in state.json that is not a
@@ -852,17 +861,17 @@ class H(BaseHTTPRequestHandler):
             if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="", slack_self_name="", first_scan="later")) is False:
                 return self._json({"ok": False, "error": messages.say("config_unreadable"),
                                    "detail": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
-            for f in (STATE, VOICEF, PEOPLEF):
-                if f.exists():
-                    f.unlink()
-            STATE.write_text(fresh_state(), encoding="utf-8")
+            with state_lock():
+                for f in (STATE, VOICEF, PEOPLEF):
+                    if f.exists():
+                        f.unlink()
+                STATE.write_text(fresh_state(), encoding="utf-8")
             doctor_gen["n"] += 1
             doctor_cache = {"at": 0, "result": None}
             return self._json({"ok": True})
         if self.path == "/api/chase":
             return self._json({"started": run_job("chase", [body["id"]])})
         if self.path == "/api/action":
-            s = load()
             act = body.get("action")
             vid = str(body.get("id") or "")
             if vid.startswith("vault-"):
@@ -882,69 +891,71 @@ class H(BaseHTTPRequestHandler):
                                ensure_ascii=False), encoding="utf-8")
                 started = run_job("standing")
                 return self._json({"ok": True, "id": vid, "started": started})
-            if act == "add":
-                owner = (body.get("owner") or "").strip()[:80]
-                ask = (body.get("ask") or "").strip()[:300]
-                notes = (body.get("notes") or "").strip()[:2000]
-                if not ask:
-                    return self._json({"error": "need something to do"}, 400)
-                email = None
-                for name, p in (cfg().get("people") or {}).items():
-                    if name.lower() == owner.lower():
-                        owner = name
-                        email = (p or {}).get("email")
-                        break
-                slug = lambda t: re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:32] or "x"
-                now = datetime.now().astimezone()
-                lid = f"note-{slug(owner or 'me')}-{slug(ask)}-{now.strftime('%Y%m%d%H%M%S')}"
-                s["loops"].insert(0, {
-                    "id": lid, "owner": owner, "owner_email": email, "ask": ask,
-                    "channel": "note", "thread": None, "link": None,
-                    "asked_at": now.isoformat(timespec="minutes"),
-                    "status": "needs_me", "inbound": True, "manual": True,
-                    "notes": notes, "links": [], "last_reply_at": None, "reply_snippet": None,
-                    "chases": 0, "snooze_until": None,
-                })
+            with state_lock():   # one locked read-modify-write: a cursor repair or a job's write in between is kept
+                s = load()
+                if act == "add":
+                    owner = (body.get("owner") or "").strip()[:80]
+                    ask = (body.get("ask") or "").strip()[:300]
+                    notes = (body.get("notes") or "").strip()[:2000]
+                    if not ask:
+                        return self._json({"error": "need something to do"}, 400)
+                    email = None
+                    for name, p in (cfg().get("people") or {}).items():
+                        if name.lower() == owner.lower():
+                            owner = name
+                            email = (p or {}).get("email")
+                            break
+                    slug = lambda t: re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:32] or "x"
+                    now = datetime.now().astimezone()
+                    lid = f"note-{slug(owner or 'me')}-{slug(ask)}-{now.strftime('%Y%m%d%H%M%S')}"
+                    s["loops"].insert(0, {
+                        "id": lid, "owner": owner, "owner_email": email, "ask": ask,
+                        "channel": "note", "thread": None, "link": None,
+                        "asked_at": now.isoformat(timespec="minutes"),
+                        "status": "needs_me", "inbound": True, "manual": True,
+                        "notes": notes, "links": [], "last_reply_at": None, "reply_snippet": None,
+                        "chases": 0, "snooze_until": None,
+                    })
+                    save(s)
+                    return self._json({"ok": True, "id": lid})
+                for lp in s["loops"]:
+                    if lp["id"] == body["id"]:
+                        if act == "done":
+                            lp["status"] = "done"
+                            lp["closed_at"] = datetime.now().isoformat(timespec="minutes")
+                        elif act == "reopen":
+                            # typed reminders belong in Needs me, not Waiting on them
+                            lp["status"] = "needs_me" if lp.get("channel") == "note" or lp.get("manual") else "waiting"
+                            lp["snooze_until"] = None
+                        elif act == "snooze":
+                            try:
+                                lp["snooze_until"] = norm_date(body.get("until"))
+                            except ValueError as e:
+                                return self._json({"error": str(e)}, 400)
+                        elif act == "unsnooze":
+                            lp["snooze_until"] = None
+                        elif act == "priority":
+                            pr = body.get("priority")
+                            if pr not in ("high", "normal", "low"):
+                                return self._json({"error": "priority is high, normal or low"}, 400)
+                            lp["priority"], lp["priority_by"] = pr, "you"
+                        elif act == "auto_off":
+                            lp["auto_off"] = True
+                        elif act == "auto_on":
+                            lp["auto_off"] = False
+                        elif act == "note":
+                            lp["notes"] = (body.get("notes") or "").strip()[:2000]
+                        elif act == "add_link":
+                            url = (body.get("url") or "").strip()
+                            if not url.startswith("http"):
+                                return self._json({"error": "link must start with http"}, 400)
+                            links = lp.setdefault("links", [])
+                            if not any(x.get("url") == url for x in links):
+                                links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
+                        elif act == "drop_link":
+                            lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
                 save(s)
-                return self._json({"ok": True, "id": lid})
-            for lp in s["loops"]:
-                if lp["id"] == body["id"]:
-                    if act == "done":
-                        lp["status"] = "done"
-                        lp["closed_at"] = datetime.now().isoformat(timespec="minutes")
-                    elif act == "reopen":
-                        # typed reminders belong in Needs me, not Waiting on them
-                        lp["status"] = "needs_me" if lp.get("channel") == "note" or lp.get("manual") else "waiting"
-                        lp["snooze_until"] = None
-                    elif act == "snooze":
-                        try:
-                            lp["snooze_until"] = norm_date(body.get("until"))
-                        except ValueError as e:
-                            return self._json({"error": str(e)}, 400)
-                    elif act == "unsnooze":
-                        lp["snooze_until"] = None
-                    elif act == "priority":
-                        pr = body.get("priority")
-                        if pr not in ("high", "normal", "low"):
-                            return self._json({"error": "priority is high, normal or low"}, 400)
-                        lp["priority"], lp["priority_by"] = pr, "you"
-                    elif act == "auto_off":
-                        lp["auto_off"] = True
-                    elif act == "auto_on":
-                        lp["auto_off"] = False
-                    elif act == "note":
-                        lp["notes"] = (body.get("notes") or "").strip()[:2000]
-                    elif act == "add_link":
-                        url = (body.get("url") or "").strip()
-                        if not url.startswith("http"):
-                            return self._json({"error": "link must start with http"}, 400)
-                        links = lp.setdefault("links", [])
-                        if not any(x.get("url") == url for x in links):
-                            links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
-                    elif act == "drop_link":
-                        lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
-            save(s)
-            return self._json({"ok": True})
+                return self._json({"ok": True})
         self._json({"error": "not found"}, 404)
 
 
