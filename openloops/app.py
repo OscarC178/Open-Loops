@@ -580,12 +580,15 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b)
         elif self.path == "/api/state":
             from . import standing
-            with state_lock():
-                s = load()
-                s = dict(s)
-                vault_loops, dirty = standing.as_loops(s)
-                if dirty:
-                    save(s)
+            # the to-do file can live on a synced or mounted folder: read it outside the lock, on a plain read of
+            # state.json; only the vault_seen it changed is then written, under the lock, onto a fresh read
+            s = dict(load())
+            vault_loops, dirty = standing.as_loops(s)
+            if dirty:
+                with state_lock():
+                    fresh = load()
+                    fresh["vault_seen"] = s.get("vault_seen") or {}
+                    save(fresh)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
                         "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
@@ -891,16 +894,18 @@ class H(BaseHTTPRequestHandler):
                                ensure_ascii=False), encoding="utf-8")
                 started = run_job("standing")
                 return self._json({"ok": True, "id": vid, "started": started})
-            with state_lock():   # one locked read-modify-write: a cursor repair or a job's write in between is kept
-                s = load()
+            people = cfg().get("people") or {}   # read before the lock: the lock covers state.json only
+
+            def act_on(s):
+                """The click applied to s -> (answer, status, write): s is saved only when write is true."""
                 if act == "add":
                     owner = (body.get("owner") or "").strip()[:80]
                     ask = (body.get("ask") or "").strip()[:300]
                     notes = (body.get("notes") or "").strip()[:2000]
                     if not ask:
-                        return self._json({"error": "need something to do"}, 400)
+                        return {"error": "need something to do"}, 400, False
                     email = None
-                    for name, p in (cfg().get("people") or {}).items():
+                    for name, p in people.items():
                         if name.lower() == owner.lower():
                             owner = name
                             email = (p or {}).get("email")
@@ -916,8 +921,7 @@ class H(BaseHTTPRequestHandler):
                         "notes": notes, "links": [], "last_reply_at": None, "reply_snippet": None,
                         "chases": 0, "snooze_until": None,
                     })
-                    save(s)
-                    return self._json({"ok": True, "id": lid})
+                    return {"ok": True, "id": lid}, 200, True
                 for lp in s["loops"]:
                     if lp["id"] == body["id"]:
                         if act == "done":
@@ -931,13 +935,13 @@ class H(BaseHTTPRequestHandler):
                             try:
                                 lp["snooze_until"] = norm_date(body.get("until"))
                             except ValueError as e:
-                                return self._json({"error": str(e)}, 400)
+                                return {"error": str(e)}, 400, False
                         elif act == "unsnooze":
                             lp["snooze_until"] = None
                         elif act == "priority":
                             pr = body.get("priority")
                             if pr not in ("high", "normal", "low"):
-                                return self._json({"error": "priority is high, normal or low"}, 400)
+                                return {"error": "priority is high, normal or low"}, 400, False
                             lp["priority"], lp["priority_by"] = pr, "you"
                         elif act == "auto_off":
                             lp["auto_off"] = True
@@ -948,14 +952,20 @@ class H(BaseHTTPRequestHandler):
                         elif act == "add_link":
                             url = (body.get("url") or "").strip()
                             if not url.startswith("http"):
-                                return self._json({"error": "link must start with http"}, 400)
+                                return {"error": "link must start with http"}, 400, False
                             links = lp.setdefault("links", [])
                             if not any(x.get("url") == url for x in links):
                                 links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
                         elif act == "drop_link":
                             lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
-                save(s)
-                return self._json({"ok": True})
+                return {"ok": True}, 200, True
+            # one locked read-modify-write (a cursor repair or a job's write in between is kept); the answer after it
+            with state_lock():
+                s = load()
+                answer, code, write = act_on(s)
+                if write:
+                    save(s)
+            return self._json(answer, code)
         self._json({"error": "not found"}, 404)
 
 
