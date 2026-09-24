@@ -37,6 +37,11 @@ FAILURES = {
         "fix_test": "Start it again by typing python3 -m openloops.app in Terminal, in this copy's folder.",
         "fix_test_win": "Start it again by typing python -m openloops.app in PowerShell, in this copy's folder.",
         "button": None},
+    # a click that could not get state.json's lock within store.LOCK_WAIT_S: a job or a repair is writing (review of #59)
+    "app_busy": {
+        "what": "Open Loops is busy saving just now.",
+        "fix": "Try that again in a moment.",
+        "button": None},
     "server_error": {
         "what": "Open Loops couldn't answer this page just now.",
         "fix": "Reload the page, and if it happens again press Copy all in the Console at the bottom and send it to "

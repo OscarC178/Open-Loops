@@ -14,7 +14,7 @@ load_state / update_state
 norm_date               zero-pads YYYY-M-D; snooze checks are string comparisons everywhere.
 isolated                whether this copy is an isolated test copy (#36): no to-do file, no automatic scans.
 """
-import json, os, sys, tempfile
+import json, os, sys, tempfile, time
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -56,19 +56,32 @@ def write_json(path, obj):
         raise
 
 
+class LockTimeout(TimeoutError):
+    """The file lock was not free within its deadline: another writer is holding it (review of #59)."""
+
+
+LOCK_WAIT_S = 10.0       # a click on the page: past this, the app answers "busy, try again" instead of hanging
+JOB_LOCK_WAIT_S = 120.0  # a job's write after its AI run: worth waiting longer than a click, but never for ever
+
+
 @contextmanager
-def _locked(p):
-    """Hold <file>.lock exclusively, across processes: flock on POSIX, msvcrt.locking on Windows."""
+def _locked(p, timeout=LOCK_WAIT_S):
+    """Hold <file>.lock exclusively, across processes: flock on POSIX, msvcrt.locking on Windows. Asked without
+    blocking every 50 ms until `timeout` seconds have passed, then LockTimeout. On Windows an error that goes on
+    past the deadline is raised too, never retried for ever."""
+    end = time.monotonic() + timeout
     with open(p.with_name(p.name + ".lock"), "a+b") as f:
         if sys.platform == "win32":
             import msvcrt
-            while True:  # LK_LOCK itself retries for about 10 s, then raises: keep waiting
+            while True:
                 try:
                     f.seek(0)
-                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
                     break
-                except OSError:
-                    pass
+                except OSError as e:
+                    if time.monotonic() >= end:
+                        raise LockTimeout(f"{p.name}: not free within {timeout:g} s ({e})") from e
+                    time.sleep(0.05)
             try:
                 yield
             finally:
@@ -76,21 +89,28 @@ def _locked(p):
                 msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
-            fcntl.flock(f, fcntl.LOCK_EX)
+            while True:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:   # held by another writer; any other OSError is raised at once
+                    if time.monotonic() >= end:
+                        raise LockTimeout(f"{p.name}: not free within {timeout:g} s") from None
+                    time.sleep(0.05)
             try:
                 yield
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def update_json(path, mutate):
+def update_json(path, mutate, timeout=LOCK_WAIT_S):
     """Read one JSON object fresh, let mutate(obj) change it in place, write it back - all under the file's lock,
     so a writer in another process cannot slip in between and lose either side's change. mutate returning False
     means nothing changed: nothing is written. -> the object, or False if the file is there but could not be read
     (then it is left exactly as it is: writing the few keys a caller changed over it would wipe everything else)."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with _locked(p):
+    with _locked(p, timeout):
         obj = {}
         if p.exists():
             try:
@@ -152,12 +172,12 @@ def load_state():
     return read_json(STATE, {"cursor": None, "last_refresh": None, "loops": []})
 
 
-def update_state(fn):
+def update_state(fn, timeout=JOB_LOCK_WAIT_S):
     """Read state.json fresh, let fn mutate it in place, write it back. Returns the state.
     Under the same file lock as update_json (review of #59): a refresh or chase finishing at the moment the page's
     Forget where I was (app.py, update_json) writes can no longer overwrite it with the copy it read a moment before.
     fn runs inside the lock, so it must be quick: the jobs call this after their AI run, never around it."""
-    with _locked(STATE):
+    with _locked(STATE, timeout):
         s = load_state()
         s.setdefault("loops", [])
         fn(s)

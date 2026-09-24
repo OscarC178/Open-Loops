@@ -27,14 +27,14 @@ def check(cond, what):
     say(f"ok   {what}")
 
 
-def api(path, body=None, method=None, raw=False):
+def api(path, body=None, method=None, raw=False, timeout=10):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         f"http://127.0.0.1:{PORT}{path}", data=data,
         headers={"Content-Type": "application/json"},
         method=method or ("POST" if body is not None else "GET"))
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             b = r.read()
             return r.status, (b.decode("utf-8") if raw else json.loads(b))
     except urllib.error.HTTPError as e:
@@ -260,6 +260,14 @@ try:
     s3 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
     check(waited and got["r"][0] == 200 and s3["cursor"] == "2026-09-20T09:00+01:00" and s3["loops"][0]["notes"] == "hello",
           f"a click waits for the state lock and keeps a cursor repaired meanwhile ({waited}, {s3.get('cursor')})")
+    # ...and a click never hangs on it: held past store.LOCK_WAIT_S (10 s), the app answers "busy, try again"
+    from openloops import messages as _m  # noqa: E402
+    with _locked(tmp / "state.json", 30):
+        t1 = time.time()
+        code, r = api("/api/action", {"action": "note", "id": "L1", "notes": "later"}, timeout=30)
+        took = time.time() - t1
+    check(code == 503 and r.get("error") == _m.say("app_busy") and 9 <= took < 15,
+          f"a click that cannot get the lock within 10 s gets the plain busy sentence ({code}, {took:.1f} s, {r})")
     code, r = api("/api/cursor/forget", {})
     check(code == 200 and r["forgot"] == [] and r["since"] == "", "...and with nothing unreadable, nothing changes, and it says so (not the History sentence)")
     (tmp / "state.json").write_text(keep, encoding="utf-8")

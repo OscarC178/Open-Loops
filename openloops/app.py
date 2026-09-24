@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import messages
 from .paths import PKG, ROOT
-from .store import _locked, isolated, load_cfg, norm_date, read_json, update_json, write_json
+from .store import LockTimeout, _locked, isolated, load_cfg, norm_date, read_json, update_json, write_json
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
@@ -569,6 +569,20 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        try:
+            self._get()
+        except LockTimeout as e:   # a writer held state.json past the deadline: say so, plainly, rather than hang
+            print(f"busy: {e}", file=sys.stderr)
+            self._json({"error": messages.say("app_busy")}, 503)
+
+    def do_POST(self):
+        try:
+            self._post()
+        except LockTimeout as e:
+            print(f"busy: {e}", file=sys.stderr)
+            self._json({"error": messages.say("app_busy")}, 503)
+
+    def _get(self):
         if self.path.split("?")[0] in ("/", "/index.html"):
             # the page's copy of messages.py, for this platform: it can still say "not running" once the server is gone
             b = index_bytes()
@@ -653,7 +667,7 @@ class H(BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlsplit
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
 
-    def do_POST(self):
+    def _post(self):
         global doctor_cache
         # Every POST changes something (a job, a sign-in, a file), and any web page open in the browser can send one
         # to localhost. Browsers always say where a POST comes from (Origin), so one from anywhere but this page is

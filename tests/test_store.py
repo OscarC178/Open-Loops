@@ -118,4 +118,30 @@ got = store.load_state()
 check(time.time() - t1 >= 0.3, "the repair waited for the job's write instead of slipping in between")
 check(got["cursor"] is None and [l["id"] for l in got["loops"]] == ["a", "b"] and got["last_refresh"],
       f"...and neither write is lost: the repair and the job's new loop are both there ({got})")
+# --- the lock has a deadline (review of #59): a held lock gives LockTimeout, not a hang
+held, go = threading.Event(), threading.Event()
+
+
+def holder():
+    with store._locked(store.STATE, 5):
+        held.set()
+        go.wait(5)
+
+
+h = threading.Thread(target=holder)
+h.start()
+held.wait(5)
+t1 = time.time()
+try:
+    with store._locked(store.STATE, 0.3):
+        timed_out = False
+except store.LockTimeout:
+    timed_out = True
+waited = time.time() - t1
+go.set()
+h.join()
+check(timed_out and 0.25 <= waited < 2, f"a lock held past the deadline raises LockTimeout after about the deadline ({waited:.2f} s)")
+with store._locked(store.STATE, 0.3):
+    pass
+check(True, "...and once it is let go it can be taken again")
 say("ALL OK")
