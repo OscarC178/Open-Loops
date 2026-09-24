@@ -85,7 +85,7 @@ if NODE:
     loop_parts = [f"const BUSY={json.dumps(BUSY)};", STUBS, *BASE,
                   # what the loop calls that is not under test here: the stage is not 'ready', so the usual pace is 4 s
                   "function stage(){return 'people'}async function tick(){}async function doctor(){}let docAt=Date.now(),docFails=0;",
-                  "async function connectReattach(){return true}async function loadCfg(){}async function loadDaylog(){}async function loadRm(){}",
+                  "async function connectReattach(){return true}function reattachSweep(){}async function loadCfg(){}async function loadDaylog(){}async function loadRm(){}",
                   "const running=k=>!!(J&&J[k]&&J[k].running);function counts(){return {ids:new Set()}}let before=null;",
                   cut("let loopT=null,", "document.addEventListener('visibilitychange'"),
                   # the timer the loop sets for its next pass: recorded, not run
