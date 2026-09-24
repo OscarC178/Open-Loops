@@ -112,9 +112,12 @@ with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
     check(not opened and not me["url"], "Stop after the link was printed but before the next read: no browser opens")
 
     me = {"running": True, "url": ""}   # second review: Stop lands after the link was taken, before the browser call
+    check(app._before_open is None, "the hook is None in the app, so it does nothing there")
     app._before_open = lambda run: run.update(stopped=True)
-    app._output_handler(me, ARGV, log, "")(printed)
-    app._before_open = lambda run: None
+    try:
+        app._output_handler(me, ARGV, log, "")(printed)
+    finally:
+        app._before_open = None
     check(not opened and not me["url"] and not me.get("opening"),
           "Stop between taking the link and opening it: the last check under the lock sees it, no browser opens")
 

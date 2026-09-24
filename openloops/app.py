@@ -541,7 +541,8 @@ def _link_found(me, url, open_it):
         me["url"] = url
     if not open_it:
         return True
-    _before_open(me)
+    if _before_open is not None:  # tests only; None in the app
+        _before_open(me)
     with connect_lock:  # the last word before dispatch: a Stop since the link was taken wins
         if me.get("stopped") or quit_requested:
             me["url"] = ""  # nor a fallback link on the page for a sign-in that was stopped
@@ -558,9 +559,9 @@ def _link_found(me, url, open_it):
     return True
 
 
-def _before_open(me):
-    """Nothing: the point between taking a link and the last check before the browser opens it. Tests replace it to
-    land a Stop exactly there (tests/test_connect_output.py)."""
+# A test hook, None in the app: called with the run's record between taking a link and the last check before the
+# browser is asked to open it, so a test can land a Stop exactly there (tests/test_connect_output.py).
+_before_open = None
 
 
 def _read_on(path, offset, saw):
