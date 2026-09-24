@@ -1006,7 +1006,9 @@ function allowPaint(){if(!ALLOW)return;const c=CONN[ALLOW.step]||{},u=ALLOW.url|
 function allowStop(){const a=ALLOW;return a?connectStop(a.step,a.run):Promise.resolve()}
 async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
  if(row&&row.ok){allowClose();toast(row.title.replace(/ \(optional.*\)$/,'')+'.');return}
- if(!a.url){try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&s.url)a.url=s.url}catch(e){}}   // the fallback link, from the run's own status
+ // the fallback link, from the run's own status. The pop-up object stays when its row takes another run (adoption changes
+ // a.run in place), so the answer is used only while the pop-up is still for the run it was asked for (review of #68)
+ if(!a.url){const run=a.run;try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&a.run===run&&s.url&&(!s.run_id||!run||s.run_id===run))a.url=s.url}catch(e){}}
  allowPaint()}
 function allowClose(){const a=ALLOW;ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close();if(a)allowFocus(a.step)}
 // #27: the person closed the pop-up (Close, or Escape) while its step still runs: remember that run for this tab, as
@@ -1024,10 +1026,10 @@ function allowDismiss(){if(ALLOW)allowForget(ALLOW);allowClose()}
 // after the pop-up: focus back on that step's Connect / Sign in button, or on its card once the row has gone green
 function allowFocus(step){if(typeof document==='undefined'||!document.querySelector)return;
  const b=document.querySelector(`#setup button[onclick="connectStep('${step}')"]`),t=b||document.querySelector(step==='login'?'#su_ai':'#su_src');if(t&&t.focus)t.focus()}
-async function allowCheck(){const a=ALLOW,b=$('#allow_check');if(!a)return;b.disabled=true;a.said='';$('#allow_msg').textContent='Checking…';
+async function allowCheck(){const a=ALLOW,run=a&&a.run,b=$('#allow_check');if(!a)return;b.disabled=true;a.said='';$('#allow_msg').textContent='Checking…';
  try{await doctor(true)}finally{b.disabled=false}
  const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
- if(ALLOW===a&&!(row&&row.ok))a.said=DOC&&DOC.error?msg('check_failed'):(row&&row.fix)||'';   // still not ticked: the row's own sentence, here
+ if(ALLOW===a&&a.run===run&&!(row&&row.ok))a.said=DOC&&DOC.error?msg('check_failed'):(row&&row.fix)||'';   // still not ticked: the row's own sentence, here
  await allowPoll()}
 // ---------- end of the Set-up view
 

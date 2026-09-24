@@ -144,4 +144,22 @@ out = node("""for(let i=0;i<30;i++)runOver('slack','R'+i);out.size=RUN_OVER.slac
  out.oldest=runIsOver('slack','R0')||runIsOver('slack','R9');out.newest=runIsOver('slack','R10')&&runIsOver('slack','R29');""")
 check(out == {"size": 20, "max": 20, "oldest": False, "newest": True},
       f"30 ended runs on one step keep the newest 20; the oldest 10 go ({out})")
+# ---------------------------------------------------------------- 5. the pop-up's answers are for its run
+say("5. an answer the pop-up asked for R1 is not given to R2's pop-up")
+out = node("""
+ CONN.slack={busy:true,msg:'Waiting',run:'R1'};allowOpen('slack','R1');
+ const pa=allowPoll();await flush();   // asks for R1's link
+ connectAdopt('slack',{running:true,run_id:'R2'});out.dlgRun=ALLOW.run;
+ await answer('/api/connect/slack',false,200,{running:false,run_id:'R1',url:'https://example.invalid/r1'});await pa;
+ out.link=ALLOW.url;
+ const pb=allowPoll();await flush();await answer('/api/connect/slack',false,200,{running:true,run_id:'R2',url:'https://example.invalid/r2'});await pb;
+ out.own=ALLOW.url;
+ // Check again: the check's sentence was for R1's pop-up; once the pop-up is R2's it is not shown there
+ let release;doctor=()=>new Promise(r=>{release=r});DOC={steps:[{id:'slack',ok:false,fix:'Sentence for R1.'}]};
+ CONN.slack={busy:true,msg:'Waiting',run:'R3'};allowOpen('slack','R3');ALLOW.url='https://example.invalid/r3';
+ const pc=allowCheck();await flush();connectAdopt('slack',{running:true,run_id:'R4'});ALLOW.url='https://example.invalid/r4';
+ release();await flush();await pc;out.said=ALLOW.said||'';""")
+check(out["dlgRun"] == "R2" and out["link"] == "", f"R1's link, answered after the pop-up became R2's, is not shown in it ({out})")
+check(out["own"] == "https://example.invalid/r2", "...and R2's own link is")
+check(out["said"] == "", f"a Check again started for R3's pop-up does not put its sentence in R4's ({out['said']!r})")
 say("all passed")
