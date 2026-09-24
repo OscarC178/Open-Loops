@@ -272,8 +272,10 @@ if ($NoApp) {
     try { $cp = (Get-Content -LiteralPath $CfgFile -Raw -ErrorAction Stop | ConvertFrom-Json).port; if ($cp) { $cfgPort = [int]$cp } } catch {}
     if ($cfgPort -lt 1024 -or $cfgPort -gt 65535) { $cfgPort = 8765 }   # as app.py _port_arg: a port it could never listen on
     if ($Port) { $showPort = $Port; $portArg = " --port $Port"; $portFrom = "-Port you gave" }
-    # an OPENLOOPS_PORT the app could never listen on (99999) counts as unset, as app.py _port_arg treats it (review of #70)
-    elseif ($env:OPENLOOPS_PORT -match '^\d{1,5}$' -and [int]$env:OPENLOOPS_PORT -ge 1024 -and [int]$env:OPENLOOPS_PORT -le 65535) { $showPort = [int]$env:OPENLOOPS_PORT; $portArg = ""; $portFrom = "OPENLOOPS_PORT in your environment" }
+    # an OPENLOOPS_PORT the app could never listen on (99999) counts as unset, as app.py _port_arg treats it (review of #70);
+    # \A...\z and [0-9], not ^...$ and \d: in .NET $ also matches before a final newline and \d any Unicode digit,
+    # both of which Python's re.fullmatch("[0-9]{1,5}") in app.py refuses, and the address printed must be the app's
+    elseif ($env:OPENLOOPS_PORT -match '\A[0-9]{1,5}\z' -and [int]$env:OPENLOOPS_PORT -ge 1024 -and [int]$env:OPENLOOPS_PORT -le 65535) { $showPort = [int]$env:OPENLOOPS_PORT; $portArg = ""; $portFrom = "OPENLOOPS_PORT in your environment" }
     else { $showPort = $cfgPort; $portArg = ""; $portFrom = "port in its config.json" }
     Write-Host ""
     Write-Host "  Start this copy with:"

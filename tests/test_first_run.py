@@ -1429,7 +1429,8 @@ if pwsh:
     for port_, env_port_, want_, port_want_ in ((8790, "8791", 'cd "C:\\OL test"; python -m openloops.app --port 8790', "8790"),
                                                 (0, "8791", 'cd "C:\\OL test"; python -m openloops.app', "8791"),
                                                 (0, "", 'cd "C:\\OL test"; python -m openloops.app', "8765"),
-                                                (0, "99999", 'cd "C:\\OL test"; python -m openloops.app', "8765")):  # neither usable
+                                                (0, "99999", 'cd "C:\\OL test"; python -m openloops.app', "8765"),   # neither usable
+                                                (0, "8791`n", 'cd "C:\\OL test"; python -m openloops.app', "8765")):  # a trailing newline: app.py refuses it
         cmd_ = (f'$Dest = "C:\\OL test"; $CfgFile = "{cfg_}"; $Port = {port_}; $env:OPENLOOPS_PORT = "{env_port_}"; '
                 f'{block_}\n"cd `"$Dest`"; python -m openloops.app$portArg"; $showPort')
         r_ = subprocess.run([pwsh, "-NoProfile", "-Command", cmd_], capture_output=True, text=True, timeout=60)
