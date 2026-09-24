@@ -111,9 +111,17 @@ with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
     saw(b"\nWaiting for authorization...\n")
     check(not opened and not me["url"], "Stop after the link was printed but before the next read: no browser opens")
 
+    me = {"running": True, "url": ""}   # second review: Stop lands after the link was taken, before the browser call
+    app._before_open = lambda run: run.update(stopped=True)
+    app._output_handler(me, ARGV, log, "")(printed)
+    app._before_open = lambda run: None
+    check(not opened and not me["url"] and not me.get("opening"),
+          "Stop between taking the link and opening it: the last check under the lock sees it, no browser opens")
+
     me = {"running": True, "url": ""}
     saw = app._output_handler(me, ARGV, log, "")
     saw(printed)
+    check(me.get("opening") is True, "a dispatch that won is marked opening (the one window a Stop is too late for)")
     saw(b"again " + LINK.encode() + b"\n")
     check(opened == [LINK] and me["url"] == LINK, "a run nobody stopped: the link is opened, once")
     opened.clear()

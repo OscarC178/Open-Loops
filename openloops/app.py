@@ -402,7 +402,7 @@ def stop_connect(step, run_id):
             return ("other run" if c and c.get("running") else "not running"), c
         if not c.get("running"):
             return "not running", c
-        c["stopped"] = True
+        c["stopped"] = True  # under connect_lock: _link_found's last check sees it unless "opening" is already set
         p = connect_procs.get(step)
     if p is not None:
         kill_tree(p)
@@ -521,15 +521,32 @@ def _link_found(me, url, open_it):
     open_it (the CLI was told --no-browser), opened in the browser, once. Review of #70: never for a run that has
     been stopped (Stop this sign-in, or Quit). A Stop can land after the CLI printed the link but before it was read,
     or before the first read at all; that read must not open a browser tab for a sign-in the person just stopped.
-    Checked under connect_lock, the lock stop_connect() marks the run under, so a Stop is either seen here or
-    comes after the link was taken."""
+    Checked under connect_lock, the lock stop_connect() marks the run under, twice: when the link is taken, and
+    again (second review of #70) immediately before the browser is asked to open it, where the run is marked
+    "opening". The browser call itself is made outside the lock (it can take a while, and every /api/connect
+    request needs that lock). So a Stop that lands between taking the link and that last check opens nothing; one
+    that lands after it is too late for this link: the tab opens, the sign-in is still stopped, and the page's
+    connect_stopped sentence already allows for a sign-in that got further than the Stop. That window is a few
+    instructions wide and is the one accepted."""
     with connect_lock:
         if me.get("stopped") or quit_requested or me.get("url"):
             return False
         me["url"] = url
-    if open_it:
-        webbrowser.open(url)
+    if not open_it:
+        return True
+    _before_open(me)
+    with connect_lock:  # the last word before dispatch: a Stop since the link was taken wins
+        if me.get("stopped") or quit_requested:
+            me["url"] = ""  # nor a fallback link on the page for a sign-in that was stopped
+            return False
+        me["opening"] = True
+    webbrowser.open(url)
     return True
+
+
+def _before_open(me):
+    """Nothing: the point between taking a link and the last check before the browser opens it. Tests replace it to
+    land a Stop exactly there (tests/test_connect_output.py)."""
 
 
 def _read_on(path, offset, saw):
