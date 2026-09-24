@@ -128,6 +128,20 @@ try:
         touch(colon / "state" / "logs" / "launchd.err.log", f"/bin/bash: line 1: {colon}/scripts/run-refresh.sh: Permission denied\n")
         s = doctor.schedule_step(colon / "state" / "logs", colon)
         check(s is not None and s["kind"] == "failed", "...and such an install's own failure is matched to it")
+        work = tmp / "Work: Projects" / "OpenLoops"   # CodeRabbit on #70: ": " inside a folder name
+        wlogs = work / "state" / "logs"
+        touch(wlogs / "launchd.err.log", f"/bin/bash: {work}/scripts/run-refresh.sh: Permission denied\n")
+        s = doctor.schedule_step(wlogs, work)
+        check(s is not None and s["kind"] == "failed", "a folder name holding ': ' (Work: Projects): that install's failure is found")
+        touch(wlogs / "launchd.err.log", f"/bin/bash: line 1: {work}/scripts/run-refresh.sh: Operation not permitted\n")
+        check(doctor.schedule_step(wlogs, work)["kind"] == "blocked", "...with bash's 'line 1: ' prefix too")
+        touch(wlogs / "launchd.err.log", f"/bin/bash: {tmp / 'Work: Projects' / 'Other'}/scripts/run-refresh.sh: Permission denied\n"
+                                         f"/bin/bash: {work}/scripts/run-refresh.sh.bak: Permission denied\n")
+        check(doctor.schedule_step(wlogs, work) is None, "...while another copy beside it, or a longer name, is not taken for it")
+        link = tmp / "via-link"                        # the plist named it through a symlink: the fallback resolves it
+        link.symlink_to(work, target_is_directory=True)
+        touch(wlogs / "launchd.err.log", f"/bin/bash: {link}/scripts/run-refresh.sh: Permission denied\n")
+        check(doctor.schedule_step(wlogs, work) is not None, "...and a line naming it through a symlink is still matched")
     touch(err, blocked * 3 + missing)
     s = doctor.schedule_step(logs, root)
     check(s["kind"] == "failed" and "No such file" in s["detail"], "older privacy lines, newer other failure: the LATEST decides")

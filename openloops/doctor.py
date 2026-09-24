@@ -509,15 +509,43 @@ SCHEDULE_MSG = {
 }
 # where "the latest installer" is: the page shows it as a button under the red row (the installer moves old installs)
 DOWNLOAD_URL = "https://github.com/OscarC178/Open-Loops/releases/latest"
-# The script's path after ": ": absolute, from / or a drive letter (C:\ or C:/, a Windows test's temp folder), ending
-# in scripts/run-refresh.sh, and never across another ": " (a separator), so a prefix such as bash's "line 1: " is not
-# taken as part of it (review of #70: `.+?` swallowed it) while a colon inside a folder name (/Users/me/A:B/...) is
-# kept (second review: `[^:]` refused it).
+# A best-effort pick of the script's path after ": ": absolute, from / or a drive letter (C:\ or C:/), ending in
+# scripts/run-refresh.sh, never across another ": ", so bash's "line 1: " prefix is left out (review of #70) and a colon
+# inside a folder name (/Users/me/A:B/...) is kept (second review). It cannot tell a ": " inside a folder name from a
+# separator, so it is only the fallback for a line naming this install through a symlink; lines naming it as it is
+# are found by _names_script without parsing (CodeRabbit on #70: "/Users/me/Work: Projects/OpenLoops").
 RUN_REFRESH_RE = re.compile(r":\s((?:[A-Za-z]:[\\/]|/)(?:(?!:\s).)*?[\\/]scripts[\\/]run-refresh\.sh)")
 
 
 STARTED_RE = re.compile(r"^openloops-refresh started (\S+) (.+)$")   # written by scripts/run-refresh.sh
 TAIL_BYTES = 256 * 1024   # the latest lines are what matter; a years-old log is not read whole every minute
+
+
+def _script_forms(root):
+    """This install's run-refresh.sh as a log line may name it -> set of strings: the folder as given and as resolved,
+    each with / and, on Windows, \\ before scripts (a Windows test writes "C:\\...\\install/scripts/run-refresh.sh")."""
+    forms = set()
+    for base in {str(root), os.path.realpath(root)}:
+        forms.add(base.rstrip("/\\") + "/scripts/run-refresh.sh")
+        if os.sep == "\\":
+            b = base.rstrip("/\\")
+            forms |= {b + "\\scripts\\run-refresh.sh", b.replace("\\", "/") + "/scripts/run-refresh.sh"}
+    return forms
+
+
+def _names_script(ln, forms, mine):
+    """Whether a launchd.err.log line is about this install's run-refresh.sh. Directly: one of its forms right after a
+    ": " and followed by ":" or the end of the line, whatever the folder holds (": " included). Else, best effort:
+    the path RUN_REFRESH_RE picks out, resolved, is this script (the plist named it through a symlink)."""
+    for f in forms:
+        i = ln.find(": " + f)
+        while i >= 0:
+            j = i + 2 + len(f)
+            if j == len(ln) or ln[j] == ":":
+                return True
+            i = ln.find(": " + f, i + 1)
+    m = RUN_REFRESH_RE.search(ln)
+    return bool(m) and os.path.realpath(m.group(1)) == mine
 
 
 def is_test_copy(root=None):
@@ -546,6 +574,7 @@ def schedule_step(logs=None, root=None):
     logs, root = Path(logs or LOGS), Path(root or ROOT)
     mine = os.path.realpath(root / "scripts" / "run-refresh.sh")  # the plist may name it via a symlink (/var -> /private/var)
     home = os.path.realpath(root)
+    forms = _script_forms(root)
     err = logs / "launchd.err.log"
     try:
         with open(err, "rb") as f:
@@ -557,7 +586,7 @@ def schedule_step(logs=None, root=None):
     for ln in text.splitlines():
         if (m := STARTED_RE.match(ln.strip())) and os.path.realpath(m.group(2)) == home:
             last = ("started", m.group(1), ln)
-        elif (m := RUN_REFRESH_RE.search(ln)) and os.path.realpath(m.group(1)) == mine:
+        elif _names_script(ln, forms, mine):
             last = ("failed", None, ln)
     if last is None:
         return None
