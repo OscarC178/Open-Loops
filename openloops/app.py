@@ -456,21 +456,7 @@ def _connect_one(step, argv, log, deadline):
       nothing captured: a failed sign-in had nothing to show, there was no fallback link, and closing that window
       by hand ended the sign-in without a word."""
     shown = subprocess.list2cmdline(argv) if WIN else " ".join(shlex.quote(a) for a in argv)
-    before = log.read_text(encoding="utf-8") + "$ " + shown + "\n"
-
-    out = SigninOutput()
-
-    def saw(chunk):
-        """The command's NEW output (bytes, as read) -> the log rewritten (the kept lines, links without their
-        query), the sign-in link kept and opened once. SigninOutput carries a link or escape code split between
-        two reads over to the next, so each byte is handed over once, never the whole output again."""
-        out.feed(chunk)
-        log.write_text(before + out.text(), encoding="utf-8")
-        if out.url and not connects[step].get("url"):  # the whole link is in
-            connects[step]["url"] = out.url
-            if "--no-browser" in argv:
-                webbrowser.open(out.url)
-
+    saw = _output_handler(connects[step], argv, log, log.read_text(encoding="utf-8") + "$ " + shown + "\n")
     if WIN:
         return _connect_one_win(step, argv, log, deadline, saw)
     import os, pty, select
@@ -508,6 +494,37 @@ def _connect_one(step, argv, log, deadline):
     return rc
 
 
+def _output_handler(me, argv, log, before):
+    """The one handler both runners give each new piece of a command's output -> saw(chunk). me: the run's own
+    connects record; before: the log's text so far, then the command. SigninOutput carries a link or escape code
+    split between two reads over to the next, so each byte is handed over once, never the whole output again."""
+    out = SigninOutput()
+
+    def saw(chunk):
+        """New output (bytes, as read) -> the log rewritten (links without their query), the link kept and opened once."""
+        out.feed(chunk)
+        log.write_text(before + out.text(), encoding="utf-8")
+        if out.url and not me.get("url"):  # the whole link is in
+            _link_found(me, out.url, "--no-browser" in argv)
+    return saw
+
+
+def _link_found(me, url, open_it):
+    """A run's sign-in link has been read whole -> True if it was taken: kept for the page's fallback link and, if
+    open_it (the CLI was told --no-browser), opened in the browser, once. Review of #70: never for a run that has
+    been stopped (Stop this sign-in, or Quit). A Stop can land after the CLI printed the link but before it was read,
+    or before the first read at all; that read must not open a browser tab for a sign-in the person just stopped.
+    Checked under connect_lock, the lock stop_connect() marks the run under, so a Stop is either seen here or
+    comes after the link was taken."""
+    with connect_lock:
+        if me.get("stopped") or quit_requested or me.get("url"):
+            return False
+        me["url"] = url
+    if open_it:
+        webbrowser.open(url)
+    return True
+
+
 def _read_on(path, offset, saw):
     """Hand saw() what path holds past offset, a MB at a time -> the new offset. A file not there yet (or not
     readable just now) is read next time from the same place. Platform-independent, for the tests."""
@@ -540,10 +557,12 @@ def _connect_one_win(step, argv, log, deadline, saw):
                 creationflags=subprocess.CREATE_NO_WINDOW)
     if p is None:  # Open Loops is closing, or this run was stopped from its row
         return -1
-    offset, tail, rc = 0, "", -1  # offset: how much of the .out file saw() has been given
+    offset, tail, rc, me = 0, "", -1, connects[step]  # offset: how much of the .out file saw() has been given
     try:
         while True:
             ended = p.poll() is not None  # looked at before the read, so the last lines are never missed
+            if me.get("stopped"):  # review of #70: stopped from its row: nothing more is read (so nothing opened)
+                break
             offset = _read_on(out, offset, saw)
             if ended:
                 break

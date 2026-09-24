@@ -89,4 +89,42 @@ o.feed(b"word " * 400 + b"https://example.invalid/authorize?state=SECRET more\n"
 check(o.url == "https://example.invalid/authorize?state=SECRET" and "SECRET" not in o.text(),
       "an over-long line with spaces is cut between words, so the link on it is still found whole and redacted")
 
+# ---------------------------------------------------------------- Stop before the browser opens
+say("4. a Stop that lands before the link is read never opens the browser (both runners share this handler)")
+opened = []
+app.webbrowser.open = lambda url, *a, **k: opened.append(url) or True   # no browser in this test, ever
+ARGV = ["claude", "mcp", "login", "plugin:miro:miro", "--no-browser"]
+with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
+    log = Path(td) / "connect-miro.log"
+    printed = b"Visit this URL to authorize:\n  " + LINK.encode() + b"\n"
+
+    me = {"running": True, "url": "", "stopped": True}   # Stop pressed before the first output poll
+    app._output_handler(me, ARGV, log, "$ claude mcp login\n")(printed)
+    check(not opened and not me["url"], "Stop before the first read: the link printed meanwhile opens nothing, and no fallback link")
+    check("SECRET" not in log.read_text(encoding="utf-8") and NOTE in log.read_text(encoding="utf-8"),
+          "...the log still shows what the CLI printed, the link redacted")
+
+    me = {"running": True, "url": ""}
+    saw = app._output_handler(me, ARGV, log, "")
+    saw(printed[:-1])                  # the link printed, not yet known to be whole (no whitespace after it)
+    me["stopped"] = True               # Stop lands before the next read
+    saw(b"\nWaiting for authorization...\n")
+    check(not opened and not me["url"], "Stop after the link was printed but before the next read: no browser opens")
+
+    me = {"running": True, "url": ""}
+    saw = app._output_handler(me, ARGV, log, "")
+    saw(printed)
+    saw(b"again " + LINK.encode() + b"\n")
+    check(opened == [LINK] and me["url"] == LINK, "a run nobody stopped: the link is opened, once")
+    opened.clear()
+    me = {"running": True, "url": ""}
+    app._output_handler(me, ["claude", "auth", "login"], log, "")(printed)
+    check(not opened and me["url"] == LINK, "a CLI not told --no-browser opens its own: the link is only kept for the page")
+    opened.clear()
+    app.quit_requested = True
+    me = {"running": True, "url": ""}
+    app._output_handler(me, ARGV, log, "")(printed)
+    app.quit_requested = False
+    check(not opened and not me["url"], "Quit pressed: no browser opens for a link read afterwards")
+
 say("all ok")
