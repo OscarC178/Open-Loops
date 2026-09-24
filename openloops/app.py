@@ -11,6 +11,53 @@ from pathlib import Path
 from . import messages
 from .paths import PKG, ROOT
 from .store import LockTimeout, _locked, isolated, load_cfg, norm_date, read_json, update_json, write_json
+
+# ---- the command line (#64): checked before anything below runs, so `--help` or a typo writes, checks and opens
+# nothing. Everything this module does at import (config.json / state.json created, the port read from config.json)
+# comes after this check; the imports above only define things. Keep HELP in step with the flags read below
+# (_port_arg, --stop, --now, --no-browser): tests/test_app_help.py checks that each one has a row.
+_PY = "python" if sys.platform == "win32" else "python3"
+USAGE = f"usage: {_PY} -m openloops.app [options]"
+HELP = """
+Options:
+  --port N        the port to answer on (default 8765, or this copy's own)
+  --no-browser    start without opening the page in your browser
+  --stop          ask the Open Loops already running to quit
+  --now           with --stop: stop a running scan too, not wait for it
+  -h, --help      show this list and start nothing
+"""
+
+
+def check_args(argv):
+    """The app's options, read before it does anything: -> None to carry on. `-h` / `--help` prints the list and exits 0;
+    an option it does not know, or `--port` without a number, prints one line saying which plus the usage line on
+    stderr and exits 1 (it used to be ignored and the app started, opening the browser)."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(USAGE + "\n" + HELP.rstrip("\n"))
+            sys.exit(0)
+        if a in ("--no-browser", "--stop", "--now"):
+            i += 1
+            continue
+        if a == "--port" or a.startswith("--port="):
+            val = a.split("=", 1)[1] if "=" in a else (argv[i + 1] if i + 1 < len(argv) else "")
+            if not (val.isdigit() and 1 <= int(val) <= 65535):
+                _bad_option("--port needs a number, for example: --port 8790")
+            i += 1 if "=" in a else 2
+            continue
+        _bad_option(f"unknown option: {a}")
+
+
+def _bad_option(line):
+    """One line saying what was wrong, the usage line, where to look; exit 1 before anything is read or started."""
+    print(f"  {line}\n  {USAGE}\n  ({_PY} -m openloops.app --help lists what each option does)", file=sys.stderr)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    check_args(sys.argv[1:])
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
