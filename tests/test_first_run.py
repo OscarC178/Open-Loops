@@ -144,7 +144,7 @@ def page_js(port, session, scenario, tmp):
         "function renderLists(){}function paintVoice(){}function banner(){}function appDown(e){CON.push('appDown '+e)}",
         "function paintSchedule(){}function schedBad(){return false}function paintConnect(){}function paintDaylog(){}function paintRm(){}function paintSetup(){}",
         "async function loadDaylog(){}async function loadRm(){}function agentUI(){}const PAGE='t';let stopped=false;",
-        "async function connectReattach(){return true}",   # the Setup-buttons section is not cut in here (#27 is tested in 7k)
+        "async function connectReattach(){return true}function reattachSweep(){}",   # the Setup-buttons section is not cut in here (#27 is tested in 7k, #62 in 7l)
         "let S=null,J=null,TODAY=null,C=null,V=null,P=null,DOC=null;",
         grab("const esc="), grab("const fmt="), grab("const MSG="), grab("const fill="), grab("function msg("), grab("const errSaid="),
         cut("const api=async", "let lastBanner="),
@@ -673,7 +673,11 @@ global.fetch=(u,o)=>{const post=!!(o&&o.method==='POST');if(post)CALLS.push(u+' 
  const hd=!post&&HOLD[u];if(hd&&!hd.used){hd.used=true;return new Promise(res=>{hd.release=()=>res({ok:true,status:200,json:async()=>hd.body,text:async()=>JSON.stringify(hd.body)})})}   // answers when released
  if(HANG.has(u)){HANG.delete(u);return new Promise((res,rej)=>{const sg=o&&o.signal;if(sg)sg.addEventListener('abort',()=>rej(Object.assign(new Error('aborted'),{name:'AbortError'})))})}   // never answers
  if(FAKE[u])return Promise.resolve({ok:true,status:200,json:async()=>FAKE[u][post?0:1],text:async()=>JSON.stringify(FAKE[u][post?0:1])});
- return realFetch(BASE+u,o)};
+ return fetchApp(u,o)};
+// node's fetch keeps sockets for reuse that the app (HTTP/1.0: one request per connection) has already closed; a burst
+// of GETs (a reattach sweep, #62) leaves some, and the next request written to one fails with EPIPE before the app
+// reads it. A browser sends it again on a new connection; so does this, once, for that failure only.
+const fetchApp=(u,o)=>realFetch(BASE+u,o).catch(e=>{const c=e&&e.cause&&e.cause.code;if(['EPIPE','ECONNRESET','UND_ERR_SOCKET'].includes(c))return realFetch(BASE+u,o);throw e});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(f,ms=60000){const end=Date.now()+ms;while(!f()){if(Date.now()>end)throw new Error('timed out');await sleep(100)}}
 const jobCalls=()=>CALLS.filter(c=>/^\\/api\\/(people|voice|refresh) /.test(c));
@@ -1122,25 +1126,80 @@ if NODE:
         stop(srv)
         shutil.rmtree(tmp, ignore_errors=True)
 
-    # 7l. #27 review: a Claude sign-in still running when the AI is changed to Codex. Once Codex's check is in, a sweep
-    # (a reload, the offline banner clearing) must not show that run as Codex's: no busy row, no pop-up. Back on Claude
-    # it is Claude's again.
+    # 7l. #27 review, #62: a Claude sign-in still running when the AI is changed to Codex. Once Codex's check is in, the
+    # sweep that follows the change must not show that run as Codex's: no busy row, no pop-up. Switched back to Claude,
+    # through the page's own picker or through Settings, the page sweeps again by itself (nothing here calls
+    # connectReattach()) and the waiting sign-in is Claude's again. While it waits, the picker says why it is greyed out
+    # and Settings refuses a change of AI with the same sentence. The rows keep their nodes across ticks.
     tmp = setup_install("openloops-setup-reattach-ai-")
     srv, port = start_app(tmp, setup_env(tmp))
     try:
-        out = setup_js(port, """
+        SWEEP_JS = """
+ const forCl=()=>CON.filter(l=>l.includes('running for Claude')).length,picked=()=>CON.filter(l=>l.includes('slack still running')).length;
+ const swept=a=>()=>reattached&&!reattaching&&reattachedFor===a;
+ const busy=()=>({busy:!!(CONN.slack&&CONN.slack.busy),open:$('#allow_dlg').open});
+ const form=a=>{['#cfg_domains','#cfg_excl_people','#cfg_excl_topics','#cfg_standing','#cfg_rm_board','#cfg_rm_frame','#cfg_model','#cfg_effort'].forEach(k=>{$(k).value=''});   // Settings' fields
+  $('#cfg_agent').value=a;$('#cfg_people').value=JSON.stringify(C.people||{});$('#cfg_name').value=C.owner_name||'';$('#cfg_history').value='30'};"""
+        out = setup_js(port, SWEEP_JS + """
  await boot();await tick();
  await realFetch(BASE+'/api/connect/slack',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});   // pressed for Claude before the reload
  let st={};for(let i=0;i<150&&!st.url;i++){st=await (await realFetch(BASE+'/api/connect/slack')).json();if(!st.url)await sleep(100)}
  if(!st.url)throw new Error('the fake sign-in never printed its link');out.status={agent:st.agent,running:st.running};
- await chooseAI('codex');out.switched={agent:C.agent,doc:DOC.agent,pend:aiPending()};
- out.sweep=await connectReattach();out.codex={busy:!!(CONN.slack&&CONN.slack.busy),open:$('#allow_dlg').open,said:CON.filter(l=>l.includes('running for Claude')).length};
- await chooseAI('claude');out.back=await connectReattach();out.claude={busy:!!(CONN.slack&&CONN.slack.busy),open:$('#allow_dlg').open};""", tmp)
+ // 1. to Codex on the set-up page: the sweep that follows does not take Claude's run for Codex's; a later poll does not sweep again
+ await chooseAI('codex');out.switched={agent:C.agent,doc:DOC.agent,pend:aiPending()};await until(swept('codex'),20000);
+ out.codex={...busy(),said:forCl()};await loop();out.codexLoop=forCl();
+ J.refresh=Object.assign({},J.refresh,{running:true});paintSetup(stage());out.whyJob={text:$('#su_ai_why').textContent,shown:$('#su_ai_why').style.display};
+ J.refresh.running=false;paintSetup(stage());out.whyNone={text:$('#su_ai_why').textContent,shown:$('#su_ai_why').style.display};
+ // 2. back to Claude through the picker: the busy row and the pop-up return by themselves
+ await chooseAI('claude');await until(()=>CONN.slack&&CONN.slack.busy,20000);
+ out.claude={...busy(),picked:picked(),rows:$('#su_src_rows').innerHTML};
+ // 3. while it waits: the picker says why it is greyed out, and Settings will not change the AI
+ await tick();out.why={text:$('#su_ai_why').textContent,shown:$('#su_ai_why').style.display,disabled:($('#su_ai_pick').innerHTML.match(/" disabled onclick=/g)||[]).length};
+ let n=CALLS.length;TOASTS.length=0;form('codex');await saveCfg();
+ out.settings={calls:CALLS.slice(n),toasts:TOASTS.slice(),said:$('#cfg_msg').textContent,agent:C.agent,cfg:JSON.parse(fs.readFileSync(BIN+'/../config.json','utf8')).agent};
+""", tmp)
         check(out["status"] == {"agent": "claude", "running": True}, f"the app's status says which AI a running sign-in is for ({out['status']})")
         check(out["switched"] == {"agent": "codex", "doc": "codex", "pend": False}, "the change to Codex is saved and checked")
-        check(out["sweep"] is True and out["codex"] == {"busy": False, "open": False, "said": 1},
-              f"a sweep after it does not pick up Claude's sign-in as Codex's: no busy row, no pop-up, a Console line ({out['codex']})")
-        check(out["back"] is True and out["claude"] == {"busy": True, "open": True}, "back on Claude, the same run is picked up again")
+        check(out["codex"] == {"busy": False, "open": False, "said": 1} and out["codexLoop"] == 1,
+              f"the sweep after it does not pick up Claude's sign-in as Codex's: no busy row, no pop-up, one Console line; a later poll does not sweep again ({out['codex']})")
+        check(out["whyJob"] == {"text": messages.say("ai_change_job", ai="Codex"), "shown": ""} and out["whyNone"] == {"text": "", "shown": "none"},
+              f"#62: a job running greys the picker out and the line under it says so; with nothing running, no line ({out['whyJob']})")
+        c = out["claude"]
+        check(c["busy"] and c["open"] and c["picked"] == 1 and '<span class="spin"></span>Waiting for you in the browser' in c["rows"],
+              f"#62: back on Claude through the picker, the page sweeps again by itself: the same run is busy again, with its pop-up ({c['busy']}, {c['open']}, {c['picked']})")
+        check(out["why"] == {"text": messages.say("ai_change_signin"), "shown": "", "disabled": 3},
+              f"#62: while the sign-in waits, the greyed-out picker says why, in plain words from messages.py ({out['why']})")
+        s = out["settings"]
+        check(s["calls"] == [] and s["toasts"] == [messages.say("ai_change_signin")] and s["said"] == "not saved: " + messages.say("ai_change_signin")
+              and s["agent"] == "claude" and s["cfg"] == "claude",
+              f"#62: Settings refuses a change of AI with the same sentence while the sign-in waits; nothing is saved ({s})")
+        # a new page (a reload), the sign-in still waiting: Settings' Save is the way the AI changes, there and back
+        out = setup_js(port, SWEEP_JS + """
+ await boot();await tick();
+ // #62 stable rows: two ticks with nothing changed keep every row's node (the Connect Slack button's with it); a row
+ // that changed is replaced, and only that one. This page has not swept yet, so Slack's row still offers its button.
+ const kids=id=>$(id).children.slice(),btnAt=ks=>ks.findIndex(k=>k._sig.includes("connectStep('slack')"));
+ const s0=kids('#su_src_rows'),c0=kids('#setup_steps');await tick();await tick();const s1=kids('#su_src_rows'),c1=kids('#setup_steps');
+ const i=btnAt(s1);CONN.slack={msg:'Something to say'};await tick();const s2=kids('#su_src_rows');delete CONN.slack;await tick();
+ out.nodes={rows:s0.length,same:s0.every((k,j)=>k===s1[j]),sameSteps:c0.length>0&&c0.every((k,j)=>k===c1[j]),slack:i,
+  slackNew:i>=0&&s2[i]!==s1[i]&&s2[i]._sig.includes('Something to say'),others:s2.every((k,j)=>j===i||k===s1[j])};
+ let n=CALLS.length;form('codex');await saveCfg();await until(swept('codex'),20000);
+ out.codex={calls:CALLS.slice(n).map(c=>c.split(' ')[0]),agent:C.agent,...busy(),said:forCl()};
+ form('claude');await saveCfg();await until(()=>CONN.slack&&CONN.slack.busy,20000);out.claude={agent:C.agent,...busy(),picked:picked()};
+ // #62 wording: all ok with the optional Miro row red says so in the Console
+ const green={all_ok:true,agent:'claude',steps:[{id:'claude',ok:true,title:'Claude is installed'},{id:'login',ok:true,title:'Signed in'},
+  {id:'slack',ok:true,optional:true,title:'Slack connected'},{id:'miro',ok:false,optional:true,connect:'miro',title:'Miro connected (optional)',fix:'x'}]};
+ FAKE['/api/doctor']=[green,green];await doctor(false);delete FAKE['/api/doctor'];out.head=CON.filter(l=>l.startsWith('connection check: all ok'));""", tmp)
+        nd = out["nodes"]
+        check(nd["rows"] >= 3 and nd["same"] and nd["sameSteps"] and nd["slack"] >= 0 and nd["slackNew"] and nd["others"],
+              f"#62: two ticks with nothing changed keep every row's node, Connect Slack's included; a row that changed is replaced, only that one ({nd})")
+        c = out["codex"]
+        check(c["calls"][:2] == ["/api/config", "/api/doctor"] and c["agent"] == "codex" and not c["busy"] and not c["open"] and c["said"] == 1,
+              f"Settings' Save to Codex: saved and checked, and its sweep does not take Claude's sign-in as Codex's ({c})")
+        check(out["claude"] == {"agent": "claude", "busy": True, "open": True, "picked": 1},
+              f"#62: Settings' Save back to Claude: the page sweeps again by itself and the waiting sign-in is picked up ({out['claude']})")
+        check(out["head"] == ["connection check: all ok (Miro optional, not connected)"],
+              f"#62: the Console's 'all ok' says when an optional row is not connected ({out['head']})")
     finally:
         quit_app(port, srv)
         stop(srv)
