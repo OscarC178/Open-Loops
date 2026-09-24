@@ -250,9 +250,13 @@ try:
     got = {}
     with _locked(tmp / "state.json"):
         th = threading.Thread(target=lambda: got.update(r=api("/api/action", {"action": "note", "id": "L1", "notes": "hello"})))
+        n0 = sum("waiting for state.json.lock" in ln for ln in srv.lines)
         th.start()
-        time.sleep(0.6)
-        waited = th.is_alive()
+        # the app says when a request starts waiting for the lock: repair only once the click is really held there
+        end_ = time.time() + 10
+        while sum("waiting for state.json.lock" in ln for ln in srv.lines) == n0 and time.time() < end_:
+            time.sleep(0.05)
+        waited = th.is_alive() and sum("waiting for state.json.lock" in ln for ln in srv.lines) > n0
         s2 = json.loads((tmp / "state.json").read_text(encoding="utf-8"))
         s2["cursor"] = "2026-09-20T09:00+01:00"   # the repair, written while the click waits
         (tmp / "state.json").write_text(json.dumps(s2), encoding="utf-8")

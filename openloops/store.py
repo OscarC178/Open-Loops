@@ -69,7 +69,7 @@ def _locked(p, timeout=LOCK_WAIT_S):
     """Hold <file>.lock exclusively, across processes: flock on POSIX, msvcrt.locking on Windows. Asked without
     blocking every 50 ms until `timeout` seconds have passed, then LockTimeout. On Windows an error that goes on
     past the deadline is raised too, never retried for ever."""
-    end = time.monotonic() + timeout
+    end, waited = time.monotonic() + timeout, False
     with open(p.with_name(p.name + ".lock"), "a+b") as f:
         if sys.platform == "win32":
             import msvcrt
@@ -79,6 +79,9 @@ def _locked(p, timeout=LOCK_WAIT_S):
                     msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError as e:
+                    if not waited:
+                        waited = True
+                        print(f"waiting for {p.name}.lock", file=sys.stderr, flush=True)
                     if time.monotonic() >= end:
                         raise LockTimeout(f"{p.name}: not free within {timeout:g} s ({e})") from e
                     time.sleep(0.05)
@@ -94,6 +97,9 @@ def _locked(p, timeout=LOCK_WAIT_S):
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:   # held by another writer; any other OSError is raised at once
+                    if not waited:   # said once per wait: the log shows who waited, and tests can see the wait begin
+                        waited = True
+                        print(f"waiting for {p.name}.lock", file=sys.stderr, flush=True)
                     if time.monotonic() >= end:
                         raise LockTimeout(f"{p.name}: not free within {timeout:g} s") from None
                     time.sleep(0.05)
