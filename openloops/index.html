@@ -146,7 +146,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <div id="st_connect" class="box" style="display:none">
   <h3 id="st_connect_h">1 · Let's get you connected</h3>
   <div class="sub" style="margin-bottom:10px" id="st_connect_intro">Open Loops reads the messages <i>you</i> send on Slack and email, and reminds you when someone hasn't replied. It needs to see those accounts — a one-off. The ticks below update by themselves; you don't need to press anything to refresh them.</div>
-  <div id="setup_steps"></div>
+  <div id="setup_steps" tabindex="-1" aria-label="Every check"></div>
   <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
    <button class="primary" id="agent_btn" onclick="openClaude()">Open Claude</button>
    <button onclick="doctor(true)">Check again</button>
@@ -651,15 +651,18 @@ const checkRow=(s,primary,more)=>`<div class="row" style="display:flex;gap:10px;
 // #62: the rows are painted on every tick. Writing the whole list each time replaced every button, so a click landing
 // mid-repaint hit a node already gone and focus was lost. Each row lives in a box of its own that is rewritten only
 // when that row's HTML (its signature) changed: an unchanged row keeps its nodes, its button the same element.
-// htmls: one HTML string per row, in order. The first paint clears whatever the container held before.
+// htmls: one HTML string per row, in order. The first paint clears whatever the container held before. If focus was in
+// a row that is replaced or goes, it moves to that row's new button, else to the card (the checklist: its own list,
+// which takes focus for this), so a keyboard user is never dropped at the top of the page.
 function paintRows(el,htmls){if(!el._rows){el.innerHTML='';el._rows=true}
- const f=typeof document!=='undefined'&&document.activeElement,kids=el.children;
+ const f=typeof document!=='undefined'&&document.activeElement,kids=el.children,held=n=>!!(f&&n&&n.contains&&n.contains(f));
+ let lost=false,back=null;   // focus was in a row rewritten or removed here / that row's new button
  htmls.forEach((h,i)=>{const old=kids[i];if(old&&old._sig===h)return;   // unchanged: left alone
   const n=document.createElement('div');n.innerHTML=h;n._sig=h;
-  const had=!!(old&&f&&old.contains&&old.contains(f));   // focus was in the row being replaced
-  if(old)el.replaceChild(n,old);else el.appendChild(n);
-  if(had){const b=n.querySelector&&n.querySelector('button:not([disabled])'),t=b||(el.closest&&el.closest('section'))||el;if(t.focus)t.focus()}});
- while(kids.length>htmls.length)el.removeChild(kids[kids.length-1])}   // rows gone since the last paint
+  if(held(old)){lost=true;back=(n.querySelector&&n.querySelector('button:not([disabled])'))||null}
+  if(old)el.replaceChild(n,old);else el.appendChild(n)});
+ while(kids.length>htmls.length){const x=kids[kids.length-1];if(held(x))lost=true;el.removeChild(x)}   // rows gone since the last paint
+ if(lost){const t=back||(el.closest&&el.closest('section'))||el;if(t.focus)t.focus()}}
 
 // ---------- Setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
 // and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.

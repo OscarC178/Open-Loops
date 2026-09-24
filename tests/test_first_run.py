@@ -642,7 +642,7 @@ def setup_js(port, scenario, tmp, session=None):
         "const els={};const mk=id=>({id,style:{},dataset:{},textContent:'',_html:'',disabled:false,title:'',open:false,className:'',kids:[],"
         "get innerHTML(){return this.kids.length?this.kids.map(k=>'<div>'+k.innerHTML+'</div>').join(''):this._html},set innerHTML(v){this._html=String(v);this.kids=[]},"
         "get children(){return this.kids},replaceChild(a,b){this.kids[this.kids.indexOf(b)]=a;a.parent=this;return b},removeChild(c){this.kids.splice(this.kids.indexOf(c),1);return c},"
-        "contains(x){return x===this||this.kids.some(k=>k.contains(x))},"
+        "contains(x){return x===this||this.kids.some(k=>k.contains(x))},focus(){document.activeElement=this},"
         "classList:{toggle(){}},appendChild(c){this.kids.push(c);c.parent=this;return c},showModal(){this.open=true},close(){this.open=false},addEventListener(){}});",
         "const $=s=>els[s]||(els[s]=mk(s));const document={getElementById:id=>$('#'+id),createElement:()=>mk('new'),querySelectorAll:()=>[]};",
         "const CON=[];function clog(m){CON.push(String(m))}const TOASTS=[];function toast(m){TOASTS.push(String(m))}",
@@ -1212,6 +1212,11 @@ if NODE:
  const i=btnAt(s1);CONN.slack={msg:'Something to say'};await tick();const s2=kids('#su_src_rows');delete CONN.slack;await tick();
  out.nodes={rows:s0.length,same:s0.every((k,j)=>k===s1[j]),sameSteps:c0.length>0&&c0.every((k,j)=>k===c1[j]),slack:i,
   slackNew:i>=0&&s2[i]!==s1[i]&&s2[i]._sig.includes('Something to say'),others:s2.every((k,j)=>j===i||k===s1[j])};
+ // review of #65: focus in a checklist row that is replaced, or that goes, lands on the checklist itself (tabindex -1)
+ const stp=$('#setup_steps'),d0=DOC;document.activeElement=stp.children[btnAt(stp.children)];CONN.slack={msg:'Something else'};await tick();
+ const onReplace=document.activeElement===stp;delete CONN.slack;await tick();
+ document.activeElement=stp.children[stp.children.length-1];DOC=Object.assign({},d0,{steps:d0.steps.slice(0,-1)});paintConnect();
+ out.focus={onReplace,onRemove:document.activeElement===stp,rows:[d0.steps.length,stp.children.length]};DOC=d0;paintConnect();document.activeElement=undefined;
  let n=CALLS.length;form('codex');const saved=await saveCfg();await until(swept('codex'),20000);
  out.codex={saved,calls:CALLS.slice(n).map(c=>c.split(' ')[0]),agent:C.agent,...busy(),said:forCl()};
  form('claude');await saveCfg();await until(()=>CONN.slack&&CONN.slack.busy,20000);out.claude={agent:C.agent,...busy(),picked:picked()};
@@ -1229,6 +1234,9 @@ if NODE:
         nd = out["nodes"]
         check(nd["rows"] >= 3 and nd["same"] and nd["sameSteps"] and nd["slack"] >= 0 and nd["slackNew"] and nd["others"],
               f"#62: two ticks with nothing changed keep every row's node, Connect Slack's included; a row that changed is replaced, only that one ({nd})")
+        check(out["focus"]["onReplace"] and out["focus"]["onRemove"] and out["focus"]["rows"][1] == out["focus"]["rows"][0] - 1
+              and 'id="setup_steps" tabindex="-1"' in page,
+              f"review of #65: focus in a checklist row that is replaced or removed moves to the checklist, which can take it ({out['focus']})")
         c = out["codex"]
         check(c["saved"] is True and c["calls"][:2] == ["/api/config", "/api/doctor"] and c["agent"] == "codex" and not c["busy"] and not c["open"] and c["said"] == 1,
               f"Settings' Save to Codex: saved and checked, and its sweep does not take Claude's sign-in as Codex's ({c})")
