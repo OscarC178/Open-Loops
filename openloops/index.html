@@ -717,6 +717,7 @@ const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
 const connectWaitSaid=(step,a)=>step==='install'?installing(a):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.';
 async function connectStep(step){
  const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
+ delete RUN_OVER[step];   // a new run of the step from here: what ended before is forgotten (#67 review)
  const mine=CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
  const ours=()=>CONN[step]===mine;   // #67 review: after each await, only a row still showing this press is written to
  let rid='';   // the run's id (#27), from the app's answer: the run it started, or the one already running
@@ -734,12 +735,18 @@ async function connectStep(step){
 // answer, the watcher's poll, a 409) checks this after each await and changes nothing otherwise: the row may have taken
 // another run meanwhile (adoption keeps the row object and changes its run), been replaced by a new press, or removed by
 // a change of AI. The run id, not the object, is what says "still this run".
+// #67 review: the runs this page has seen end or be replaced, per step. A late 409 or status naming one of them is old
+// news and is never adopted (the row would go backwards, and the newer run's closed-pop-up note would go with it).
+// Cleared when this page starts a new run of the step.
+const RUN_OVER={};
+function runOver(step,run){if(run)(RUN_OVER[step]=RUN_OVER[step]||new Set()).add(run)}
+const runIsOver=(step,run)=>!!(RUN_OVER[step]&&RUN_OVER[step].has(run));
 const liveRun=(step,run)=>!!run&&!!CONN[step]&&!!CONN[step].busy&&CONN[step].run===run;
 // #67: the end of a stopped run, whoever sees it first (the Stop's answer, or the row's watcher polling): only while the
 // row still shows that run, it goes back to its button (which unlocks the AI picker), the pop-up closes if it is for that
 // step, the run's closed-pop-up note goes, and the connections are checked again: a sign-in can finish just before Stop
 // lands, and nothing undoes it (review of #68). -> true if it did this, false if the row had moved on.
-function connectStopped(step,run){if(!liveRun(step,run))return false;CONN[step]={};
+function connectStopped(step,run){if(!liveRun(step,run))return false;runOver(step,run);CONN[step]={};
  if(ALLOW&&ALLOW.step===step)allowClose();if(run)allowClosedEnd(step,run);repaint();
  doctor(true).catch(e=>clog('setup: '+step+' stopped, and the check after it did not answer: '+e.message));return true}
 // #67: Stop this sign-in. The app stops that one run and answers once it has ended; then connectStopped() above.
@@ -750,7 +757,7 @@ function connectStopped(step,run){if(!liveRun(step,run))return false;CONN[step]=
 // (the shown one ended, another tab started a new one). The row takes the new run: its id (so the next Stop targets
 // it), its fallback link and start time, and the pop-up's run if the pop-up is open for this step. The ended run's
 // closed-pop-up note goes. -> true if the row changed.
-function connectAdopt(step,s){const c=CONN[step];if(!c||!c.busy||!s||!s.run_id||s.run_id===c.run)return false;const was=c.run;
+function connectAdopt(step,s){const c=CONN[step];if(!c||!c.busy||!s||!s.run_id||s.run_id===c.run||runIsOver(step,s.run_id))return false;const was=c.run;runOver(step,was);
  Object.assign(c,{run:s.run_id,url:s.url||'',started:s.started||c.started,stopping:false});
  if(was)allowClosedEnd(step,was);if(ALLOW&&ALLOW.step===step)Object.assign(ALLOW,{run:s.run_id,url:''});
  clog('setup: '+step+' is now run '+s.run_id.slice(0,8)+' (the one shown had ended)');repaint();allowPaint();return true}
@@ -796,7 +803,7 @@ async function connectWatch(step,row){const inst=step==='install',mine=CONN[step
   return}
  if(!ours())return;
  CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(mine.agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
- finally{if(run)allowClosedEnd(step,run)}}
+ finally{if(run)allowClosedEnd(step,run);if(!liveRun(step,run))runOver(step,run)}}   // over, unless the row still waits on it
 
 // #27: the page reloaded (or the app came back after the "not running" banner) while a step was still running: ask the
 // app about each step and pick up any still running, as if its button had just been pressed here. One GET per step:
