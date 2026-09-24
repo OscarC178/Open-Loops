@@ -178,11 +178,12 @@ if [ "$DEST" = "$DEFAULT_DEST" ] && [ -f "$OLD/openloops/app.py" ]; then
     python3 "$SRC/scripts/migrate_install.py" --old "$OLD" --dest "$DEST" "${MIGRATE_FLAGS[@]}"
 fi
 
+# The folder is printed once per run (#60): in the line below, unless the "Start this copy with" command at the end
+# (a copy with no app: --no-app or --isolated) is going to name it anyway. Both branches, fresh and in-place.
+if [ "$NO_APP" -eq 1 ]; then WHERE=" here"; else WHERE=" in $DEST"; fi
 if [ "$SRC" = "$DEST" ]; then
-    say "Already installed here - updating."
+    say "Already installed$WHERE - updating."
 else
-    # The folder is printed once per run (#60): here, unless the "Start this copy with" command at the end (a copy with
-    # no app, --no-app or --isolated) is going to name it anyway.
     if [ "$NO_APP" -eq 1 ]; then say "Installing Open Loops..."; else say "Installing Open Loops to $DEST ..."; fi
     mkdir -p "$DEST"
     # Personal files are never copied over: the list, settings, tone, logs, the Grok project config the

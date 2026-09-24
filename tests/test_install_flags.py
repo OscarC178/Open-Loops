@@ -24,6 +24,9 @@ pretend Open Loops servers listed in a file, and says nothing is running anywher
      g. something still working inside the old folder: refused, then copied once it has stopped.
      h. ports outside 1024-65535 refused before anything is written.
   5. register-task.sh --dest DIR writes a job for DIR.
+  6. The install folder is named once on screen (#60), for a default install, --no-app, --isolated and --no-launch,
+     both fresh and as an in-place update run from the installed copy's own install.sh. A stub nohup means the
+     default run starts no server; the default place is under the throwaway HOME.
 """
 import json, os, plistlib, shutil, socket, stat, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
@@ -126,11 +129,12 @@ def snapshot(root):
     return {f: (root / f).read_bytes() for f in PERSONAL}
 
 
-def install(home, *args, extra_env=None):
+def install(home, *args, extra_env=None, script=None):
+    """install.sh (or `script`, an installed copy's own install.sh for an in-place update) in a throwaway HOME."""
     env = {k: v for k, v in os.environ.items() if k not in ("OPENLOOPS_PORT", "OPENLOOPS_DEST")}
     env.update(HOME=str(home), PATH=f"{fakebin}:{os.environ['PATH']}", BROWSER="/usr/bin/true")
     env.update(extra_env or {})
-    return subprocess.run(["bash", str(REPO / "install.sh"), *args], env=env, capture_output=True, text=True,
+    return subprocess.run(["bash", str(script or REPO / "install.sh"), *args], env=env, capture_output=True, text=True,
                           timeout=180, stdin=subprocess.DEVNULL)
 
 
@@ -547,6 +551,37 @@ try:
     r = install(home, "--no-app", "--no-launch", "--no-task")
     check(r.returncode == 0 and snapshot(home / "Library" / "Application Support" / "OpenLoops") == before and old.exists(),
           "run again once it has stopped: copied, old folder still there")
+
+    say("6. the install folder is named once on screen, fresh and in place (#60)")
+    # A bin in front of the usual stubs: nohup logs and starts nothing, so the default run's "Opening Open Loops"
+    # step starts no server (on 8765 or anywhere); killall, defaults and osascript fail loudly if anything reaches
+    # for the real Dock or a dialog. The default place is under the throwaway HOME; launchctl is the stub above.
+    quiet = tmp / "bin-quiet"
+    quiet.mkdir()
+    nohup_log = tmp / "nohup.log"
+    script(quiet / "nohup", f'#!/bin/bash\necho "$*" >> "{nohup_log}"\nexit 0\n')
+    for tool in ("killall", "defaults", "osascript"):
+        script(quiet / tool, f'#!/bin/bash\necho "{tool} $*" >> "{nohup_log}.bad"\nexit 99\n')
+    qenv = {"PATH": f"{quiet}:{fakebin}:{os.environ['PATH']}"}
+    for n, (label, flags) in enumerate((("default", []), ("--no-app", ["--no-app", "--no-task"]),
+                                        ("--isolated", ["--isolated"]), ("--no-launch", ["--no-launch"]))):
+        home = tmp / f"home-once{n}"
+        home.mkdir()
+        dest = home / "Library" / "Application Support" / "OpenLoops"
+        if label == "--isolated":
+            dest = home / "OpenLoops-test"
+            flags = flags + ["--dest", str(dest)]
+        for how, scr in (("fresh", None), ("in place", dest / "install.sh")):
+            r = install(home, *flags, "--name", "Once", extra_env=qenv, script=scr)
+            said = r.stdout.count(str(dest))
+            check(r.returncode == 0 and said == 1 and r.stdout.rstrip().endswith("Done."),
+                  f"{label}, {how}: the folder is named once ({said}x) and it ends with \"Done.\""
+                  + ("" if r.returncode == 0 and said == 1 else f" ({(r.stdout + r.stderr)[-700:]!r})"))
+            if how == "in place":
+                check("Already installed" in r.stdout, f"{label}, in place: took the in-place update path")
+    check(not Path(f"{nohup_log}.bad").exists(), "nothing reached for the Dock or a dialog")
+    check(nohup_log.exists() and len(nohup_log.read_text().splitlines()) == 6,
+          "every run but the two --no-launch ones reached the start step, and the stub nohup started nothing")
 
     say("5. register-task.sh --dest")
     home = tmp / "home3"
