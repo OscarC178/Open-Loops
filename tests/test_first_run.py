@@ -1022,13 +1022,23 @@ if NODE:
  await boot();await tick();await loop();await until(()=>CONN.slack&&CONN.slack.busy,10000);
  out.again={busy:CONN.slack.busy,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML};
  fs.writeFileSync(BIN+'/allow','');await until(()=>!(CONN.slack&&CONN.slack.busy)&&DOC.steps.find(x=>x.id==='slack').ok,30000);
- out.done={ok:DOC.steps.find(x=>x.id==='slack').ok,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML};""", tmp, session=out["SS"])
+ out.done={ok:DOC.steps.find(x=>x.id==='slack').ok,open:$('#allow_dlg').open,rows:$('#su_src_rows').innerHTML,gone:SS['ol.allowDismissed']};
+ // closed before the run's start time is known: remembered as "?", which the next status (here a reload's sweep) resolves
+ const G=()=>JSON.parse(SS['ol.allowDismissed']||'{}');CONN.gmail={busy:true,msg:'x'};ALLOW={step:'gmail'};allowDismiss();out.early=G().gmail;delete CONN.gmail;
+ const R=(running,rc)=>[{},{running,rc,url:'https://example.invalid/g',started:'2026-09-24T11:00:00',step:'gmail',agent:'claude'}];
+ FAKE['/api/connect/gmail']=R(true,null);await connectReattach();out.resolved={gone:G().gmail,busy:CONN.gmail.busy,open:$('#allow_dlg').open};
+ FAKE['/api/connect/gmail']=R(false,0);await until(()=>G().gmail===undefined,15000);out.ended=!(CONN.gmail&&CONN.gmail.busy);   // the watcher saw it end
+ FAKE['/api/connect/gmail']=R(true,null);await connectReattach();out.same={busy:CONN.gmail.busy,open:$('#allow_dlg').open,step:ALLOW&&ALLOW.step};""", tmp, session=out["SS"])
         ag = out["again"]
         check(ag["busy"] and not ag["open"] and '<span class="spin"></span>' in ag["rows"] and "Open the sign-in page" in ag["rows"],
               "a reload after closing the pop-up: the row is busy again with its link, but the pop-up stays closed for that run")
         d = out["done"]
-        check(d["ok"] is True and not d["open"] and "spin" not in d["rows"],
-              "clicking Allow finishes it as if pressed on this page: the row turns green")
+        check(d["ok"] is True and not d["open"] and "spin" not in d["rows"] and d["gone"] == "{}",
+              "clicking Allow finishes it as if pressed on this page: the row turns green, and the closed pop-up's note goes with the run")
+        check(out["early"] == "?" and out["resolved"] == {"gone": "2026-09-24T11:00:00", "busy": True, "open": False},
+              f"a pop-up closed before the run's start time is known is still remembered; the next status names the run ({out['resolved']})")
+        check(out["ended"] and out["same"] == {"busy": True, "open": True, "step": "gmail"},
+              "once that run ends its note goes, so a later run started in the same second opens the pop-up again")
     finally:
         quit_app(port, srv)   # a failure part-way can leave the fake sign-in waiting: the app's own quit stops it
         stop(srv)
