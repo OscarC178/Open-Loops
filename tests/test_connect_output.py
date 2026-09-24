@@ -127,4 +127,36 @@ with tempfile.TemporaryDirectory(prefix="openloops-stop-") as td:
     app.quit_requested = False
     check(not opened and not me["url"], "Quit pressed: no browser opens for a link read afterwards")
 
+# ---------------------------------------------------------------- the raw output file (Windows keeps one per run)
+say("5. the raw output file: made private by the app, removed on every way out, a failed removal said in plain words")
+from openloops import messages  # noqa: E402
+with tempfile.TemporaryDirectory(prefix="openloops-raw-") as td:
+    out = Path(td) / "connect-miro.out"
+    out.write_text("left by a forced end: https://example.invalid/authorize?state=OLD\n", encoding="utf-8")
+    fd = app._private_file(out)
+    os.write(fd, b"new run\n")
+    os.close(fd)
+    check(out.read_bytes() == b"new run\n", "a file left by an earlier run is removed before the next run of the step writes")
+    if os.name == "posix":
+        check((out.stat().st_mode & 0o777) == 0o600, f"only this user may read it ({oct(out.stat().st_mode & 0o777)})")
+    app.connect_outs["miro"] = out
+    check(app._drop_out("miro", out) and not out.exists() and "miro" not in app.connect_outs,
+          "removed at the end, and no longer listed for Quit")
+    check(app._drop_out("miro", out), "removing a file already gone is fine (the worker and Quit may both try)")
+
+    out.write_text("x", encoding="utf-8")
+    app.connect_outs["gmail"] = out
+    app.stop_connects()   # Quit: the worker is a daemon thread and dies with the app, so Quit removes the file itself
+    check(not out.exists() and not app.connect_outs, "Quit (stop_connects) removes a running step's raw output file too")
+
+    stuck = Path(td) / "connect-slack.out"    # a directory with something in it: unlink() fails however often it tries
+    stuck.mkdir()
+    (stuck / "held").write_text("x", encoding="utf-8")
+    log = app.connect_log("slack")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("$ claude mcp login\n", encoding="utf-8")
+    check(not app._drop_out("slack", stuck), "a file that cannot be removed is reported, not ignored")
+    check(log.read_text(encoding="utf-8").strip().splitlines()[-1] == messages.say("signin_file_left"),
+          "...in one plain-words line from messages.py, at the end of the step's log (the Console shows it)")
+
 say("all ok")

@@ -34,23 +34,32 @@ from _helpers import isolated_env, start_app, stop  # noqa: E402
 
 # ---------------------------------------------------------------- the console the CLI gets, from a parent that has none
 # The installed app is started by pythonw.exe (the icons, Start-Process), which has no console at all. CREATE_NO_WINDOW
-# still gives the child a console of its own, only without a window, so stdin is a terminal there and `claude mcp
-# login` does not refuse it (review of #70 asked for CREATE_NEW_CONSOLE + SW_HIDE; this shows it is not needed).
+# still gives the child a console of its own, only without a window (review of #70 asked for CREATE_NEW_CONSOLE +
+# SW_HIDE; this shows it is not needed). Since the second review the app hands the child a file it made itself as
+# stdout and stderr, which makes Python pass stdin too (the parent's: a pipe under pythonw), so the command ends in
+# `<CON` for cmd.exe to open the hidden console's own input. The probe launches exactly so, from pythonw.exe and from
+# this python, and asks the console itself (GetConsoleMode): os.isatty is also true for NUL, so it proves less.
+CONSOLE = ("import ctypes, msvcrt; m = ctypes.c_ulong(); "
+           "print(bool(ctypes.windll.kernel32.GetConsoleMode(msvcrt.get_osfhandle(0), ctypes.byref(m)))); print('probe-out')")
+PROBE = """import os, subprocess, sys
+seen = {seen!r}
+fd = os.open(seen, os.O_CREAT | os.O_TRUNC | os.O_WRONLY)
+child = subprocess.list2cmdline([sys.executable.replace('pythonw.exe', 'python.exe'), '-c', {code!r}]) + ' <CON'
+subprocess.run(child, shell=True, stdout=fd, stderr=fd, creationflags=subprocess.CREATE_NO_WINDOW)
+os.close(fd)
+"""
 pyw = Path(sys.executable).with_name("pythonw.exe")
-if pyw.exists():
+for parent in ([pyw] if pyw.exists() else []) + [Path(sys.executable)]:
     with tempfile.TemporaryDirectory(prefix="openloops-pyw-") as td:
         probe, seen = Path(td) / "probe.py", Path(td) / "seen.txt"
-        redirect = f' > "{seen}" 2>&1'  # inserted as a Python literal (!r), so a quote in the temp path cannot break probe.py
-        probe.write_text(
-            "import subprocess, sys\n"
-            "child = subprocess.list2cmdline([sys.executable.replace('pythonw.exe', 'python.exe'), '-c', 'import os; print(os.isatty(0))'])\n"
-            f"subprocess.run(child + {redirect!r}, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)\n",
-            encoding="utf-8")
-        subprocess.run([str(pyw), str(probe)], timeout=60)
-        check(seen.exists() and seen.read_text().strip() == "True",
-              f"a child of pythonw.exe (no console) launched with CREATE_NO_WINDOW has a terminal on stdin ({seen.read_text().strip() if seen.exists() else 'no output'})")
-else:
-    say("SKIP the pythonw probe: no pythonw.exe beside this Python")
+        probe.write_text(PROBE.format(seen=str(seen), code=CONSOLE), encoding="utf-8")  # !r literals: a quote in the path is safe
+        subprocess.run([str(parent), str(probe)], timeout=60, stdin=subprocess.DEVNULL)
+        got = seen.read_text().split() if seen.exists() else []
+        check(got == ["True", "probe-out"],
+              f"a child of {parent.name} launched as the app does (hidden console, output to its file, <CON) has a console "
+              f"on stdin and its output in the file ({got or 'no output'})")
+if not pyw.exists():
+    say("SKIP the pythonw half of the probe: no pythonw.exe beside this Python")
 
 # ---------------------------------------------------------------- static: the runner itself
 src = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
@@ -67,6 +76,16 @@ FAKE = r'''
 import os, sys, time
 a = sys.argv[1:]
 here = os.path.dirname(os.path.abspath(__file__))
+
+
+def console_stdin():  # stricter than the real CLI's check needs to be: os.isatty(0) is true for NUL on Windows too
+    import ctypes, msvcrt
+    m = ctypes.c_ulong()
+    try:
+        return bool(ctypes.windll.kernel32.GetConsoleMode(msvcrt.get_osfhandle(0), ctypes.byref(m)))
+    except OSError:
+        return False
+
 with open(os.path.join(here, "calls.txt"), "a") as f:
     f.write(" | ".join(a) + "\n")
 flag = lambda n: os.path.exists(os.path.join(here, n))
@@ -80,7 +99,7 @@ if a[:2] == ["mcp", "list"]:
     print("Checking MCP server health...\n\nclaude.ai Gmail: https://g - ! Needs authentication"); sys.exit(0)
 if a[:2] == ["mcp", "login"]:
     print('Starting authentication for "' + a[2] + '"...', flush=True)
-    if not os.isatty(0):  # what the real CLI (2.1.280) does
+    if not console_stdin():  # what the real CLI (2.1.280) does
         print("Couldn't complete authentication: stdin isn't a terminal"); sys.exit(1)
     if flag("fail"):  # a sign-in that ends badly: the reason is one line on stdout, as the real one prints it
         time.sleep(0.5)
@@ -168,6 +187,10 @@ try:
     check("https://example.invalid/authorize?(rest of the link not saved)" in text and "state=abc" not in text,
           "the link is kept in the log without its query")
     check(out.exists(), "the hidden console's output file sits beside the log while the command runs")
+    acl = subprocess.run(["icacls", str(out)], capture_output=True, text=True, errors="replace").stdout
+    user = os.environ.get("USERNAME", "").lower()
+    check(user and user in acl.lower() and not any(w in acl for w in ("Everyone", "BUILTIN\\Users", "Authenticated Users"))
+          and "(I)" not in acl, f"...readable by this user alone, nothing inherited from the folder ({acl.strip()!r})")
     pid = int((bin_ / "login.pid").read_text())
     check(alive(pid), "the fake CLI is waiting")
     # -------------------------------------------------------------- Stop this sign-in (#67) on this runner
@@ -184,6 +207,7 @@ try:
 
     # -------------------------------------------------------------- a sign-in that fails: the reason reaches the page
     (bin_ / "fail").touch()
+    out.write_text("left by a forced end: https://example.invalid/authorize?state=OLDRUN\n", encoding="utf-8")
     code, r = api("/api/connect/miro", {})
     check(code == 200 and r.get("started") is True, "a new run starts after a stopped one")
     s = wait_step("miro")
@@ -191,6 +215,7 @@ try:
           f"#27 part 1: a failed sign-in's reason is the status's last line, for the Console and the page ({s['last']!r})")
     check(not s.get("url") and not opened.exists(), "no link, so nothing was opened")
     check(not out.exists(), "the output file is gone after a failure too")
+    check("OLDRUN" not in log.read_text(encoding="utf-8"), "a file left by a forced end was removed before the run wrote its own")
     (bin_ / "fail").unlink()
 
     # -------------------------------------------------------------- a sign-in that finishes

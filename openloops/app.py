@@ -367,6 +367,10 @@ connects = {}  # step -> {"running", "rc", "url", "started", "agent", "run_id"}
 # keys a run on (a closed Allow pop-up is remembered for one run_id); "started" is for display only (to the second).
 connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
 connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
+# Windows: step -> the raw output file (state/connect-<step>.out) of the command running now. It holds the sign-in
+# link with its query, so stop_connects() removes it too: the worker that would is a daemon thread, which dies with
+# the app before its own clean-up can run (review of #70).
+connect_outs = {}
 # #67: the sign-ins that wait in the browser, which the row's "Stop this sign-in" may stop. The installs (the AI's own
 # and the Slack plugin's) are left to finish: cut short they could leave a half-installed CLI, and they end by themselves.
 STOPPABLE = ("login", "slack", "gmail", "miro")
@@ -377,8 +381,11 @@ def stop_connects():
     first, and _launch checks it under the same lock, so a step about to start either is in this list or never starts."""
     with connect_lock:
         running = list(connect_procs.values())
+        outs = list(connect_outs.items())
     for p in running:
         kill_tree(p)
+    for step, out in outs:  # Windows only: the raw output files, once nothing holds them open
+        _drop_out(step, out)
 
 
 def stop_connect(step, run_id):
@@ -539,23 +546,87 @@ def _read_on(path, offset, saw):
     return offset
 
 
+def _private_file(path):
+    """A new, empty file only this user may read, for a command's raw output -> an OS-level descriptor open for
+    writing (the caller hands it to the child, then closes it). Review of #70: the file used to be made by cmd.exe's
+    `>` redirection, with whatever the folder passed on. Any earlier file there (left by a run the app could not clean
+    up after: a forced end, a power cut) is removed first; O_EXCL then refuses anything that appears in its place.
+    Mac and Linux: mode 0600. Windows: the mode only sets read-only-or-not, so icacls then drops the inherited
+    permissions and grants this user alone full control; best effort, as a locked-down PC may refuse it, and the
+    file lives only while the sign-in runs (state/ sits in the user's own profile anyway)."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+    if WIN:
+        user = os.environ.get("USERNAME", "")
+        if user:
+            if os.environ.get("USERDOMAIN"):
+                user = os.environ["USERDOMAIN"] + "\\" + user
+            try:
+                subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
+                               timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception:
+                pass
+    return fd
+
+
+def _drop_out(step, out):
+    """Remove a sign-in's raw output file -> True once it is gone (or was never there). cmd.exe or the CLI may still
+    hold it for a moment after taskkill, so it is tried for two seconds. A file that stays is said once, in plain
+    words (messages.py), in the step's log for the Console and on the app's own output; the next run of the step
+    removes it before it starts (_private_file)."""
+    for _ in range(10):
+        try:
+            out.unlink()
+            break
+        except FileNotFoundError:
+            break
+        except OSError:
+            time.sleep(0.2)
+    else:
+        line = messages.say("signin_file_left")
+        print(line, file=sys.stderr, flush=True)  # pythonw has no stderr: print() then writes nothing
+        try:
+            with open(connect_log(step), "a", encoding="utf-8") as f:
+                f.write("\n" + line + "\n")
+        except OSError:
+            pass
+        return False
+    with connect_lock:
+        if connect_outs.get(step) == out:
+            connect_outs.pop(step)
+    return True
+
+
 def _connect_one_win(step, argv, log, deadline, saw):
     """_connect_one on Windows (#27): the command in a hidden console (a real terminal for the CLI, no window to
-    close), its output redirected by cmd.exe to state/connect-<step>.out, which is read every quarter second and
-    handed to saw() (the log, the link). Each poll reads on from where the last one stopped (review of #70: a
-    snapshot of the file's last 64 KB could skip a link altogether), a MB at a time. The .out file holds the link
-    query and all while the command runs, as the console window did before; it is removed once the command has
-    ended."""
+    close), its output written to state/connect-<step>.out, which is read every quarter second and handed to
+    saw() (the log, the link). Each poll reads on from where the last one stopped (review of #70: a snapshot of the
+    file's last 64 KB could skip a link altogether), a MB at a time. The .out file holds the link query and all
+    while the command runs, as the console window did before, so (review of #70) the app makes it itself, for this
+    user only (_private_file), hands it to the child as stdout and stderr, and removes it on every way out: the
+    command ending, Stop, the deadline, a failed start, and Quit (stop_connects, via connect_outs).
+    stdin: with stdout given, Python passes the child standard handles, and stdin would be the app's own (a pipe
+    under pythonw.exe), which the CLI refuses. `<CON` makes cmd.exe open the hidden console's own input for the
+    command instead, so the CLI still sees a real terminal (tests/test_connect_win.py proves it under pythonw)."""
     out = log.with_suffix(".out")
+    fd = _private_file(out)  # an error here (a file some process still holds) ends the step; the log says why
+    with connect_lock:
+        connect_outs[step] = out
     try:
-        out.unlink()
-    except OSError:
-        pass
-    # argv is quoted for cmd.exe by list2cmdline; the server names it can hold are limited to plain characters
-    # (agent.usable_name), so nothing in it means anything to cmd
-    p = _launch(step, f'{subprocess.list2cmdline(argv)} > "{out}" 2>&1', cwd=ROOT, shell=True,
-                creationflags=subprocess.CREATE_NO_WINDOW)
+        # argv is quoted for cmd.exe by list2cmdline; the server names it can hold are limited to plain characters
+        # (agent.usable_name), so nothing in it means anything to cmd
+        p = _launch(step, f"{subprocess.list2cmdline(argv)} <CON", cwd=ROOT, shell=True, stdout=fd, stderr=fd,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+    except BaseException:
+        os.close(fd)
+        _drop_out(step, out)
+        raise
+    os.close(fd)  # the child has its own copy; ours would keep the file open (and undeletable) after it ends
     if p is None:  # Open Loops is closing, or this run was stopped from its row
+        _drop_out(step, out)
         return -1
     offset, tail, rc, me = 0, "", -1, connects[step]  # offset: how much of the .out file saw() has been given
     try:
@@ -573,14 +644,7 @@ def _connect_one_win(step, argv, log, deadline, saw):
             time.sleep(0.25)
     finally:
         rc = _reap(step, p, 5)
-        for _ in range(10):  # cmd.exe may still hold the file for a moment after taskkill
-            try:
-                out.unlink()
-                break
-            except FileNotFoundError:
-                break
-            except OSError:
-                time.sleep(0.2)
+        _drop_out(step, out)
     if tail:
         with open(log, "a", encoding="utf-8") as f:
             f.write(tail)

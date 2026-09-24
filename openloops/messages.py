@@ -219,6 +219,12 @@ FAILURES = {
         "what": "That sign-in had already ended, and another one has started since, so Open Loops left it running.",
         "fix": "Press Stop this sign-in again on the row as it is now if you want to stop that one too.",
         "button": None},
+    # review of #70: Windows keeps a sign-in's raw output (link and all) in a temporary file while it runs, and
+    # removes it at the end; this is logged when that removal failed. The next run of that step removes it first.
+    "signin_file_left": {
+        "what": "Open Loops couldn't delete a temporary file that holds the last sign-in link.",
+        "fix": "Nothing to do now: Open Loops deletes it the next time you press that sign-in's button.",
+        "button": None},
     "connect_timeout": {
         "what": "Open Loops stopped waiting for your browser after 5 minutes.",
         "fix": "Press the button again when you're ready to sign in.",
