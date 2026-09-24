@@ -1040,6 +1040,10 @@ def stop_running(now=False):
 class Server(ThreadingHTTPServer):
     """ThreadingHTTPServer minus the socket.getfqdn() that HTTPServer.server_bind does: a reverse lookup of 127.0.0.1
     that some Macs (GitHub's macOS runners, for one) take 35 s to answer, before the app can print its address."""
+    # Connections waiting to be accepted. Python's default is 5; the page's reattach sweep alone asks about six setup
+    # steps at once (#27, #62), and with the poll on top a full queue reset a connection now and then (ECONNRESET).
+    request_queue_size = 64
+
     def server_bind(self):
         import socketserver
         socketserver.TCPServer.server_bind(self)
