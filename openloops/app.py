@@ -622,14 +622,16 @@ class H(BaseHTTPRequestHandler):
             self._get()
         except LockTimeout as e:   # a writer held state.json past the deadline: say so, plainly, rather than hang
             print(f"busy: {e}", file=sys.stderr)
-            self._json({"error": messages.say("app_busy")}, 503)
+            # "code": what the page tells apart by (#66 review), never the sentence, which may be reworded
+            self._json({"error": messages.say("app_busy"), "code": "app_busy"}, 503)
 
     def do_POST(self):
         try:
             self._post()
         except LockTimeout as e:
             print(f"busy: {e}", file=sys.stderr)
-            self._json({"error": messages.say("app_busy")}, 503)
+            # "code": what the page tells apart by (#66 review), never the sentence, which may be reworded
+            self._json({"error": messages.say("app_busy"), "code": "app_busy"}, 503)
 
     def _get(self):
         if self.path.split("?")[0] in ("/", "/index.html"):

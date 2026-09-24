@@ -1306,10 +1306,10 @@ function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.
  else if(k==='people')toast('People suggested - pick their seniority');}}
 // One pass at a time, whoever asks (timer, a job start, the tab coming back, Start over): a call during a pass only
 // asks for one more pass once it is done (review of #48, P2 2).
-// The app answered, but was busy saving (503 with the app_busy sentence, a job or a repair holding state.json, #61):
-// not "down". The last state stays up, no banner, and the next poll comes at the usual pace; api() has already
-// put the one Console line for it.
-const appBusy=e=>!!(e&&e.status===503&&e.body&&e.body.error===msg('app_busy'));
+// The app answered, but was busy saving (503 with code app_busy, a job or a repair holding state.json, #61): not
+// "down". The last state stays up, no banner, and the next poll comes at the usual pace; api() has already put the
+// one Console line for it. After a failed poll it means the app is back: the offline banner and backoff go.
+const appBusy=e=>!!(e&&e.status===503&&e.body&&e.body.code==='app_busy');
 async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inLoop=true;try{
   await loadState();
   for(const k of Object.keys(J))if(J[k].running&&!runSeen.has(k))clog(k+' started');runSeen=new Set(Object.keys(J).filter(k=>J[k].running));
@@ -1322,7 +1322,7 @@ async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inL
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
   await tick();banner('');if(offline)reattached=false;   // #27: on load, and once back after the banner, one sweep at a time until one completes
   reattachSweep();offline=false;   // #62: and again once the AI has changed
- }catch(e){if(!appBusy(e)){offline=true;appDown(e)}}   // not answering: no fast polls until it does (below)
+ }catch(e){if(!appBusy(e)){offline=true;appDown(e)}else if(offline){offline=false;reattached=false;banner('')}}   // not answering: no fast polls until it does (below); busy: back, one sweep once a poll gets through
  inLoop=false;if(stopped)return;if(pendingLoop){pendingLoop=false;return loop()}   // asked for during this pass: once more, now
  const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
  loopT=setTimeout(loop,offline?60000:Object.keys(WATCH).length?1500:(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
@@ -1343,5 +1343,7 @@ cfgRestore();
 $('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';
 $('#cfg_agent').setAttribute('aria-label','Your AI');
 clog('page opened '+location.host+' · page '+PAGE);conPaint();
-(async()=>{try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm()}catch(e){appDown(e)}loop()})();
+// Busy saving at the first load (#66 review): no banner; try the first load again once, then the poll loop carries on
+(async()=>{for(let i=0;i<2;i++){try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm();break}
+ catch(e){if(!appBusy(e)){appDown(e);break}}}loop()})();
 </script></body></html>

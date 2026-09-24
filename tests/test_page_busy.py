@@ -70,6 +70,7 @@ let REPLY='ok';const DELAY={},ON={};
 global.fetch=(u,o)=>{const q=ON[u]&&ON[u].shift(),mode=q?q.mode:REPLY;return new Promise((res,rej)=>setTimeout(()=>{
  if(mode==='down')return rej(new TypeError('Failed to fetch'));
  if(mode==='busy')return res({ok:false,status:503,text:async()=>JSON.stringify({error:BUSY,code:'app_busy'})});
+ if(mode==='busy_nocode')return res({ok:false,status:503,text:async()=>JSON.stringify({error:BUSY})});   // a 503 of another kind
  if(mode==='boom')return res({ok:false,status:500,text:async()=>'{"error":"boom"}'});
  res({ok:true,status:200,json:async()=>u==='/api/state'?JSON.parse(JSON.stringify(STATE)):{ok:true}})},q?q.ms:DELAY[u]||0))};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -96,6 +97,9 @@ if NODE:
       REPLY='ok';await loop();out.back={banner:$('#banner').style.display||'',offline,next:NEXT.pop()};
       REPLY='down';CON=[];await loop();out.down={banner:$('#banner').style.display,text:$('#banner').textContent,offline,next:NEXT.pop()};
       REPLY='ok';await loop();REPLY='boom';await loop();out.boom={banner:$('#banner').style.display,text:$('#banner').textContent,offline,next:NEXT.pop()};
+      REPLY='ok';await loop();REPLY='down';await loop();REPLY='busy';const kept=S;await loop();
+      out.back_busy={banner:$('#banner').style.display,offline,next:NEXT.pop(),same:S===kept};
+      REPLY='busy_nocode';await loop();out.nocode={banner:$('#banner').style.display,offline};
     """)
     check(out["first"] == {"S": True, "banner": "none", "offline": False, "next": 4000}, f"a normal poll: state up, no banner, next in 4 s ({out['first']})")
     b = out["busy"]
@@ -111,6 +115,23 @@ if NODE:
     e = out["boom"]
     check(e["banner"] == "block" and e["text"] == messages.say("server_error") and e["next"] == 60000,
           f"a 500 is still an error: banner up, backed off ({e})")
+    b = out["back_busy"]
+    check(b == {"banner": "none", "offline": False, "next": 4000, "same": True},
+          f"a failed poll then a busy one: the app is back, so the banner and the 60 s backoff go; the state stays ({b})")
+    check(out["nocode"]["banner"] == "block" and out["nocode"]["offline"] is True,
+          f"a 503 without code app_busy is still an error, whatever its sentence ({out['nocode']})")
+    # the first load, when the page opens
+    boot = [f"const BUSY={json.dumps(BUSY)};", STUBS, *BASE,
+            "let LOOPED=0,LOADS=0;function loop(){LOOPED++}async function loadCfg(){}async function doctor(){}async function loadDaylog(){}async function loadRm(){}",
+            "const _f=global.fetch;global.fetch=(u,o)=>{if(u==='/api/state')LOADS++;return _f(u,o)};",
+            cut("const appBusy=", "\nasync function loop()"),
+            cut("// Busy saving at the first load", "</script>")]
+    for mode, want_banner in (("busy", "none"), ("down", "block")):
+        out = node(boot[:-1] + [f"REPLY={json.dumps(mode)};", boot[-1]], "await sleep(300);$('#banner');"
+                   "out.r={banner:$('#banner').style.display||'none',looped:LOOPED,loads:LOADS};")
+        r = out["r"]
+        check(r["banner"] == want_banner and r["looped"] == 1 and r["loads"] == (2 if mode == "busy" else 1),
+              f"first load answered {mode}: banner {want_banner}, " + ("tried once more, " if mode == "busy" else "") + f"then the poll loop ({r})")
 
     # ------------------------------------------------------------ 2. a card click (#64)
     say("2. a failed click says what it could not do; a slow one says Saving…")
