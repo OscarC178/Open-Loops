@@ -43,8 +43,10 @@ def check_args(argv):
             continue
         if a == "--port" or a.startswith("--port="):
             val = a.split("=", 1)[1] if "=" in a else (argv[i + 1] if i + 1 < len(argv) else "")
-            if not (val.isdigit() and 1 <= int(val) <= 65535):
-                _bad_option("--port needs a number, for example: --port 8790")
+            # ASCII digits only: str.isdigit() also passes "²", which int() cannot read (review of #66); and a port
+            # the app can listen on, as config.json's "port" is checked
+            if not (re.fullmatch(r"[0-9]{1,5}", val) and 1024 <= int(val) <= 65535):
+                _bad_option("--port needs a number from 1024 to 65535, for example: --port 8790")
             i += 1 if "=" in a else 2
             continue
         _bad_option(f"unknown option: {a}")

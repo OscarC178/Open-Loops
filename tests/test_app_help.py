@@ -121,7 +121,9 @@ socket.socket.bind, socket.socket.listen, webbrowser.open = bind, listen, wopen
                        (["stray"], "unknown option: stray"),
                        (["--port", str(port), "--no-browser", "--bogus"], "unknown option: --bogus"),
                        (["--port"], "--port needs a number"), (["--port", "abc"], "--port needs a number"),
-                       (["--port=abc"], "--port needs a number"), (["--port", "--no-browser"], "--port needs a number")):
+                       (["--port=abc"], "--port needs a number"),
+                       (["--port=\u00b2"], "--port needs a number"), (["--port", "\u0663"], "--port needs a number"),
+                       (["--port", "80"], "--port needs a number"), (["--port", "70000"], "--port needs a number"), (["--port", "--no-browser"], "--port needs a number")):
         what = " ".join(args)
         rc, out, err, took = run(*args)
         check(rc == 1 and took < 10, f"{what}: exits 1 at once ({rc}, {took:.1f} s)")
