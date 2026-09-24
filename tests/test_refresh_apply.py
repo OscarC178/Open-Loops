@@ -358,8 +358,9 @@ for junk in ("yesterday", 12345, "2026-13-45"):
     except refresh.CursorUnreadable:
         raised = True
     check(raised, f"parse_when({junk!r}): a stored cursor that is not a date refuses (CursorUnreadable), never guesses a window")
-check(refresh.messages.say("cursor_unreadable") == "Open Loops can't read when it last checked. Press Forget where I was on the message and the next "
-      "refresh picks up from where each source was last read; Start over in Settings is only the last resort.",
+check(refresh.messages.say("cursor_unreadable") == "Open Loops can't read when it last checked. Press Forget where I was on the message: the next "
+      "refresh picks up where each source was last read or, where that isn't recorded, reads back as far as Settings → History says; "
+      "Start over in Settings is only the last resort.",
       "...with this plain sentence (messages.py): the light fix first, Start over last, no state.json (#56)")
 check(refresh.messages.job_failure("refresh", 1, "x", failure={"failure": "cursor_unreadable"})
       == ("cursor_unreadable", refresh.messages.say("cursor_unreadable")), "the page's toast shows that sentence, not 'didn't finish'")

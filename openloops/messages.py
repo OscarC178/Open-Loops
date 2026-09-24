@@ -145,7 +145,8 @@ FAILURES = {
         "what": "Open Loops can't read when it last checked.",
         # the light fix first (#56): "Forget where I was" on the toast (app.py /api/cursor/forget) keeps the list,
         # people and tone; Start over wipes them, so it is named last
-        "fix": "Press Forget where I was on the message and the next refresh picks up from where each source was last read; Start over in Settings is only the last resort.",
+        # (review of #59) Gmail has no record of when it was last read, so it always gets the History window: say both cases
+        "fix": "Press Forget where I was on the message: the next refresh picks up where each source was last read or, where that isn't recorded, reads back as far as Settings → History says; Start over in Settings is only the last resort.",
         "button": None},
 
     # after Forget where I was (app.py /api/cursor/forget): each source from when it was last read; a source with no
