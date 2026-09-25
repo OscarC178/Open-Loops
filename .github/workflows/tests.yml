@@ -1,0 +1,43 @@
+# Runs the test suite (python tests/run_all.py, the same as `npm test`) on every pull request and on every
+# push to develop, on Linux, macOS and Windows. The tests are stdlib-only and never call Slack, Gmail or Claude: each
+# builds a throwaway install with its own HOME on a port the OS picks, and the Claude setup tests use a fake
+# `claude` on PATH (a .cmd shim over Python on Windows, as npm installs the real one). test_connect_win and
+# test_setup_ps1 run only on Windows (the hidden-console sign-in runner, a real setup.ps1 -Isolated install into a
+# temp folder); elsewhere they skip. test_macos_launch skips itself off macOS, and skips its one live check (doctor finds a real
+# `claude`) where Claude Code is not installed, saying so in the log. Node is installed so the page's JavaScript is
+# tested too (test_messages fails, rather than skips, without it here).
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+
+# A newer push to the same PR or branch cancels the run still going for the older one (macOS minutes are scarce).
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      # node runs the page's own JavaScript in test_messages (offline banner, error sentences, the escaped table),
+      # test_install (the Install button) and test_first_run (the setup flow); in CI those checks must run, never skip
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Run the suite
+        run: python tests/run_all.py

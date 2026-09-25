@@ -1,4 +1,4 @@
-"""Which AI runs the headless jobs. config.json "agent": "claude" (default) or "grok".
+"""Which AI runs the headless jobs. config.json "agent": "claude" (default), "grok" or "codex".
 
 The job scripts (refresh/chase/voice/people) name tools logically - "slack.read_channel",
 "gmail.search_threads" - and call run(prompt, tools). This module maps those names to the
@@ -7,13 +7,21 @@ agent's own tool ids and invokes the right CLI.
 Grok: Slack is opt-in (config.json "use_slack"). Off, the Slack plugin is not started and
 doctor does not probe it. Vercel is never started. Jobs pass --effort low because the Grok
 CLI defaults to xhigh. Gmail is the bundled gmail_mcp.py server (not Claude's connector).
+
+Codex (OpenAI's CLI, ChatGPT sign-in): Gmail and Slack are ChatGPT connectors that ride on the ChatGPT account
+(server "codex_apps", tools gmail.<tool> / slack.slack_<tool>), not MCP servers on this computer. Each run gets an
+allow-list in its config (every connector off, the job's own tools on; see the Codex section below), a read-only
+sandbox and no shell tool, and fails if it calls anything else. Jobs run under a job-local CODEX_HOME per ChatGPT
+account (state/codex-home/<hash>) so the user's plugins, skills, memories and AGENTS.md are not loaded.
 """
-import json, os, shutil, subprocess, sys
+import hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
+from .messages import say
 from .paths import ROOT
 WIN = sys.platform == "win32"
 _GROK_JOB_HOME = ROOT / "state" / "grok-home"
+_CODEX_JOBS = ROOT / "state" / "codex-home"  # one job home per ChatGPT account below it
 
 # logical "service.tool" -> per-agent fully-qualified tool id.
 # Claude can reach Slack two ways: the Slack *plugin* (plugin:slack:slack, default) or the
@@ -31,7 +39,18 @@ _CLAUDE_MIRO = {"plugin": "mcp__plugin_miro_miro", "connector": "mcp__claude_ai_
 _FMT = {
     "claude": {"slack": _CLAUDE_SLACK["plugin"], "gmail": "mcp__claude_ai_Gmail__{}", "miro": _CLAUDE_MIRO["plugin"]},
     "grok":   {"slack": "slack__slack_{}",       "gmail": "gmail__{}",                "miro": "miro"},
+    # ChatGPT connectors, as `codex exec --json` names them (verified in #18, Codex CLI 0.156.1). Miro has no
+    # connector: "miro" is a user-added MCP server of that name, only there if the user set one up (see _codex_miro_toml).
+    "codex":  {"slack": "slack.slack_{}",        "gmail": "gmail.{}",                 "miro": "miro"},
 }
+# The logical names the jobs pass where the Gmail connector's tool is called something else. gmail.reply is
+# send_email with reply_message_id (see _CODEX_HINT), used only when a send switch in Settings is ticked (chase.py).
+_CODEX_RENAME = {"gmail.search_threads": "search_emails", "gmail.get_thread": "read_email_thread",
+                 "gmail.reply": "send_email"}
+# Said next to a tool in the Codex preamble. Both take reply_message_id (seen in Codex's cached tool schemas, 0.156.1),
+# which is what keeps a chase in the original email thread.
+_CODEX_HINT = {"gmail.reply": "pass reply_message_id so it answers in the thread",
+               "gmail.create_draft": "pass reply_message_id so the draft answers in the thread"}
 
 # Grok CLI defaults to xhigh; Open Loops jobs are unattended JSON, not coding.
 _GROK_DISALLOWED = (
@@ -61,15 +80,33 @@ def miro_source():
     return v if v in _CLAUDE_MIRO else "plugin"
 
 
-def display_name():
-    return {"claude": "Claude", "grok": "Grok"}.get(name(), name().capitalize())
+_exists = os.path.exists  # a seam for the tests: where cli() looks
 
 
-def cli():
-    """Path or command for the agent's CLI (also used to open its sign-in terminal)."""
-    if name() == "grok":
+def display_name(agent=None):
+    """"Claude" / "Grok" for the selected agent, or for the one named."""
+    n = (agent or name()).strip().lower()
+    return {"claude": "Claude", "grok": "Grok", "codex": "Codex"}.get(n, n.capitalize())
+
+
+def cli(agent_name=None):
+    """Path or command for the agent's CLI (also used to open its sign-in terminal); agent_name: that AI, not the
+    configured one (a setup step already under way, #27)."""
+    who = agent_name or name()
+    if who == "grok":
         # grok installs to ~/.grok/bin, which Finder/launchd PATHs usually lack
         return shutil.which("grok") or str(Path.home() / ".grok" / "bin" / "grok")
+    if who == "codex":
+        # Homebrew, the install script (~/.local/bin, Windows %LOCALAPPDATA%), Codex's own folder or the desktop app:
+        # a Finder- or launchd-started app has none of them on PATH
+        home = Path.home()
+        spots = [Path("/opt/homebrew/bin/codex"), home / ".local" / "bin" / "codex", home / ".codex" / "bin" / "codex",
+                 Path("/Applications/Codex.app/Contents/Resources/codex")]  # the desktop app alone ships one too
+        if WIN and os.environ.get("LOCALAPPDATA"):
+            spots.insert(0, Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
+        if os.environ.get("OPENLOOPS_NO_FALLBACK_PATHS") == "1":  # tests: PATH only, so a developer's own Codex is never run
+            spots = []
+        return shutil.which("codex") or next((str(p) for p in spots if _exists(p)), "codex")
     return "claude"
 
 
@@ -79,7 +116,7 @@ def use_slack():
 
 
 def slack_enabled():
-    """Whether jobs should pass Slack tools. Claude unchanged (still gated on slack_self_id)."""
+    """Whether jobs should pass Slack tools. Claude and Codex: yes (still gated on slack_self_id); Grok: use_slack."""
     return True if name() != "grok" else use_slack()
 
 
@@ -112,45 +149,1009 @@ def grok_job_env():
     return env
 
 
+# ---- Codex (OpenAI's CLI, signed in with ChatGPT) ----
+# The boundary, measured on 2026-09-23 against Codex CLI 0.156.1 with real runs (PR #40): in `codex exec`,
+#   [apps._default] enabled = false                 switches every ChatGPT connector off,
+#   [apps.<connector id>] enabled = true            switches one back on,
+#   [apps.<connector id>.tools.<tool>] enabled = false   removes one tool from the session altogether,
+# so a job gets exactly the connector tools it lists and the rest are not there to call. The id is the connector's
+# own (connector_... for Gmail, asdk_app_... for Slack), read from Codex's cached tool list; "gmail" is not an app id,
+# which is why #18's apps.gmail.* keys did nothing. Every approval_mode form ("approve", per app, per tool, _default,
+# on the command line) was ignored: a draft was still created. Tools the connector marks destructive (delete_emails)
+# were refused by Codex itself. As a second line, a run that calls any tool off the job's list fails and saves nothing.
+# The allow-list must sit in config.toml itself: layered from a -p profile, Codex took [apps._default] but not the
+# per-app tables (measured), so each run gets a short-lived home of its own (see codex_job_env).
+# the plain sentence a job prints (and the checklist shows) when Open Loops will not run Codex: worded in messages.py
+CODEX_REFUSE = {"keyring": say("codex_keyring"), "signin": say("codex_signin"), "link": say("codex_link"),
+                "cold": say("codex_cold"), "limit": say("codex_limit"), "expired": say("codex_expired"),
+                "failed": say("codex_failed"), "unlisted": say("codex_unlisted"), "notools": say("codex_notools"),
+                "stale": say("codex_stale"), "nosources": say("codex_nosources"), "timeout": say("codex_timeout"),
+                "start": say("codex_start")}  # {store} and {limit} are left for the caller's .format()
+_CODEX_SAFE_BUILTINS = {"list_mcp_resources", "list_mcp_resource_templates"}  # Codex's own listing tools: harmless
+# Connector tools that only read. A run is retried (see codex_run) only when its job lists nothing else, and never
+# after a call to anything outside this set, so a retry can never repeat a draft, a send or any other change.
+CODEX_READ_TOOLS = {"gmail.get_profile", "gmail.search_emails", "gmail.search_email_ids", "gmail.read_email",
+                    "gmail.read_email_thread", "gmail.batch_read_email", "gmail.batch_read_email_threads",
+                    "gmail.list_labels", "gmail.list_drafts", "slack.slack_read_channel", "slack.slack_read_thread",
+                    "slack.slack_search_public_and_private", "slack.slack_search_users", "slack.slack_read_user_profile",
+                    "slack.slack_list_user_channels"}
+_CODEX_WROTE_RE = re.compile(r"^(?:DRAFT_CREATED|SENT):", re.M)  # a chase's own success markers
+_CODEX_SKIP = {"gmail": "Gmail is not connected in this ChatGPT account; skip email.",
+               "slack": "Slack is not connected in this ChatGPT account; skip Slack."}
+# #44: a run that called none of a connector's tools is refused only when the session did not have them (the start-up
+# race, #42), not when the model had them and chose not to call (nothing to search, or nothing it was allowed to do).
+# `codex exec --json` does not say which tools a session got (0.156.1: its items are messages, tool calls, commands,
+# file changes and web searches; tool search is not among them), so the run is asked to end with one machine line
+# naming the listed tools it could see. The line is removed before the job reads the reply.
+# Measured on the first real run: the connector tools are deferred, so a model with no reason to search never saw
+# them and said "none"; hence the search it is asked for below, which is Codex's own tool search, not a tool call.
+CODEX_SEEN_ASK = ("When you have finished, end your reply with one more line: TOOLS_SEEN: followed by the exact names, "
+                  "comma-separated, of the tools listed above that are available to you in this session, whether or "
+                  "not you called them, or TOOLS_SEEN: none if none of them is. If you have not searched for them yet, "
+                  "search for each by name first (finding a tool is not calling it), so the line says what this "
+                  "session really has. Add the line after everything the instructions ask for, even if they say to "
+                  "reply with nothing else: Open Loops removes it before reading your reply.\n")
+# #42 (measured 2026-09-24, Codex 0.156.1, 33 runs on one Mac): with gpt-5.6-sol the connector tools are deferred,
+# i.e. not in the first request, and only appear once the model searches or lists its tools. Every miss was a single
+# ~13k-token request in which the model answered from its short visible list without looking; every run that looked
+# found both Gmail and Slack (the look-ups seen were the code-mode exec tool running ALL_TOOLS.map(x => x.name)).
+# gpt-6-astra sends them up front (18 of 18). So the preamble's first step is the look-up, not something left to the
+# model's judgement.
+CODEX_LOOKUP_FIRST = ("First step, before anything else: look up your full list of tools. Some of your tools are "
+                      "deferred: they are not shown at the start and only appear once you search for them or list them, "
+                      "for example by running ALL_TOOLS.map(x => x.name) in the code-mode functions.exec tool (listing "
+                      "tools there is allowed; it is not a shell command) or with Codex's tool search. Keep what the "
+                      "look-up prints out of your answer. Do not decide, or say, that you have no Gmail or Slack tools "
+                      "until you have done this look-up.\n")
+_CODEX_SEEN_LINE = re.compile(r"[*_`]*TOOLS_SEEN[*_`]*[ \t]*:(.*)", re.I)  # the whole last line, no quote or bullet
+
+
+_FENCE_OPEN = re.compile(r"(`{3,}|~{3,})")          # CommonMark: a fence opens with 3+ backticks or 3+ tildes
+
+
+def codex_tools_seen(text):
+    """A run's final message -> (the message without its TOOLS_SEEN line, the names on it as a set, or None when there
+    is no usable line). Usable means strict (review of #45): outside code fences there is exactly one footer-shaped line
+    (TOOLS_SEEN: at the start of the line, not quoted ("> ...") or a list item), and it is the last non-empty line.
+    Fences follow CommonMark: one opens with 3+ backticks or 3+ tildes and closes only with a line of the same character,
+    at least as many, and nothing else; lines inside, and after an unclosed opening, are never footers. Prose that merely
+    mentions TOOLS_SEEN does not count. Anything else counts as no line (the refusal path) and the text is returned
+    untouched. "none" (or nothing) after the colon is an empty set: the run saw none."""
+    text = text or ""
+    lines = text.splitlines()
+    fence, footers = None, []  # fence: (character, count) of the open fence, or None
+    for i, ln in enumerate(lines):
+        st = ln.strip()
+        if fence is None:
+            m = _FENCE_OPEN.match(st)
+            if m:
+                fence = (m.group(1)[0], len(m.group(1)))
+            elif _CODEX_SEEN_LINE.fullmatch(st):
+                footers.append(i)
+        elif re.fullmatch(re.escape(fence[0]) + "{%d,}" % fence[1], st):
+            fence = None  # a closing fence: same character, at least as many, nothing else
+    last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
+    if len(footers) != 1 or footers[0] != last:
+        return text, None
+    raw = _CODEX_SEEN_LINE.fullmatch(lines[last].strip()).group(1).strip().strip("`*_ ")
+    seen = set() if raw.lower() in ("", "none", "none.") else {t.strip("`*_.;") for t in re.split(r"[,\s]+", raw) if t.strip("`*_.;")}
+    return "\n".join(lines[:last]).rstrip(), seen
+
+
+def codex_seen_services(seen, allowed):
+    """The connectors ("gmail", "slack") at least one of whose allowed tools the run says it saw. Only exact aliases of
+    the job's own allowed tools count, built from that list: "gmail.search_emails", its name inside the session
+    "mcp__codex_apps__gmail_search_emails", and the bare "search_emails" only when the job lists tools of one connector
+    alone (with two, a bare name could be either). Anything else ("other.search_emails", "..._outlook_search_emails") is
+    ignored, i.e. not evidence that the session had the tool."""
+    dotted = [q for q in allowed if "." in q]
+    one_connector = len({q.split(".", 1)[0] for q in dotted}) == 1
+    alias = {}
+    for q in dotted:
+        svc, short = q.split(".", 1)
+        alias[q.lower()] = svc
+        alias["mcp__codex_apps__" + q.replace(".", "_").lower()] = svc
+        if one_connector:
+            alias[short.lower()] = svc
+    return {alias[t.lower()] for t in seen or () if t.lower() in alias}
+
+
+_LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota", re.I)
+_EXPIRED_RE = re.compile(r"\b401\b|unauthori[sz]ed|refresh token|token (?:is )?expired|sign in again|log in again|login again", re.I)
+SNAPSHOT_MAX_AGE_S = 24 * 3600  # an older connector list is refreshed by a warm-up before a job runs on it
+
+
+def codex_failure(rc, errors, codex_stderr):
+    """Why a finished `codex exec` failed -> "timeout" | "limit" | "expired" | "failed" | "" (it did not). One order
+    for every caller (jobs, the warm-up, doctor.py's probe): a timeout, then a spent allowance, then a sign-in that ran
+    out, then any other non-zero exit. Read from Codex's own error events and stderr, never from the model's text."""
+    said = "\n".join(errors or []) + "\n" + (codex_stderr or "")
+    if rc == 124:
+        return "timeout"
+    if _LIMIT_RE.search(said):
+        return "limit"
+    if _EXPIRED_RE.search(said):
+        return "expired"
+    return "failed" if rc != 0 else ""
+
+
+class CodexNotReady(Exception):
+    """Open Loops will not run Codex: .why is a key of CODEX_REFUSE."""
+    def __init__(self, why):
+        super().__init__(why)
+        self.why = why
+
+
+def codex_user_home():
+    """The user's own Codex folder: $CODEX_HOME if set (and not one of our job homes), else ~/.codex."""
+    h = os.environ.get("CODEX_HOME")
+    if h and not os.path.realpath(h).startswith(os.path.realpath(_CODEX_JOBS) + os.sep):
+        return Path(h)
+    return Path.home() / ".codex"
+
+
+def codex_auth():
+    """What the user's auth.json says -> {"mode": "chatgpt" | "apikey" | "", "email", "account", "sig"}. mode "" = no
+    file (signed out, or the sign-in is kept in the system keychain). "account" is a short hash of the ChatGPT account
+    id: it names the job home and tells doctor.py when the account changed. The email comes from the ID token's claims
+    (decoded, not verified: it is only shown on the checklist). "sig" changes whenever the file does. No token leaves."""
+    import base64
+    f = codex_user_home() / "auth.json"
+    out = {"mode": "", "email": "", "account": "", "sig": ""}
+    try:
+        st = f.stat()
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return out
+    out["sig"] = f"{st.st_mtime_ns}:{st.st_size}"
+    tokens = data.get("tokens") or {}
+    mode = str(data.get("auth_mode") or "").strip().lower()
+    if not mode:  # older files carry no auth_mode: tokens mean ChatGPT, a key alone means API key
+        mode = "chatgpt" if tokens else "apikey" if data.get("OPENAI_API_KEY") else ""
+    out["mode"] = mode
+    claims = {}
+    try:
+        payload = str(tokens.get("id_token") or "").split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except Exception:
+        pass
+    out["email"] = str(claims.get("email") or (claims.get("https://api.openai.com/profile") or {}).get("email") or "")
+    acct = str(tokens.get("account_id") or (claims.get("https://api.openai.com/auth") or {}).get("chatgpt_account_id") or "")
+    out["account"] = hashlib.sha256(acct.encode("utf-8")).hexdigest()[:16] if acct else ""
+    return out
+
+
+def codex_keyring_store():
+    """What the system keychain is called here, for CODEX_REFUSE["keyring"]."""
+    return "the Mac keychain" if sys.platform == "darwin" else "Windows Credential Manager" if WIN else "the system keyring"
+
+
+def codex_home(account=None):
+    """The job home for one ChatGPT account: state/codex-home/<hash>/. Switching account switches folder, so nothing
+    (links, connector list, anything Codex writes) is ever shared between two accounts."""
+    return _CODEX_JOBS / (account if account is not None else codex_auth()["account"])
+
+
+def _codex_miro_toml():
+    """The user's own [mcp_servers.miro] tables from their Codex config.toml, copied verbatim into the job config, or "".
+    Codex has no Miro connector; this is only there if the user added a Miro MCP server to Codex themselves."""
+    try:
+        text = (codex_user_home() / "config.toml").read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    out, on = [], False
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("["):  # a table header: in the Miro server's tables or out of them
+            on = bool(re.match(r'\[\s*mcp_servers\s*\.\s*(?:miro|"miro")\s*(?:\.|\])', s))
+        if on:
+            out.append(ln)
+    return "\n".join(out).strip()
+
+
+def codex_has_miro():
+    return bool(_codex_miro_toml())
+
+
+def codex_connectors(home=None):
+    """Codex's cached list of connector tools in a folder (a run folder's snapshot, or an account home) -> {connector
+    id: [tool name, ...]} (names as the runs see them, "gmail.create_draft"), from the newest file Codex wrote. A
+    connector the list names without any tool is left out, i.e. treated as absent. {} when there is no list yet."""
+    d = (home or codex_home()) / "cache" / "codex_apps_tools"
+    try:
+        files = sorted((f for f in d.iterdir() if f.is_file() and f.stat().st_size), key=lambda f: f.stat().st_mtime)
+        data = json.loads(files[-1].read_text(encoding="utf-8")) if files else {}
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for t in data.get("tools") or []:
+        tool = (t or {}).get("tool") or {}
+        cid, nm = str((tool.get("_meta") or {}).get("connector_id") or ""), str(tool.get("name") or "")
+        if cid and "." in nm and re.fullmatch(r"[A-Za-z0-9_]+", cid):
+            out.setdefault(cid, []).append(nm)
+    return out
+
+
+def codex_snapshot_age(home):
+    """Seconds since Codex wrote the newest connector list in a folder, or None when there is none."""
+    try:
+        newest = max(f.stat().st_mtime for f in (home / "cache" / "codex_apps_tools").iterdir() if f.is_file())
+    except (OSError, ValueError):
+        return None
+    import time
+    return time.time() - newest  # negative when the file claims to be from the future: treated as stale
+
+
+def _toml_str(v):
+    return json.dumps(str(v))  # a JSON string is a valid TOML basic string
+
+
+def _link(origin, dest):
+    """dest -> origin as a symlink (Windows without Developer Mode: a hard link), never a copy: Codex refreshes the
+    token in place, and a copy's refresh would sign the user's own Codex out."""
+    try:
+        dest.symlink_to(origin)
+    except OSError:
+        os.link(origin, dest)
+
+
+_CODEX_CACHE = ("codex_apps_tools", "codex_apps_server_info")  # the connector list: all a run needs from the cache
+
+
+def _codex_keep_cache(run, acct):
+    """After a run: whatever connector list Codex fetched or refreshed in the run home becomes the account's."""
+    for sub in _CODEX_CACHE:
+        for f in (run / "cache" / sub).glob("*.json"):
+            dest = acct / "cache" / sub / f.name
+            try:
+                if f.stat().st_size and (not dest.exists() or f.stat().st_mtime > dest.stat().st_mtime):
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, dest)
+            except OSError:
+                pass
+
+
+def _codex_base_toml(src):
+    lines = ["# Generated by Open Loops for one headless Codex run; the folder is deleted when the run ends."]
+    if model():
+        lines.append("model = " + _toml_str(model()))
+    if effort():
+        lines.append("model_reasoning_effort = " + _toml_str(effort()))
+    lines += ["project_doc_max_bytes = 0", 'web_search = "disabled"', "",
+              "[features]", "memories = false", "shell_tool = false",
+              "image_generation = false", "multi_agent = false", "browser_use = false", "computer_use = false", "",
+              "# every ChatGPT connector off; the run's own allow-list below switches on only what the job lists",
+              "[apps._default]", "enabled = false"]
+    miro = _codex_miro_toml()
+    if miro:
+        lines += ["", "# the user's own Miro MCP server, copied from " + str(src / "config.toml"), miro]
+    return "\n".join(lines) + "\n"
+
+
+CODEX_RUN_STALE_S = 3600        # a run folder with no owner on record is left alone this long (#42), then removed
+_CODEX_PID = "openloops.pid"    # in each run folder: the process that made it, i.e. the job it belongs to
+
+
+def _pid_alive(pid):
+    """Whether a process with this id exists. Conservative: anything unclear counts as alive, since a live job's folder
+    must never be removed. Windows: asks without touching it (os.kill there would end it)."""
+    if pid <= 0:
+        return False
+    if WIN:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.OpenProcess.argtypes, k.OpenProcess.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE
+            k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            k.GetExitCodeProcess.restype = wintypes.BOOL
+            k.CloseHandle.argtypes, k.CloseHandle.restype = [wintypes.HANDLE], wintypes.BOOL
+            h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process; else (denied...) alive
+            try:
+                code = wintypes.DWORD()
+                if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return True  # the query failed: count it as alive
+                return code.value == 259  # STILL_ACTIVE
+            finally:
+                k.CloseHandle(h)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def codex_sweep(now=None):
+    """Remove run folders (state/codex-home/<account>/run-*) that a run stopped part-way left behind: a job killed by
+    Quit or a test skips its own clean-up, and the folder keeps its link to the user's auth.json (#42). A folder goes
+    when the job that made it has ended (its openloops.pid names no live process), or when it names none and is more
+    than CODEX_RUN_STALE_S old. A folder whose job is alive is never removed, however old. Runs at app start and before
+    and after every Codex run; says on stderr how many it removed. -> that number. Links are removed, never followed.
+    Boundary: nothing is swept when state/codex-home is a link, an account folder that is a link is skipped, and every
+    folder removed must resolve to a place inside state/codex-home."""
+    import time
+    now = time.time() if now is None else now
+    if _CODEX_JOBS.is_symlink():
+        return 0
+    base = os.path.realpath(_CODEX_JOBS) + os.sep
+    try:
+        runs = [r for a in _CODEX_JOBS.iterdir() if a.is_dir() and not a.is_symlink()
+                for r in a.glob("run-*") if r.is_dir() and not r.is_symlink()]
+    except OSError:
+        return 0
+    gone = 0
+    for r in runs:
+        if not os.path.realpath(r).startswith(base) or r.parent.is_symlink():
+            continue  # not where it should be (the tree changed under us): leave it
+        try:
+            age = now - r.stat().st_mtime
+        except OSError:
+            continue
+        try:
+            pid = int((r / _CODEX_PID).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid is None and age < CODEX_RUN_STALE_S:
+            continue  # being set up right now, or from before pid files: wait for the hour
+        if pid is not None and _pid_alive(pid):
+            continue  # its job is still running
+        shutil.rmtree(r, ignore_errors=True)
+        gone += not r.exists()
+    if gone:
+        print(f"Open Loops: removed {gone} leftover Codex run folder{'s' if gone != 1 else ''} "
+              "(from runs that were stopped part-way).", file=sys.stderr, flush=True)
+    return gone
+
+
+def codex_job_env():
+    """A home for one headless Codex run -> (env, run home, account home). Raises CodexNotReady rather than ever
+    running in the user's own home.
+
+    The account home (state/codex-home/<account hash>/) keeps only what is worth keeping between runs: Codex's cached
+    connector list (cache/). Each run gets a fresh folder below it (run-<id>/) holding links to the user's auth.json
+    (and .credentials.json, the MCP sign-ins a Miro server uses, when there is one), a copy of that list, an empty
+    work folder and a config.toml: model and effort, memories and the shell tool off, no AGENTS.md, no web search,
+    every connector off (the run adds its allow-list, _codex_exec). Nothing from an earlier run or another account is
+    ever reused, and two jobs at once never share a config. The user's own config, plugins, skills, hooks and memories
+    are never loaded (#18: ~190k -> ~27k input tokens)."""
+    import uuid
+    src, auth = codex_user_home(), codex_auth()
+    if not (src / "auth.json").is_file():
+        raise CodexNotReady("keyring" if _codex_logged_in() else "signin")
+    if auth["mode"] != "chatgpt" or not auth["account"]:
+        raise CodexNotReady("signin")  # API-key sign-in: no connectors (doctor.py says so on its row)
+    acct = codex_home(auth["account"])
+    try:
+        codex_sweep()  # folders left by earlier runs that were killed part-way (#42)
+    except Exception:
+        pass  # never a reason not to run
+    run = acct / ("run-" + uuid.uuid4().hex[:12])
+    try:
+        (acct / "cache").mkdir(parents=True, exist_ok=True)
+        (run / "work").mkdir(parents=True)  # the run's working folder (-C): empty, so nothing to read
+        (run / _CODEX_PID).write_text(str(os.getpid()), encoding="utf-8")  # whose run this is, for codex_sweep
+        for name_ in ("auth.json", ".credentials.json"):
+            if (src / name_).exists():
+                _link(src / name_, run / name_)
+        if not os.path.samefile(run / "auth.json", src / "auth.json"):
+            raise OSError("auth.json link does not point at the user's file")
+        for sub in _CODEX_CACHE:  # a copy: Codex does not read its connector list through a linked folder (measured)
+            if (acct / "cache" / sub).is_dir():
+                shutil.copytree(acct / "cache" / sub, run / "cache" / sub)
+        (run / "config.toml").write_text(_codex_base_toml(src), encoding="utf-8")
+    except OSError:
+        shutil.rmtree(run, ignore_errors=True)
+        raise CodexNotReady("link")
+    env = dict(os.environ)
+    env["CODEX_HOME"] = str(run)
+    return env, run, acct
+
+
+def _codex_logged_in():
+    """`codex login status` says signed in (used only to tell a keychain sign-in from no sign-in)."""
+    try:
+        p = subprocess.run([cli(), "login", "status"], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30, stdin=subprocess.DEVNULL, shell=WIN)
+        said = ((p.stdout or "") + (p.stderr or "")).lower()
+        return p.returncode == 0 and "logged in" in said and "not logged in" not in said
+    except Exception:
+        return False
+
+
+def codex_allow_toml(tools, connectors):
+    """One run's allow-list, layered over the base config: the connectors this job's tools belong to switched on, every
+    other tool of those connectors switched off. -> (toml text, set of allowed tool names)."""
+    allowed = {q for q in _qualify(tools) if "." in q}
+    lines = ["", "# this run's allow-list"]
+    for cid, names in sorted(connectors.items()):
+        if not allowed.intersection(names):
+            continue  # stays off (apps._default)
+        lines += ["", f"[apps.{cid}]", "enabled = true", 'default_tools_approval_mode = "auto"']
+        for nm in sorted(set(names) - allowed):
+            lines += ["", f"[apps.{cid}.tools.{nm.split('.', 1)[1]}]", "enabled = false"]
+    return "\n".join(lines) + "\n", allowed
+
+
+def codex_preamble(tools):
+    """What a Codex run is told before the job's own prompt: its tools by exact connector name, with the short name the
+    job's prompt may use. The config is what enforces the list; this keeps the model from hunting for others."""
+    lines = []
+    for t in tools:
+        for q in _qualify([t]):
+            if "." not in q:  # a whole MCP server ("miro.*")
+                lines.append(f"- any tool of the {q} MCP server (only if it is there)")
+                continue
+            short = t.split(".", 1)[1]
+            notes = ([] if q.endswith(short) else [f"the instructions below may call it {short}"]) + (
+                [_CODEX_HINT[t]] if t in _CODEX_HINT else [])
+            lines.append(f"- {q}" + (f" ({'; '.join(notes)})" if notes else ""))
+    lines = list(dict.fromkeys(lines))
+    head = ("[Open Loops: an unattended run. Nobody is watching, so nobody can answer a question or approve anything.]\n")
+    # Measured (#44, Codex 0.156.1): inside the session a connector tool is named mcp__codex_apps__gmail_search_emails,
+    # and a model searching for "gmail.search_emails" as written missed it in about half the runs.
+    eg = next((q for t in tools for q in _qualify([t]) if "." in q), "")
+    named = (f" In this session each is named mcp__codex_apps__ followed by the name above with its dot as an underscore "
+             f"(e.g. mcp__codex_apps__{eg.replace('.', '_')}).") if eg else ""
+    if lines:
+        # Wording matters (measured): "do not use any other tool" also kept the model from Codex's own tool search,
+        # which is how app tools are found, so it then saw none. Finding tools is allowed; calling others is not.
+        head += (CODEX_LOOKUP_FIRST + "The only connector tools you may call are:\n" + "\n".join(lines) +
+                 "\nThey may not be loaded at the start: search for them by name first." + named + " Do not call any other app or "
+                 "connector tool, do not run shell commands, do not read or write files, do not search the web, do not "
+                 "install anything. If a tool you need is missing or fails, carry on without it and say so where the "
+                 "instructions ask.\n" + CODEX_SEEN_ASK)
+    else:
+        head += ("Use no tools at all: no apps, no connectors, no shell commands, no files, no web. "
+                 "Answer from the text below only.\n")
+    return head + "[End of the Open Loops note. The job's instructions follow.]\n\n"
+
+
+def codex_args(home, out_file, effort_=None):
+    """argv for one `codex exec`: prompt on stdin ("-"), final message to out_file, events as JSON Lines on stdout.
+    Read-only sandbox and the shell tool off. (unified_exec cannot be
+    switched off on Codex 0.156: `codex features list` still shows it on; shell_tool = false does take.)"""
+    e = effort() if effort_ is None else effort_
+    args = [cli(), "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral",
+            "-C", str(home / "work"), "-o", str(out_file), "-c", "features.shell_tool=false"]
+    if model():
+        args += ["-m", model()]
+    if e:
+        args += ["-c", f'model_reasoning_effort="{e}"']
+    return args + ["-"]
+
+
+def _codex_events(jsonl):
+    """`codex exec --json` stdout -> dict: "msg" (last agent message), "used" (every tool called, "server/tool", and
+    shell / file / web items by type), "ok" (tools whose call completed without an error), "usage", "errors".
+    Only names and counts are kept: a tool's arguments and results (mail, messages) never reach the logs from here."""
+    out = {"msg": "", "used": [], "ok": [], "usage": {}, "errors": []}
+    for ln in (jsonl or "").splitlines():
+        try:
+            ev = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        kind, item = ev.get("type"), ev.get("item") or {}
+        if kind == "item.completed" and item.get("type") == "agent_message":
+            out["msg"] = str(item.get("text") or out["msg"])
+        elif kind in ("item.started", "item.completed") and item.get("type") == "mcp_tool_call":
+            out["used"].append(f"{item.get('server', '?')}/{item.get('tool', '?')}")
+            if kind == "item.completed" and item.get("status") == "completed" and not item.get("error"):
+                out["ok"].append(str(item.get("tool") or ""))
+        elif kind in ("item.started", "item.completed") and item.get("type") in ("command_execution", "file_change", "web_search"):
+            out["used"].append(str(item.get("type")))
+        elif kind == "turn.completed":
+            out["usage"] = ev.get("usage") or out["usage"]
+        elif kind in ("turn.failed", "error"):
+            e = ev.get("error") if isinstance(ev.get("error"), dict) else ev
+            out["errors"].append(str(e.get("message") or e)[:500])
+    out["used"], out["ok"] = list(dict.fromkeys(out["used"])), list(dict.fromkeys(out["ok"]))
+    return out
+
+
+def codex_timeout():
+    """config.json "codex_timeout_s": how long one job's Codex run may take (default 900 s); 0 = no limit."""
+    try:
+        n = int(_cfg().get("codex_timeout_s", 900) or 0)
+    except (TypeError, ValueError):
+        n = 900
+    return n if n > 0 else None
+
+
+def _refused(args, why, detail=""):
+    said = CODEX_REFUSE[why].format(store=codex_keyring_store(), limit="the time allowed")
+    p = subprocess.CompletedProcess(args, 3, stdout=said + "\n", stderr=f"codex: not run ({why}){': ' + detail if detail else ''}\n")
+    p.refused, p.tools_used, p.tools_ok, p.errors, p.codex_stderr, p.dropped, p.tools_seen = why, [], [], [], "", [], None
+    return p
+
+
+def _codex_exec(home, prompt, tools, allow_toml, timeout, effort_):
+    """Run `codex exec` once in a run folder made by codex_job_env, with the allow-list appended to its config
+    -> (rc, events dict, codex's own stderr, final message, args). The caller removes the folder (_codex_done)."""
+    env, run, acct = home
+    out = run / "last-message.txt"
+    args = codex_args(run, out, effort_)
+    with open(run / "config.toml", "a", encoding="utf-8") as f:
+        f.write(allow_toml)
+    try:
+        p = subprocess.run(args, input=codex_preamble(tools) + prompt, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env, cwd=str(ROOT), timeout=timeout, shell=WIN)
+        rc, events, err = p.returncode, p.stdout or "", p.stderr or ""
+    except subprocess.TimeoutExpired as e:
+        rc, err = 124, f"codex: stopped after {timeout} seconds without an answer\n"
+        events = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+    try:
+        final = out.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        final = ""
+    return rc, _codex_events(events), err, final, args
+
+
+def _codex_done(home):
+    """A run folder's end: whatever connector list Codex fetched in it goes to the account; the folder goes."""
+    _, run, acct = home
+    try:
+        _codex_keep_cache(run, acct)
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+        try:
+            codex_sweep()  # and whatever an earlier killed run left behind (#42)
+        except Exception:
+            pass
+
+
+def _codex_warmup(budget):
+    """One short run with every connector off, so Codex fetches (or refreshes) the account's connector list
+    -> (rc, events dict, codex's own stderr). Measured: Codex fetches the list even with every connector off."""
+    home = codex_job_env()
+    try:
+        rc, ev, err, _, _ = _codex_exec(home, "Reply with exactly: OK", [], "", max(1, int(budget)), "low")
+    finally:
+        _codex_done(home)
+    return rc, ev, err
+
+
+def _codex_once(prompt, tools, left, effort_):
+    """One job run bound to one snapshot -> (rc, events, codex stderr, final message, args, allowed tool names, dropped
+    sources). Raises CodexNotReady when the run cannot be made safely: the warm-up failed (its reason), the snapshot
+    still lacks a tool the job lists after one warm-up ("cold"), it is still more than a day old ("stale"), or none of
+    the job's sources is connected ("nosources")."""
+    for attempt in (1, 2):
+        # ONE snapshot binds policy and execution: the run folder gets its copy of the connector list first, and the
+        # allow-list below is generated from that copy, never from the account's list read earlier (another job's
+        # warm-up may replace that meanwhile). What Codex runs with is what the deny-list was made from.
+        home, result = codex_job_env(), None
+        try:
+            snap = codex_connectors(home[1])
+            have = {t for names in snap.values() for t in names}
+            # A source with no tool at all in the list is not connected in this ChatGPT account: its tools are dropped
+            # and the job told to skip it (the caller learns which, e.g. refresh.py holds that source's cursor). With
+            # no list at all nothing is dropped: the warm-up below fetches one first.
+            listed = {t.split(".", 1)[0] for t in have}
+            asked = {q.split(".", 1)[0] for q in _qualify(tools) if "." in q}
+            dropped = sorted(asked - listed) if have else []
+            run_tools = [t for t in tools if t.split(".", 1)[0] not in dropped]
+            needed = {q for q in _qualify(run_tools) if "." in q}
+            age = codex_snapshot_age(home[1])
+            fresh = age is not None and 0 <= age < SNAPSHOT_MAX_AGE_S
+            if asked and have and not needed:
+                raise CodexNotReady("nosources")
+            if needed <= have and (fresh or not needed):
+                # Fail closed: a job runs only on a complete, fresh snapshot. A tool OpenAI added to a connector after
+                # the snapshot was fetched cannot be switched off in advance: it is refused only after it has run (the
+                # unlisted check in codex_run, rc 3). Snapshots older than SNAPSHOT_MAX_AGE_S are refreshed or refused,
+                # which bounds that window to a day.
+                allow_toml, allowed = codex_allow_toml(run_tools, snap)
+                skip = "".join(_CODEX_SKIP[x] + "\n" for x in dropped)
+                result = _codex_exec(home, (skip + "\n" if skip else "") + prompt, run_tools, allow_toml, left(),
+                                     effort_) + (allowed, dropped)
+        finally:
+            _codex_done(home)
+        if result:
+            return result
+        if attempt == 2:
+            raise CodexNotReady("stale" if needed <= have else "cold")  # a warm-up ran and did not help
+        # Missing, incomplete or stale list: one warm-up within this run's time budget; its failure is this run's
+        wrc, wev, werr = _codex_warmup(min(120, left() or 120))
+        why = codex_failure(wrc, wev["errors"], werr)
+        if why:
+            raise CodexNotReady(why)
+
+
+def codex_run(prompt, tools, timeout=None, effort_=None):
+    """One unattended `codex exec` -> CompletedProcess. stdout is the final message only (what the jobs parse); stderr
+    is Codex's own plus one summary line (tools used, tokens). Extra attributes for doctor.py: refused (a key of
+    CODEX_REFUSE, or ""), tools_used, tools_ok, errors, codex_stderr.
+
+    Not run at all (rc 3, the reason as stdout) when there is no file sign-in, the job home cannot be linked, the
+    warm-up failed (its own reason: timeout, spent allowance, expired sign-in, error), or even after a warm-up the
+    connector list lacks a tool the job lists ("cold"). Failed (rc 3, "nothing was saved") when the run called a tool
+    off the job's list: the stdout then holds no result for the job to apply. The warm-up and the job share `timeout`."""
+    import time
+    timeout = timeout if timeout is not None else codex_timeout()
+    deadline = time.time() + timeout if timeout else None
+    left = lambda: None if deadline is None else max(1, deadline - time.time())
+    blind_note, used_all, ok_all, errs_all, err_all, seen, chose = "", [], [], [], "", None, []
+    read_only_job = {q for q in _qualify(tools) if "." in q} <= CODEX_READ_TOOLS
+    try:
+        for tries in (1, 2):
+            missed, chose = [], []
+            rc, ev, err, final, args, allowed, dropped = _codex_once(prompt, tools, left, effort_)
+            # Everything every attempt did is kept: a forbidden call in the first attempt still fails the run.
+            used_all += ev["used"]
+            ok_all += ev["ok"]
+            errs_all += ev["errors"]
+            err_all += err
+            if codex_failure(rc, ev["errors"], err):
+                break  # a timeout, spent allowance or expired sign-in: retrying would not help
+            # Measured on real runs: a session now and then starts without one connector's tools (in one of three
+            # probes Gmail's were simply not there, with Slack's present). A refresh would then report "no Gmail"
+            # and move its cursor past mail it never read. So a run that called no tool of a connector its job lists
+            # AND did not see that connector's tools (its TOOLS_SEEN line leaves them out, or there is no such line)
+            # fails and saves nothing - retried once first, but only for a job that can only read, and never after
+            # the first attempt called anything that is not a read or reported a draft or a send. A run that saw
+            # the tools and chose not to call them is a normal result (#44).
+            services = {q.split(".", 1)[0] for q in allowed}
+            reached = {u.split("/", 1)[1].split(".", 1)[0] for u in ev["used"] if u.startswith("codex_apps/")}
+            seen = codex_tools_seen(final or ev["msg"])[1]
+            idle = services - reached
+            missed = sorted(idle - codex_seen_services(seen, allowed))
+            chose = sorted(idle - set(missed))
+            if not missed:
+                break
+            wrote = [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in CODEX_READ_TOOLS]
+            wrote += [u for u in ev["used"] if u in ("command_execution", "file_change", "web_search")]
+            marked = _CODEX_WROTE_RE.search(codex_tools_seen(final or ev["msg"] or "")[0] or "")
+            wrote += [u for u in ev["used"] if u.startswith("codex_apps/") and u.split("/", 1)[1] not in allowed]
+            blind_note = (f"; no {', '.join(missed)} tool was called in attempt {tries} (it said: "
+                          + " ".join((final or ev["msg"]).split())[:200] + ")")
+            if (tries == 2 or not read_only_job or wrote or marked
+                    or (deadline is not None and deadline - time.time() < 30)):
+                break
+    except CodexNotReady as e:
+        return _refused([cli(), "exec"], e.why)
+    except OSError as e:  # the CLI missing or not runnable (the run folder is gone already)
+        return _refused([cli(), "exec"], "start", f"{type(e).__name__}: {e}")
+    used_all, ok_all = list(dict.fromkeys(used_all)), list(dict.fromkeys(ok_all))
+    ev = dict(ev, used=used_all, errors=errs_all)
+    err = err_all
+    servers = {q for q in _qualify(tools) if "." not in q}  # a whole MCP server the job allows ("miro")
+    extra = [u for u in ev["used"] if u.split("/", 1)[-1] not in allowed | _CODEX_SAFE_BUILTINS
+             and u.split("/", 1)[0] not in servers]
+    note = "codex: tools used: " + (", ".join(ev["used"]) or "none") + blind_note
+    note += "; tools seen: " + (", ".join(sorted(seen)) or "none" if seen is not None else "not said")
+    if chose and not missed:
+        note += "; " + ", ".join(chose) + " tools were there but not called"
+    if ev["usage"]:
+        u = ev["usage"]
+        note += f"; tokens in {u.get('input_tokens', '?')} (cached {u.get('cached_input_tokens', '?')}), out {u.get('output_tokens', '?')}"
+    stdout = codex_tools_seen(final or ev["msg"])[0]  # the job never sees the TOOLS_SEEN line
+    # A run Codex reports as failed (a timeout, a spent allowance, a 401, any other error) is a failed run even if it
+    # exited 0 and left a result behind: its text never reaches the job, so nothing half-done is applied.
+    failed = codex_failure(rc, ev["errors"], err)
+    blind = bool(missed) and not failed
+    if extra:
+        note += "; REFUSED: used a tool the job did not list: " + ", ".join(extra)
+        rc, stdout = 3, CODEX_REFUSE["unlisted"] + "\n"
+    elif failed:
+        note += "; FAILED: " + failed
+        n = timeout or 0
+        rc = 124 if failed == "timeout" else (rc or 3)
+        stdout = CODEX_REFUSE[failed].format(limit=f"{n // 60} minutes" if n >= 120 else f"{n} seconds") + "\n"
+    elif blind:  # the model's own words are in the note: with the tools not called, they hold no mail or messages
+        note += "; REFUSED: no " + ", ".join(missed) + " tool was called"
+        rc, stdout = 3, CODEX_REFUSE["notools"] + "\n"
+    out_err = err + ("\n" if err and not err.endswith("\n") else "") + note + "\n" + "".join(f"codex error: {x}\n" for x in ev["errors"])
+    done = subprocess.CompletedProcess(args, rc, stdout=stdout, stderr=out_err)
+    done.refused = "unlisted" if extra else failed or ("notools" if blind else "")
+    done.tools_used, done.tools_ok, done.errors, done.codex_stderr = used_all, ok_all, errs_all, err
+    done.tools_seen = sorted(seen) if seen is not None else None
+    done.dropped = dropped  # sources skipped because they are not connected in this ChatGPT account
+    return done
+
+
 def _qualify(tools):
     fmt = dict(_FMT.get(name()) or _FMT["claude"])
-    if name() == "claude":
-        fmt["slack"] = _CLAUDE_SLACK[slack_source()]
-        fmt["miro"] = _CLAUDE_MIRO[miro_source()]
+    codex = name() == "codex"
+    if name() == "claude":  # from the server actually found, so a renamed server gets its real tool ids
+        fmt["slack"] = tool_prefix(server_name("slack")) + "__slack_{}"
+        fmt["gmail"] = tool_prefix(server_name("gmail")) + "__{}"
+        fmt["miro"] = tool_prefix(server_name("miro"))
     out = []
     for t in tools:
         svc, tool = t.split(".", 1)
+        if codex:
+            tool = _CODEX_RENAME.get(t, tool)
         pat = fmt[svc]
         # "miro.*" -> the bare server id: Claude Code reads that as every tool on that server
         out.append(pat.format(tool) if "{}" in pat else pat)
     return list(dict.fromkeys(out))
 
 
+# Claude setup steps the checklist can start from a button (doctor.py names them in each red row's
+# "connect" key, app.py's /api/connect/<step> runs them). The server names are what `claude mcp list`
+# prints on Claude Code 2.1.x; doctor.py matches them exactly and falls back to a looser match.
+CLAUDE_SERVERS = {
+    "slack": {"plugin": "plugin:slack:slack", "connector": "claude.ai Slack"},
+    "gmail": {"connector": "claude.ai Gmail"},
+    "miro":  {"plugin": "plugin:miro:miro", "connector": "claude.ai Miro", "server": "miro"},
+}
+CONNECT_STEPS = ("login", "slack_install", "slack", "gmail", "miro")
+# Codex: sign in runs `codex login` (browser flow); Gmail and Slack are connected in the ChatGPT account itself, so
+# their buttons open ChatGPT's apps page and the user comes back and presses Check again. No Miro connector exists.
+CODEX_CONNECT_STEPS = ("login", "gmail", "slack")
+CODEX_APPS_URL = "https://chatgpt.com/apps"
+
+
+def connect_steps(agent_name=None):
+    """The setup steps the checklist's buttons can start for the selected AI, or agent_name's (none for Grok)."""
+    return {"claude": CONNECT_STEPS, "codex": CODEX_CONNECT_STEPS}.get(agent_name or name(), ())
+
+
+def connect_url(step, agent_name=None):
+    """A setup step that is a page to open rather than a command to run -> its URL, else None. agent_name: as login_cmd."""
+    return CODEX_APPS_URL if (agent_name or name()) == "codex" and step in ("gmail", "slack") else None
+
+
+_MARKETPLACE = "claude-plugins-official"  # where the Slack plugin lives
+_MARKETPLACE_SRC = "anthropics/claude-plugins-official"
+
+
+def _has_marketplace():
+    """Whether `claude plugin marketplace list` already knows the official marketplace."""
+    try:
+        p = subprocess.run(["claude", "plugin", "marketplace", "list"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60, shell=WIN)
+        return _MARKETPLACE in (p.stdout or "")
+    except Exception:
+        return False  # adding it again is harmless; failing to add it breaks the install
+
+
+def login_cmd(step, agent_name=None):
+    """The commands for one Claude setup step, run in order -> [argv, ...], or None (unknown step, or not Claude).
+    Codex has one command step, sign in (`codex login`, which opens the browser itself).
+
+    Each opens the browser at most once and needs nothing typed: the user only clicks Allow. `mcp login`
+    gets --no-browser because app.py reads the sign-in link it prints and opens that itself, and shows it on
+    the page in case no browser came up: from a pseudo-terminal off Windows, from a hidden console's output
+    file on Windows (#27; before that Windows gave it a console window of its own and captured nothing).
+    agent_name: the AI app.py read once when the step was pressed, so the run is labelled and run for the same AI
+    even if Settings change before its worker starts (#27); default the configured one."""
+    who = agent_name or name()
+    if who == "codex":  # the browser flow; Gmail / Slack are pages to open (connect_url), not commands
+        return [[cli(who), "login"]] if step == "login" else None
+    if who != "claude" or step not in CONNECT_STEPS:
+        return None
+    if step == "login":
+        return [["claude", "auth", "login"]]
+    if step == "slack_install":
+        add = [] if _has_marketplace() else [["claude", "plugin", "marketplace", "add", _MARKETPLACE_SRC]]
+        return add + [["claude", "plugin", "install", f"slack@{_MARKETPLACE}"]]
+    return [["claude", "mcp", "login", server_name(step), "--no-browser"]]
+
+
+def server_name(svc):
+    """The Claude server for "slack" / "gmail" / "miro" on the configured route. doctor.py saves the name
+    `claude mcp list` actually printed (config "claude_servers"); that one is used when it is on the same route
+    and a plain name (Windows passes it through cmd.exe), else today's usual name. Sign-in and tool ids both
+    come from here, so a renamed server is never signed in to while jobs allow tools it does not have."""
+    src = {"slack": slack_source, "miro": miro_source}.get(svc, lambda: "connector")()
+    seen = str((_cfg().get("claude_servers") or {}).get(svc) or "")
+    if usable_name(seen) and _route_of(seen, svc) == src:
+        return seen
+    return CLAUDE_SERVERS[svc][src]
+
+
+def usable_name(server):
+    """Whether a server name `claude mcp list` printed is one Open Loops will sign in to and derive tool ids from: a
+    plain name of letters, digits, spaces and . : @ / - _ (Windows passes it through cmd.exe, so nothing a shell
+    reads). doctor.py reports a listed server whose name fails this as unsupported (#27), rather than ticking a row
+    whose jobs would fall back to today's name and allow tools that server does not have."""
+    return bool(re.fullmatch(r"[\w .:@/-]{1,100}", server or ""))
+
+
+def tool_prefix(server):
+    """Claude Code's tool-id prefix for a server: "mcp__" + its name with anything but letters, digits, _ and -
+    made _ (plugin:slack:slack -> mcp__plugin_slack_slack, claude.ai Gmail -> mcp__claude_ai_Gmail)."""
+    return "mcp__" + re.sub(r"[^A-Za-z0-9_-]", "_", server)
+
+
+def _route_of(server, svc):
+    """"plugin" / "connector" / "server" for a server name, by exact match or by the shape of the name."""
+    exact = next((s for s, n in CLAUDE_SERVERS[svc].items() if n == server), None)
+    if exact:
+        return exact
+    low = server.lower()
+    return ("plugin" if low.startswith("plugin:") else "connector" if low.startswith("claude.ai") else None) if svc in low else None
+
+
+# ---- Installing the agent's CLI from the checklist: the "install" setup step (doctor.py offers it on the
+# "<AI> is installed" row when the CLI is missing, app.py runs it like the sign-in steps). Every vendor now ships
+# a standalone installer script, so no route needs Node, npm or Homebrew: the scripts need only curl + bash on a
+# Mac and PowerShell on Windows, which both come with the OS. Checked against the vendors' pages on 2026-09-23:
+#   Claude Code  https://code.claude.com/docs/en/setup  (native install, "Recommended"; lands in ~/.local/bin)
+#   Codex        https://github.com/openai/codex        (install script; lands in ~/.local/bin, Windows
+#                %LOCALAPPDATA%\Programs\OpenAI\Codex\bin). npm i -g @openai/codex and brew install --cask codex
+#                also work but need Node or Homebrew first, so they are the manual fallback in INSTALL.md.
+#   Grok         https://docs.x.ai/build/overview        (install script; lands in ~/.grok/bin)
+# Download first, run second: the script is saved whole to state/install/ and checked non-empty before anything runs,
+# so a download cut off half-way never executes (piping curl into bash would run what had arrived so far). Then the
+# new CLI must answer `<cli> --version` before the step counts as done. The page shows every command, one per line,
+# exactly as they run, so pasting them by hand does the same.
+INSTALL_STEP = "install"
+_INSTALL = {  # agent -> (Mac/Linux script, what runs it, Windows script, the CLI, where it is documented, who makes it)
+    "claude": ("https://claude.ai/install.sh", "bash", "https://claude.ai/install.ps1", "claude",
+               "https://code.claude.com/docs/en/setup", "Anthropic"),
+    "codex":  ("https://chatgpt.com/codex/install.sh", "sh", "https://chatgpt.com/codex/install.ps1", "codex",
+               "https://github.com/openai/codex", "OpenAI"),
+    "grok":   ("https://x.ai/cli/install.sh", "bash", "https://x.ai/cli/install.ps1", "grok",
+               "https://docs.x.ai/build/overview", "xAI"),
+}
+_PS = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+
+
+def prereq(win=None):
+    """What is on this computer that an install route could use -> {tool: bool}. The installer scripts need only
+    curl + bash (Mac/Linux) or PowerShell (Windows); node / npm / brew / winget are reported for the manual routes."""
+    win = WIN if win is None else win
+    tools = ["powershell", "node", "npm", "winget"] if win else ["curl", "bash", "node", "npm", "brew"]
+    return {t: shutil.which(t) is not None for t in tools}
+
+
+def install_cmd(agent=None, win=None):
+    """How to install an agent's CLI (default: the selected one) -> dict, or None for an agent with no known installer:
+      "steps"    [(kind, argv), ...] run in order, each only if the one before exited 0. kind is "download", "install"
+                 or "check"; app.py names a failure by it. "download" saves the script to "script".
+      "command"  what the page shows before the button is pressed, and what to paste by hand: on a Mac every step,
+                 joined by && so each runs only if the last worked; on Windows one PowerShell block with the same gates
+      "needs"    the tools the steps cannot run without (doctor.py says so, and offers no button, when one is missing)
+      "agent", "id"  name exactly what the page showed; app.py refuses a press whose pair no longer matches
+      "cli", "script", "source", "vendor"."""
+    win = WIN if win is None else win
+    who = (agent or name()).strip().lower()
+    got = _INSTALL.get(who)
+    if not got:
+        return None
+    url, shell, ps_url, cli_, src, vendor = got
+    folder = ROOT / "state" / "install"
+    if win:
+        script = str(folder / f"{who}-install.ps1")
+        pq = lambda x: "'" + str(x).replace("'", "''") + "'"  # PowerShell '...' quoting: a quote is doubled
+        # The download fails as a whole (Stop), including an empty file, so a partial or empty script never runs
+        get = ["$ErrorActionPreference = 'Stop'",
+               f"New-Item -ItemType Directory -Force -Path {pq(folder)} | Out-Null",
+               f"Invoke-WebRequest -UseBasicParsing -Uri {pq(ps_url)} -OutFile {pq(script)}",
+               f"if ((Get-Item -LiteralPath {pq(script)}).Length -eq 0) {{ throw 'The download was empty.' }}"]
+        steps = [("download", _PS + ["-Command", "; ".join(get)]),
+                 ("install", _PS + ["-File", script]),
+                 ("check", [cli_, "--version"])]
+        # Shown (and pasted by hand) as one PowerShell block with the same gates: it stops at the first failure,
+        # and throw ends only the block, not the PowerShell window it is pasted into.
+        command = "\n".join(["& {"] + ["  " + g for g in get] + [
+            f"  powershell -NoProfile -ExecutionPolicy Bypass -File {pq(script)}",
+            "  if ($LASTEXITCODE -ne 0) { throw \"The installer stopped with exit code $LASTEXITCODE.\" }",
+            f"  {cli_} --version", "}"])
+        needs = ["powershell"]
+    else:
+        script = str(folder / f"{who}-install.sh")
+        steps = [("download", ["mkdir", "-p", str(folder)]),
+                 ("download", ["curl", "-fsSL", "-o", script, url]),
+                 ("download", ["test", "-s", script]),  # an empty 200 is a failed download too
+                 ("install", [shell, script]),
+                 ("check", [cli_, "--version"])]
+        # pasted as is, each runs only if the last worked
+        command, needs = " &&\n".join(shlex.join(a) for _, a in steps), ["curl", "bash"]
+    return {"steps": steps, "command": command, "needs": needs, "agent": who, "cli": cli_, "script": script,
+            "source": src, "vendor": vendor,
+            "id": hashlib.sha256((who + "\0" + command).encode("utf-8")).hexdigest()[:16]}
+
+
+# What the checklist says when an install ends badly lives in messages.py (install_*), with every other failure
+# the page can show (#25); app.py picks the sentence by what went wrong.
+
+
+def install_dirs():
+    """Where the installer scripts put the CLIs. A Finder-launched app, or a terminal opened before the install, does
+    not have them on PATH yet; app.py adds the ones that exist so the re-check and the jobs find the new CLI."""
+    home = Path.home()
+    dirs = [home / ".local" / "bin", home / ".grok" / "bin"]
+    if WIN and os.environ.get("LOCALAPPDATA"):
+        dirs.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OpenAI" / "Codex" / "bin")
+    return dirs
+
+
 def model():
     """config.json "model": the Claude model the jobs run on. An alias (sonnet, haiku, opus) or a
     full id. Blank means whatever `claude` defaults to on this machine, which is usually the most
     expensive model the user has - so the template says sonnet: plenty for reading threads and
-    writing JSON, at a fraction of the cost. Grok ignores it."""
-    return str(_cfg().get("model") or "").strip()
+    writing JSON, at a fraction of the cost. Grok ignores it.
+    Codex has keys of its own, "codex_model" (template gpt-5.6-sol; gpt-5.5 leaves Codex on 2026-10-14), so
+    switching AI in Settings never hands a Claude alias to `codex -m`."""
+    return str(_cfg().get("codex_model" if name() == "codex" else "model") or "").strip()
 
 
 def effort():
     """config.json "effort": low | medium | high | xhigh | max, how hard the model thinks per turn.
-    Template: xhigh with sonnet (opus at medium is the other sensible pairing). Blank = CLI default."""
-    return str(_cfg().get("effort") or "").strip().lower()
+    Template: high with sonnet (#50: xhigh cost about £0.08 for a bare one-line answer; opus at medium is the other
+    sensible pairing). Blank = CLI default. The small jobs (doctor's Slack lookup, people) pass effort_="low" to run().
+    Codex: "codex_effort" (low | medium | high | xhigh), template low: every run is metered against the
+    ChatGPT plan's 5-hour and weekly Codex allowance."""
+    return str(_cfg().get("codex_effort" if name() == "codex" else "effort") or "").strip().lower()
 
 
-def claude_args(tools):
-    args = ["claude", "-p", "--output-format", "text", "--allowedTools", ",".join(_qualify(tools))]
+def claude_args(tools, effort_=None):
+    # json, not text (#46): one result object whose is_error flag says whether the CLI itself failed (signed out, usage
+    # limit, no network), so a failure is classified from that flag and never from prose mixed into the answer.
+    # effort_: this run's own effort, overriding config.json "effort" (run()'s per-job override, #50).
+    args = ["claude", "-p", "--output-format", "json", "--allowedTools", ",".join(_qualify(tools))]
     if model():
         args += ["--model", model()]
-    if effort():
-        args += ["--effort", effort()]
+    e = effort() if effort_ is None else effort_
+    if e:
+        args += ["--effort", e]
     return args
 
 
-def run(prompt, tools):
-    """One unattended prompt with only the given MCP tools allowed -> CompletedProcess."""
+# How Claude is signed in, for the run summary line: "claude.ai" (a Claude plan: runs count against its allowance and are
+# not billed, so total_cost_usd is only the API-rate equivalent), "api" (an API key or Console sign-in: billed per run),
+# or "" (not known). Read once per process from `claude auth status` (no model call); doctor.py sets it from its own
+# read of the same command, so a check does not ask twice.
+_claude_auth = None
+
+
+def claude_auth_kind(text):
+    """`claude auth status` output -> "claude.ai" | "api" | ""."""
+    m = re.search(r'"authMethod"\s*:\s*"([^"]*)"', text or "")
+    method = (m.group(1) if m else "").strip().lower()
+    if not method:
+        return ""
+    return "claude.ai" if method in ("claude.ai", "claudeai", "oauth", "subscription") else "api" if (
+        "api" in method or "console" in method or "key" in method) else ""
+
+
+def set_claude_auth(text):
+    """Remember the sign-in kind from a `claude auth status` output someone already read (doctor.claude_steps)."""
+    global _claude_auth
+    _claude_auth = claude_auth_kind(text)
+
+
+def claude_auth():
+    """The cached sign-in kind (claude_auth_kind), reading `claude auth status` the first time it is asked."""
+    global _claude_auth
+    if _claude_auth is None:
+        try:
+            p = subprocess.run(["claude", "auth", "status"], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=20, shell=WIN)
+            _claude_auth = claude_auth_kind(p.stdout)
+        except Exception:  # noqa: BLE001 - a summary line never stops a job
+            _claude_auth = ""
+    return _claude_auth
+
+
+def cost_note(cost, auth):
+    """The run summary's money part (#52): "cost $X" only for a billed (API-key / Console) sign-in; on a Claude plan,
+    and when the sign-in is not known, the JSON's total_cost_usd is an API-rate equivalent, not a charge."""
+    if auth == "api":
+        return f"cost ${cost:.4f}"
+    return f"usage ≈ ${cost:.4f} at API rates" + (" (not billed on a Claude plan)" if auth == "claude.ai" else "")
+
+
+def run(prompt, tools, timeout=None, effort_=None):
+    """One unattended prompt with only the given MCP tools allowed -> CompletedProcess.
+    timeout (seconds) is honoured by Codex only; unset, Codex jobs use config.json "codex_timeout_s" (900).
+    effort_: this job's effort whatever Settings say ("low" for the small jobs: doctor's Slack lookup, people, #50);
+    None uses config.json "effort" / "codex_effort". Grok always runs at low."""
+    if name() == "codex":
+        return codex_run(prompt, tools, timeout=timeout, effort_=effort_)
     if name() == "grok":
         # --cwd matters: .grok/config.toml there defines the bundled Gmail MCP server
         # (gmail_mcp.py, which does its own Google auth via gmail_auth.py).
@@ -163,6 +1164,126 @@ def run(prompt, tools):
             args += ["--allow", f"MCPTool({t})"]
         return subprocess.run(args, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", env=grok_job_env(), shell=WIN)
+    auth = claude_auth()   # before the run: how its cost figure is described afterwards
     # shell=True only on Windows, to resolve claude.cmd (npm shim) via PATH
-    return subprocess.run(claude_args(tools), input=prompt, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", shell=WIN)
+    p = subprocess.run(claude_args(tools, effort_), input=prompt, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", shell=WIN)
+    return claude_result(p, auth)
+
+
+# Claude's structured failures (#46), in Codex's vocabulary (codex_failure): "expired" = signed out, "limit" = the plan's
+# usage limit, "network" = could not reach Anthropic, "failed" = anything else. Read only from a result the CLI marked
+# is_error (its own text: https://code.claude.com/docs/en/headless "When a failure happens inside the run, such as
+# missing authentication, Claude Code prints the failure as the result on stdout"), never from a normal answer.
+# Wording from https://code.claude.com/docs/en/errors ("Not logged in · Please run /login", "You've hit your session
+# limit", "Unable to connect to API", ...) plus the API status the result carries (api_error_status, seen on 2.1.280).
+# No bare "429"/"401" and no bare "request rejected": an error that merely quotes a number, or a 401 whose text says
+# "Request rejected", must not become a usage limit. The status numbers count only as api_error_status or "API Error: N".
+_CLAUDE_LIMIT_RE = re.compile(r"usage limit|rate.?limit|limit reached|hit your .{0,40}(?:limit|budget)|spend limit"
+                              r"|too many requests|api error: 429|credit balance", re.I)
+_CLAUDE_EXPIRED_RE = re.compile(r"not logged in|login expired|log(?:ged)? ?in again|invalid api key|/login|oauth token"
+                                r"|api error: 401|authentication|unauthori[sz]ed|re-?authenticate", re.I)
+_CLAUDE_NETWORK_RE = re.compile(r"unable to connect|connection (?:error|refused|dropped|lost|closed)|can't reach"
+                                r"|no internet|request timed out|getaddrinfo|econnrefused|etimedout|enotfound", re.I)
+_claude_text_warned = False  # the "not JSON" warning is printed once per process, not once per run
+
+
+def claude_failure(status, text):
+    """Why a Claude run the CLI marked is_error failed -> "limit" | "expired" | "network" | "failed". The API status
+    first: a 401 or 429 decides before any text is read (#47 review: "Request rejected: invalid authentication
+    credentials" with status 401 is a sign-out, not a limit). Only without one, the CLI's own error text."""
+    if status == 401:
+        return "expired"
+    if status == 429:
+        return "limit"
+    if _CLAUDE_LIMIT_RE.search(text or ""):
+        return "limit"
+    if _CLAUDE_EXPIRED_RE.search(text or ""):
+        return "expired"
+    if _CLAUDE_NETWORK_RE.search(text or ""):
+        return "network"
+    return "failed"
+
+
+def _claude_json(out):
+    """The result object in `claude -p --output-format json` stdout -> dict, or None when it is not there.
+
+    Every top-level JSON value in the output is decoded, in order (a value may span lines; a line that does not start
+    one, such as a plain-text warning, is skipped), and a list is read as a stream of events. The LAST object whose
+    "type" is "result" wins (the key is required): a JSON diagnostic printed before or after it that happens to carry a
+    "result" or "is_error" field is never taken for it (#47 second review). With no such object, a single object that
+    carries "is_error" or "subtype" is used; anything else is not JSON output."""
+    text = (out or "").strip()
+    dec, objs, pos = json.JSONDecoder(), [], 0
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        try:
+            v, pos = dec.raw_decode(text, pos)
+        except ValueError:  # not the start of a JSON value: skip the rest of this line
+            nl = text.find("\n", pos)
+            pos = len(text) if nl < 0 else nl + 1
+            continue
+        objs += [e for e in v if isinstance(e, dict)] if isinstance(v, list) else [v] if isinstance(v, dict) else []
+    results = [o for o in objs if o.get("type") == "result"]
+    if results:
+        return results[-1]
+    flagged = [o for o in objs if "is_error" in o or "subtype" in o]
+    return flagged[0] if len(flagged) == 1 else None
+
+
+def claude_result(p, auth=""):
+    """A finished `claude -p --output-format json` -> the CompletedProcess the jobs expect: .stdout is the answer text
+    (the "result" field), so their <<<BLOCK>>> parsing is unchanged; "" when the run is an error. Extra attributes: agent ("claude"), is_error (True,
+    False, or None when the output was not JSON), error_text (the CLI's own error when is_error), refused (claude_failure's
+    reason when is_error, else ""), usage, cost_usd, session_id. A run marked is_error never exits 0 here.
+    Output with no result object in it is not parsed further. Exit 0: raw-output tolerance, the text is passed on as it
+    came (a CLI that printed plain text) with a warning once per process. Non-zero (a crash, or a Claude Code too old
+    for --output-format json rejecting the flag with its usage text): a plain failure, no stdout, refused "failed",
+    the output kept on stderr for the log. Nothing is retried."""
+    global _claude_text_warned
+    p.agent, p.is_error, p.error_text, p.refused, p.usage, p.cost_usd, p.session_id = "claude", None, "", "", None, None, ""
+    j = _claude_json(p.stdout)
+    if j is None:
+        raw = (p.stdout or "").strip()
+        if p.returncode != 0:
+            p.refused, p.stdout = "failed", ""
+            # the note and the output go BEFORE the CLI's own stderr: messages.ai_failure reads its last 40 lines
+            p.stderr = (f"claude: exited {p.returncode} without a JSON result (if this Claude Code is too old for"
+                        " --output-format json, update it)\n" + "".join(f"claude output: {ln}\n" for ln in raw.splitlines()[-40:])
+                        + (p.stderr or ""))
+        elif raw:
+            p.stderr = (p.stderr or "") + "claude: output was not JSON; used as plain text\n"
+            if not _claude_text_warned:
+                _claude_text_warned = True
+                print("open loops: claude did not answer in JSON (older CLI?); reading its output as plain text",
+                      file=sys.stderr)
+        return p
+    raw_err = j.get("errors")
+    errors = [str(e) for e in raw_err] if isinstance(raw_err, list) else ([str(raw_err)] if raw_err else [])
+    result = j.get("result")
+    result = result if isinstance(result, str) else ("" if result is None else json.dumps(result))
+    p.is_error = bool(j.get("is_error")) or str(j.get("subtype") or "success") != "success"
+    p.usage = j.get("usage") if isinstance(j.get("usage"), dict) else None
+    p.cost_usd, p.session_id = j.get("total_cost_usd"), str(j.get("session_id") or "")
+    # A failed run's text never reaches the job (#47 review): chase counts a DRAFT_CREATED line, people/refresh/voice
+    # save a block, doctor stores anything shaped like a Slack id - none of them checks the exit code first. So an
+    # is_error result leaves stdout empty; its text is in .error_text and on stderr, for the log.
+    p.stdout = "" if p.is_error else result
+    note = "claude: " + str(j.get("subtype") or "result")
+    if p.usage:
+        note += f"; tokens in {p.usage.get('input_tokens', '?')}, out {p.usage.get('output_tokens', '?')}"
+    if isinstance(p.cost_usd, (int, float)):
+        note += "; " + cost_note(p.cost_usd, auth)   # auth: claude_auth(), as run() read it
+    if p.is_error:
+        status = j.get("api_error_status")
+        p.error_text = "\n".join(x for x in [result] + errors if x).strip() or str(j.get("subtype") or "error")
+        p.refused = claude_failure(status if isinstance(status, int) else None, p.error_text)
+        note += f"; FAILED: {p.refused}" + (f" (API status {status})" if status else "")
+        note += "\n" + "".join(f"claude error: {ln}\n" for ln in p.error_text.splitlines() if ln.strip()).rstrip("\n")
+        if p.returncode == 0:
+            p.returncode = 1
+    p.stderr = (p.stderr or "") + ("\n" if p.stderr and not p.stderr.endswith("\n") else "") + note + "\n"
+    return p

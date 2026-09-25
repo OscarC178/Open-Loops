@@ -6,7 +6,7 @@
 
 <p align="center"><a href="https://oscarc178.github.io/Open-Loops/brag.mp4"><img src="docs/brag.jpg" alt="Open Loops home: Needs me, Waiting on them. Click to watch the 39-second tour."></a><br><sub>▶ <a href="https://oscarc178.github.io/Open-Loops/brag.mp4">Watch the 39-second tour</a> (with sound) · <a href="docs/brag.mp4">or open it on GitHub</a></sub></p>
 
-Runs locally. Uses the Claude or Grok subscription you already have. No API key costs.
+Runs locally. Uses the Claude, ChatGPT (through OpenAI's Codex CLI) or Grok subscription you already have. No API key costs.
 
 ## Why you want this
 
@@ -76,8 +76,9 @@ sound like you rather than like a reminder bot. Every action gives instant feedb
 - **It reads your own sent messages and the threads they sit in. Nothing else.** Other people's messages
   are read only to check for a reply on a loop you already have.
 - **Drafts by default.** It sends only if you tick *Send to internal* / *Send to external*. The send tools
-  are handed to the AI run only when those boxes are ticked, so with both off it cannot send.
-- **No API key costs and no new accounts.** It drives the Claude or Grok CLI you are already signed in to.
+  are handed to the AI run only when those boxes are ticked, so with both off it cannot send. (With Codex, which has
+  no allow-list flag, each run's Codex settings switch the send tools off instead; see INSTALL.md, Codex (ChatGPT).)
+- **No API key costs and no new accounts.** It drives the Claude, Codex or Grok CLI you are already signed in to.
   Jobs run on Sonnet by default; the model and effort are a picker in Settings, so a scan never quietly
   burns your best model.
 - **Every run leaves a log** in `state/logs/`, so you can see what it looked at and what it decided.
@@ -86,24 +87,25 @@ sound like you rather than like a reminder bot. Every action gives instant feedb
 ## Install (1–3 minutes)
 
 1. Download and run the installer: **[Windows – OpenLoops-Setup.exe](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops-Setup.exe)** · **[Mac – OpenLoops.dmg](https://github.com/OscarC178/Open-Loops/releases/latest/download/OpenLoops.dmg)**.
-   It fetches the latest Open Loops from this repo, installs Python and Claude Code if you don't have them,
-   and puts an **Open Loops** icon on your Desktop. Windows may show a SmartScreen warning and macOS an
+   It fetches the latest Open Loops from this repo, installs Python if you don't have it,
+   and puts an **Open Loops** icon on your Desktop. It does not install an AI: the app does that. Windows may show a SmartScreen warning and macOS an
    unidentified-developer warning, because the installers are not code-signed: choose *More info → Run anyway*
    (Windows) or *right-click → Open* / *Privacy & Security → Open Anyway* (Mac).
    No installer? Download the zip of this repo instead and double-click `Open Loops.cmd` (Windows) or
    `Open Loops.command` (Mac).
-2. Tick the checklist: sign in, connect Slack and/or Gmail (one is enough). Miro is optional and only
+2. Tick the checklist: press **Install Claude** if you don't have it yet (for Grok: choose it in Settings, press Save settings, return to Home, then press Install Grok),
+   sign in, connect Slack and/or Gmail (one is enough). Miro is optional and only
    needed for the Roadmap section.
 3. Open **Open Loops** from the Desktop each morning (Mac: orange-loop app — drag it to the Dock).
 
-Guides: [GETTING-STARTED.md](GETTING-STARTED.md) · [INSTALL.md](INSTALL.md) (Grok Gmail step is here).
+Guides: [GETTING-STARTED.md](GETTING-STARTED.md) · [INSTALL.md](INSTALL.md) (the Codex (ChatGPT) and Grok Gmail steps are here).
 What is planned next: [ROADMAP.md](ROADMAP.md).
 
 MIT licence. WhatsApp is not possible (no API for personal accounts).
 
 ## Running from a checkout (developers)
 
-The installed copy lives in `%LOCALAPPDATA%\OpenLoops` (Mac: `~/Documents/OpenLoops`) and answers on port 8765.
+The installed copy lives in `%LOCALAPPDATA%\OpenLoops` (Mac: `~/Library/Application Support/OpenLoops`) and answers on port 8765.
 A git checkout is a second, separate copy with its own gitignored `config.json` and `state.json`. From the
 checkout folder, in any terminal (needs Node for the `npm` wrapper, nothing is installed):
 
@@ -126,7 +128,7 @@ The full developer guide (two copies / two ports, making a change, where things 
 
 | Path | What it does |
 |---|---|
-| `openloops/app.py` | the page at http://localhost:8765 (`python -m openloops.app`; `--port N` to choose, `--stop` quits a running one, as does closing the tab) |
+| `openloops/app.py` | the page at http://localhost:8765 (`python -m openloops.app`; `--port N` to choose, `--stop` quits a running one, as does closing the tab; `--help` lists the options and starts nothing) |
 | `package.json`, `scripts/loops.mjs` | `npm run dev` / `stop` / `prod` / `test` / `doctor` / `refresh` / `setup` for a checkout (no npm packages) |
 | `openloops/refresh.py` | finds new asks, checks open threads for replies (`--slack-only` for a quick Slack pass) |
 | `openloops/chase.py` · `autochase.py` | drafts (or, if you tick the boxes, sends) a nudge; the optional timer |

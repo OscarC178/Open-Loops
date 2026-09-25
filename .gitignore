@@ -18,6 +18,8 @@
 # ---- Open Loops runtime data (personal, written by the app) -----------------
 # your settings: name, Slack ID, internal domains, people, tone
 config.json
+# the lock that serialises writes to it (store.update_json)
+*.json.lock
 # your loops
 state.json
 # learned per-person writing styles

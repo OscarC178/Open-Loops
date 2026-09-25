@@ -2,8 +2,8 @@
 # Build OpenLoops.dmg - a disk image holding "Install Open Loops.app". macOS only (hdiutil).
 #
 # The installer app does NOT contain Open Loops. Double-clicked, it opens Terminal, downloads the
-# repo from GitHub, and runs the repo's own install.sh (Python / Claude Code if missing, copy to
-# ~/Documents/OpenLoops, Open Loops.app on the Desktop and in the Dock, weekday refresh).
+# repo from GitHub, and runs the repo's own install.sh (Python if missing - never an AI CLI, the app's Install button does that - copy to
+# ~/Library/Application Support/OpenLoops, Open Loops.app on the Desktop and in the Dock, weekday refresh).
 #
 #   bash packaging/macos/build-dmg.sh                        -> dist/OpenLoops.dmg, pulls main
 #   bash packaging/macos/build-dmg.sh --ref <commit sha> --label v0.2 --version 0.2

@@ -17,23 +17,32 @@ computer only. It never sends anything unless you turn that on.
 2. Run it. **Windows** may warn that the publisher is unknown — click **More info**, then **Run anyway**.
    **Mac** may say it can't check the app — right-click it and choose **Open** (macOS 15 and later: close the
    warning, then **System Settings → Privacy & Security → Open Anyway**), just this once.
-3. A window appears. It may ask for your first name. Let it finish (1–3 minutes). It installs two
-   helper programs if you don't have them (Python and Claude), puts **Open Loops.app** (the orange loop)
+3. A window appears. It may ask for your first name. Let it finish (1–3 minutes). It installs Python
+   if you don't have it, puts **Open Loops.app** (the orange loop)
    on your Desktop and in the Dock, and opens the app.
 
 ## 2. Connect your accounts (one-off)
 
 The app opens with a checklist. It watches itself and ticks things off as you go — you don't need to press anything to update it.
+Each row that isn't ticked has a button: press it, your browser opens a sign-in page, click **Allow**, and the tick appears a few seconds later. No terminal, nothing to type.
 
 | Tick | What to do |
 |---|---|
-| **Signed in to Claude** | Press **Open Claude**. A black window opens. If it shows a sign-in link, open it and sign in with your **work Google account**. |
-| **Slack connected** *(optional)* | In that same black window, type `/mcp` and press Enter. Pick **Slack** → **Authenticate** → click **Allow** in the browser. |
-| **Gmail connected** *(optional)* | Same again: `/mcp` → **claude.ai Gmail** → **Authenticate** → **Allow**. |
-| **At least one source connected** | Ticks by itself once Slack or Gmail is connected — you only need the one(s) you actually use. |
+| **Claude is installed** | If Claude isn't on your computer yet, press **Install Claude**. The commands it runs are shown underneath first; it takes a minute or two. (Using Grok instead? Open ⚙ Settings → Preferences → *Your AI*, choose Grok, press **Save settings**, return to **Home**, then press **Install Grok**.) |
+| **Signed in to Claude** | Press **Sign in**. Your browser opens the Claude sign-in page: sign in with your **work Google account**. |
+| **Slack connected** *(Slack or Gmail is needed)* | Press **Install Slack plugin** if the row shows it (about half a minute), then **Connect Slack** → click **Allow** in the browser. |
+| **Gmail connected** *(Slack or Gmail is needed)* | Press **Connect Gmail** → **Allow**. No button? Add Gmail at claude.ai → Settings → Connectors first, then press **Check again**. |
+| **At least one source connected** | Ticks by itself once Slack or Gmail is connected: one of them is enough. Miro is optional, for the Roadmap card. |
 | **Knows who you are on Slack** | Fills in by itself (only matters if you use Slack). |
 
-When the required rows are ticked the checklist disappears and your list starts building (first fill takes about 2 minutes).
+A button didn't work? **Open Claude (advanced)** opens a black window: type `/mcp`, press Enter, pick the connection, choose **Authenticate** and click **Allow**. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.
+
+Your AI subscription is ChatGPT, not Claude? Choose **Codex (ChatGPT)** in ⚙ Settings → Preferences → *Your AI*. The checklist then asks you to sign in to ChatGPT, and **Connect Gmail** / **Connect Slack** open your ChatGPT account's apps page: connect there, come back and press **Check again**. Codex use counts against your ChatGPT plan's Codex allowance. Details: [INSTALL.md → Codex (ChatGPT)](INSTALL.md#codex-chatgpt).
+
+When the required rows are ticked the checklist disappears and Open Loops says what its first scan will read
+(for example "Looking back 30 days across Slack and Gmail. The first pass can take ten minutes."). Press **Start the
+first scan** when you have the time; nothing reads your messages before that. It then asks who's who, learns your
+tone and builds your list. Slack alone (no Gmail) is fine: the first scan is then the quick Slack pass.
 
 ## 3. Every day
 

@@ -12,7 +12,7 @@ and the official Miro plugin - no API key. Nothing is ever deleted, moved or edi
 import json, re, sys, time
 from datetime import datetime
 
-from . import agent, store
+from . import agent, messages, store
 from .paths import ROOT
 FILE = ROOT / "state" / "roadmap.json"
 CREATED = ROOT / "state" / "roadmap-created.txt"
@@ -232,6 +232,7 @@ def _ask(mode, prompt, tools):
     if not m:
         print(f"!! no ROADMAP block in output (rc {p.returncode}). See log.")
         print(p.stdout[-1500:])
+        messages.report(p, "roadmap")   # this run's failure file (state/jobs/): why the AI failed, if it says (#47 review)
         sys.exit(1)
     try:
         return json.loads(m.group(1))

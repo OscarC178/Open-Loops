@@ -5,6 +5,10 @@ source zip of a GitHub ref (a `v*` tag for releases, a branch for test builds), 
 to the repo's own installer (`setup.ps1` on Windows, `install.sh` on Mac). That keeps one copy of the
 install logic and means the installer rarely needs rebuilding.
 
+Neither installs an AI CLI. They install Python if it is missing and the app; the app's checklist then offers
+**Install Claude** (or the AI chosen in Settings) on its first row, and that button is the
+only place an AI is installed from (download to a file, check it, run it, check `--version`; see INSTALL.md §1).
+
 | File | Built by | Built from | Runs |
 |---|---|---|---|
 | `OpenLoops-Setup.exe` | Inno Setup 6.3+ (`ISCC.exe`) | `windows/OpenLoops.iss` | wizard → download → `tar -xf` → `setup.ps1 -Dest "{app}" -Name … -At … -NoLaunch` |
@@ -18,7 +22,8 @@ install logic and means the installer rarely needs rebuilding.
   `pythonw -m openloops.app` in that folder with `docs\AppIcon.ico`. An uninstaller is registered in
   *Apps & features*; it removes the program files, both shortcuts and the scheduled task, and asks before
   deleting personal files.
-- **Mac**: unchanged from `install.sh` — code in `~/Documents/OpenLoops`, `Open Loops.app` in `~/Applications`
+- **Mac**: unchanged from `install.sh` — code in `~/Library/Application Support/OpenLoops` (an older `~/Documents/OpenLoops`
+  install's list and settings are copied there; the old folder is left as it is), `Open Loops.app` in `~/Applications`
   and on the Desktop, pinned to the Dock, `launchd` agent for the weekday refresh.
 
 ## Releasing

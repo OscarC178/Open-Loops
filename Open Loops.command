@@ -1,15 +1,19 @@
 #!/bin/bash
 # Open Loops - double-click me. macOS equivalent of "Open Loops.cmd".
 #   Not installed yet?  -> runs the installer (install.sh), which puts Open Loops in
-#                          ~/Documents/OpenLoops and a launcher on your Desktop.
+#                          ~/Library/Application Support/OpenLoops and a launcher on your Desktop.
 #   Already installed?  -> starts it (backgrounded) and opens the page in your browser.
+#   Installed in the old place (~/Documents/OpenLoops)? -> runs the installer, which copies the list and
+#                          settings across and leaves the old folder as it is (#24).
 set -e
-# Non-interactive shells don't read the user's profile, so claude (Homebrew or the official
-# installer) may not be on PATH. Jobs inherit this.
+# Non-interactive shells don't read the user's profile, so an AI CLI that is already installed (Homebrew or a
+# vendor installer) may not be on PATH. Jobs inherit this. None is needed to start: with no AI found, the app's
+# checklist offers Install <AI> (#39).
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-APP="$HOME/Documents/OpenLoops/openloops/app.py"
+DEST="$HOME/Library/Application Support/OpenLoops"
+APP="$DEST/openloops/app.py"
 if [ -f "$APP" ]; then
-    cd "$HOME/Documents/OpenLoops"
+    cd "$DEST"
     nohup python3 -m openloops.app >/dev/null 2>&1 &
     disown
     sleep 1
@@ -18,3 +22,5 @@ fi
 echo "Installing Open Loops..."
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "$DIR/install.sh"
+echo "  You can close this window."   # install.sh says only "Done.": this window was opened by the double-click (#60)
+echo ""

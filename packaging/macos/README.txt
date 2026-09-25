@@ -8,9 +8,11 @@ Open Loops - installer for macOS
      - macOS 15 and later: close the warning, open System Settings > Privacy & Security,
        scroll down and click "Open Anyway" next to Install Open Loops.
 2. A Terminal window opens. It downloads Open Loops from https://github.com/@REPO@,
-   installs Python and Claude Code if you do not have them, and asks for your first name.
+   installs Python if you do not have it (on a Mac without Homebrew it points you to python.org
+   instead), and asks for your first name.
 3. When it finishes, Open Loops.app (the orange loop) is on your Desktop and in the Dock,
-   and the app opens to walk you through connecting Slack and email.
+   and the app opens to walk you through installing the AI (one button, Install <your AI>) and
+   connecting Slack and email.
 
 You can eject this disk image afterwards. Nothing else on it is needed.
 Everything runs on your computer. Nothing is sent anywhere. Read the source at the GitHub link above.

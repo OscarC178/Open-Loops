@@ -9,13 +9,13 @@ Line format (one item per line, ids A1, A2, ...; must stay Telegram-compatible):
     - [-] A1 | project | action | added YYYY-MM-DD | dropped YYYY-MM-DD
 
 config.json "standing_file" is the path to that file. The older "vault_path" (a folder holding
-02-Research/standing-items.md) still works. Blank = the feature is off unless ~/ClaudeCloud/
-02-Research/standing-items.md happens to exist.
+02-Research/standing-items.md) still works. Blank = the feature is off: no file is read or written.
 """
 import hashlib, json, re
 from datetime import date, datetime
 from pathlib import Path
 
+from .messages import say
 from .paths import ROOT
 CONFIG = ROOT / "config.json"
 ITEM_RE = re.compile(
@@ -32,12 +32,16 @@ def _cfg():
 
 
 def standing_path(cfg=None):
-    """The file, from "standing_file" (a file path), else "vault_path" (a folder or a file), else
-    the historical default under ~/ClaudeCloud. A folder means <folder>/02-Research/standing-items.md."""
+    """The file, from "standing_file" (a file path), else "vault_path" (a folder or a file), else None:
+    with both blank there is no to-do file. A folder means <folder>/02-Research/standing-items.md.
+    An isolated test copy (store.isolated, #36) has no to-do file whatever is set: nothing is read or written back."""
+    from .store import isolated
+    if isolated():
+        return None
     cfg = cfg if cfg is not None else _cfg()
     p = (cfg.get("standing_file") or cfg.get("vault_path") or "").strip()
     if not p:
-        return Path.home() / "ClaudeCloud" / LEGACY_REL
+        return None
     p = Path(p).expanduser()
     if p.suffix.lower() in (".md", ".txt", ".markdown"):
         return p
@@ -45,7 +49,8 @@ def standing_path(cfg=None):
 
 
 def vault_root():
-    return standing_path().parent
+    p = standing_path()
+    return p.parent if p else None
 
 
 STARTER = """# Standing items
@@ -69,8 +74,11 @@ Format: - [ ] A<number> | project | what to do | added YYYY-MM-DD
 
 
 def create_starter(path=None):
-    """Write an example file at the configured path (or `path`). Never overwrites. Returns the Path."""
+    """Write an example file at the configured path (or `path`). Never overwrites. Returns the Path.
+    ValueError when no path is given and none is set (the message is shown to the person as it is)."""
     p = Path(path).expanduser() if path else standing_path()
+    if p is None:
+        raise ValueError(say("standing_no_path"))
     if p.exists():
         raise FileExistsError(str(p))
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -82,6 +90,8 @@ def status(path=None):
     """For the Settings box: where the file is, whether it exists, how many open items it has.
     `path` (the value typed in Settings, not yet saved) is resolved the same way as the setting."""
     p = standing_path({"standing_file": path}) if path else standing_path()
+    if p is None:
+        return {"path": "", "exists": False, "open": 0}
     ok = p.exists()
     n = 0
     if ok:
@@ -96,7 +106,7 @@ def _today():
 
 def _read():
     p = standing_path()
-    if not p.exists():
+    if p is None or not p.exists():
         return None
     return p.read_text(encoding="utf-8").splitlines()
 
@@ -146,14 +156,17 @@ def _fp(it):
 
 
 def _source_label():
-    return standing_path().name
+    p = standing_path()
+    return p.name if p else ""
 
 
 def touch_seen(state, items):
     """Record first-seen / wording-changed in state.json['vault_seen']. Returns flags + dirty."""
     now = datetime.now().astimezone().isoformat(timespec="minutes")
     today = now[:10]
-    seen = dict(state.get("vault_seen") or {})
+    # a copy of each record too, not just of the map: the records are changed in place below, and the map as it was
+    # read must stay as it was, so merge_seen() can tell what this read changed (#61)
+    seen = {k: dict(v) for k, v in (state.get("vault_seen") or {}).items() if isinstance(v, dict)}
     flags, dirty = {}, False
     live = set()
     for it in items:
@@ -190,6 +203,40 @@ def touch_seen(state, items):
     return flags, dirty
 
 
+def merge_seen(fresh, before, after):
+    """Apply one read's vault_seen changes onto fresh, the state.json just read under the lock, key by key (#61).
+
+    before: the map as that read found it; after: the map touch_seen() made of it. A poll reads the to-do file outside
+    the lock, so another poll (or a job's write) may have saved state.json since: fresh's map is never replaced by
+    this read's whole copy, and a change is applied to a key only if nobody else changed that key meanwhile, i.e.
+    fresh still holds the record this read started from (review of #66):
+      - added here (not in before): added if fresh has no record for it; one there already (another poll recorded
+        it first) is kept as it is, its first_seen and changed_at included;
+      - reworded here: fp / changed_at / action taken only if fresh still equals before[k]; else fresh is kept;
+      - left the open list here (closed, snoozed or deleted): removed only if fresh still equals before[k]; a record
+        another poll re-added or reworded since is kept.
+    A conflict keeps fresh, the newer save; the next poll reads the file again and records whatever is still
+    different, so nothing is lost for longer than one poll. -> True if fresh changed (it then needs saving)."""
+    cur = {k: dict(v) for k, v in (fresh.get("vault_seen") or {}).items() if isinstance(v, dict)}
+    changed = "vault_seen" not in fresh
+    for k, rec in after.items():
+        if before.get(k) == rec:
+            continue   # untouched by this read
+        if k not in before:
+            if k not in cur:
+                cur[k] = dict(rec)
+                changed = True
+        elif cur.get(k) == before[k]:
+            cur[k] = dict(cur[k], fp=rec.get("fp"), changed_at=rec.get("changed_at"), action=rec.get("action"))
+            changed = True
+    for k in before:
+        if k not in after and k in cur and cur[k] == before[k]:
+            del cur[k]
+            changed = True
+    fresh["vault_seen"] = cur
+    return changed
+
+
 def as_loops(state=None):
     """Cards for the Home list. Not stored as loops. Updates vault_seen when state is passed."""
     items = open_items()
@@ -200,7 +247,7 @@ def as_loops(state=None):
     src = _source_label()
     p = standing_path()
     mtime = None
-    if p.exists():
+    if p and p.exists():
         mtime = datetime.fromtimestamp(p.stat().st_mtime).astimezone().isoformat(timespec="minutes")
     out = []
     recs = (state or {}).get("vault_seen") or {}

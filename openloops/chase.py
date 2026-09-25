@@ -13,7 +13,7 @@ import json, sys
 from datetime import datetime
 from pathlib import Path
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
 from .store import load_cfg, load_state, read_json, update_state
 CFG = load_cfg()
@@ -89,9 +89,10 @@ def main(loop_id):
     send = CFG.get("send_external", False) if ext else CFG.get("send_internal", False)
     if "--force-draft" in sys.argv:
         send = False
-    if send and l["channel"] == "email" and agent.name() != "claude":
-        # Google's hosted Gmail MCP server (used by non-Claude agents) has no send/reply
-        # tool - only drafts - so email chases stay drafts regardless of the tick boxes.
+    if send and l["channel"] == "email" and agent.name() == "grok":
+        # Grok's Gmail is the bundled gmail_mcp.py, which has no send/reply tool - only drafts -
+        # so email chases stay drafts regardless of the tick boxes. (Claude replies; Codex's Gmail
+        # connector sends with send_email, see agent._CODEX_RENAME.)
         print("note: sending email isn't available via this agent - creating a draft instead")
         send = False
     mode = "send" if send else "draft"
@@ -125,6 +126,7 @@ def main(loop_id):
                     x["last_chase_mode"] = mode
         update_state(mark)
     else:
+        messages.report(p, "chase")   # this run's failure file (state/jobs/): why the AI failed, if its stderr says (app.py reads only that)
         sys.exit(1)
 
 

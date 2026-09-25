@@ -10,7 +10,7 @@ import json, re, sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
 from .store import load_cfg
 CFG = load_cfg()
@@ -59,12 +59,13 @@ def main():
                            sources="\n".join(sources), domains=", ".join(CFG.get("internal_domains", [])))
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     print(f"[{stamp}] finding people...")
-    p = agent.run(prompt, (SLACK_TOOLS if slack_on else []) + GMAIL_TOOLS)
+    # a small job: low effort whatever Settings say for the scans (#50)
+    p = agent.run(prompt, (SLACK_TOOLS if slack_on else []) + GMAIL_TOOLS, effort_="low")
     (LOG / f"people-{stamp}.log").write_text(p.stdout + "\n--- stderr ---\n" + p.stderr, encoding="utf-8")
     # some agents drop the markers and emit bare JSON - accept that too
     m = re.search(r"<<<PEOPLE>>>(.*?)<<<END>>>", p.stdout, re.S) or re.search(r'(\{\s*"people"\s*:.*\})', p.stdout, re.S)
     if not m:
-        print("!! no PEOPLE block. See log."); print(p.stdout[-800:]); sys.exit(1)
+        print("!! no PEOPLE block. See log."); print(p.stdout[-800:]); messages.report(p, "people"); sys.exit(1)
     d = json.loads(m.group(1))
     d["found_at"] = datetime.now().isoformat(timespec="minutes")
     OUT.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")

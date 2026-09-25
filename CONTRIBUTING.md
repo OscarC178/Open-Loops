@@ -9,8 +9,8 @@ plus one HTML page; `npm` is only a command runner here and installs nothing.
 |---|---|---|
 | Python 3.11+ | runs the app and the tests | `python --version` (Mac: `python3 --version`) |
 | Node 18+ | the `npm run …` wrapper | `node --version` |
-| Claude Code, signed in (or Grok) | the jobs that read Slack / Gmail / Miro | `claude --version` |
-| Slack and/or Gmail connected in Claude | anything past the setup screen | `/mcp` in Claude |
+| Claude Code, signed in (or Codex with a ChatGPT sign-in, or Grok) | the jobs that read Slack / Gmail / Miro | `claude --version` |
+| Slack and/or Gmail connected in Claude | anything past the setup screen | the checklist's Connect buttons, or `claude mcp list` |
 
 ## The commands
 
@@ -31,7 +31,8 @@ No Node? `python -m openloops.app --port 8766`, `python -m openloops.app --stop 
 
 ## Two copies, two ports
 
-- **Installed copy**: `%LOCALAPPDATA%\OpenLoops` (Mac `~/Documents/OpenLoops`), port **8765**, started by the Desktop
+- **Installed copy**: `%LOCALAPPDATA%\OpenLoops` (Mac `~/Library/Application Support/OpenLoops`, not `~/Documents`: the
+  morning job may not read files there, see INSTALL.md gotcha 8), port **8765**, started by the Desktop
   icon and the morning task. This is what you use day to day.
 - **Your checkout**: port **8766**, started by `npm run dev`. It has its own gitignored `config.json`, `state.json`,
   `voice.json` and `state/`, so it never touches the installed copy's data. On first run the page walks you through
@@ -73,10 +74,11 @@ you would be reading old code while thinking you were on new.
 |---|---|
 | `openloops/app.py` | the local server and every `/api/*` route |
 | `openloops/index.html` | the whole page: CSS, markup, JS |
-| `openloops/agent.py` | how a job calls Claude / Grok and which MCP tools it may use |
+| `openloops/agent.py` | how a job calls Claude / Grok / Codex and which tools it may use |
 | `openloops/refresh.py`, `chase.py`, `daylog.py`, `roadmap.py`, `people.py`, `voice.py` | the jobs; each runs as `python -m openloops.<name>` |
 | `openloops/store.py` | JSON helpers; `update_state()` so a long job never overwrites clicks made meanwhile |
 | `openloops/doctor.py` | the connection checklist |
+| `openloops/messages.py` | every failure a person can fix, in plain words, with the fix: what the checklist, toasts and banners say |
 | `openloops/standing.py` | the optional to-do file |
 | `tests/` | one file per area; `run_all.py` runs them all |
 | `config.template.json` | every setting with its default; `config.json` is the personal copy and is gitignored |
@@ -86,7 +88,14 @@ you would be reading old code while thinking you were on new.
 - Stdlib only. No pip packages, no npm packages.
 - Every external call goes through `agent.run(prompt, tools)` with an explicit tool allow-list. Jobs never send;
   chases are drafts unless the user has ticked *Send* in Settings.
+- Claude runs as `claude -p --output-format json`. `agent.run()` hands the job the JSON's `result` as `p.stdout`, so
+  jobs parse text as before; a failure is read from the result's `is_error` flag (`p.refused`), never from the answer,
+  and a failed run's `p.stdout` is empty. Output with no JSON result is raw-output tolerance only: passed on at exit 0,
+  a plain failure otherwise.
 - Jobs write state through `store.update_state()`, never a plain write of a stale copy.
 - Anything that exits early prints `SKIPPED: <reason>` and exits 2, so the page can say why.
+- A failure the person can fix is worded once, in `messages.py` (what happened, then what to do, naming who: Google, Slack,
+  Claude, your Mac's privacy settings), and looked up with `say(id)`. No exit codes, paths or tool names in the sentence;
+  that detail goes to the Console and `/api/diag`. `tests/test_messages.py` checks the rules.
 - UI changes follow the 20 UX laws summary in the spec's "UX pass" section: one primary action per section,
   36 px targets, instant feedback with Undo where cheap, one dialog for every "type something" moment.

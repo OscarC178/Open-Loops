@@ -4,7 +4,7 @@
 :root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f24;--mut:#6b7280;--line:#e5e7eb;--g:#16a34a;--a:#d97706;--r:#dc2626;--b:#2563eb}
 @media(prefers-color-scheme:dark){:root{--bg:#111318;--card:#1a1d24;--ink:#e6e7ea;--mut:#9aa0a8;--line:#2a2f38}}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
-header{display:flex;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
 h1{font-size:18px;margin:0 6px 0 0}header .meta{color:var(--mut);font-size:12px;margin-left:auto}
 .tabs{display:flex;gap:2px}.tabs button{border:none;background:none;padding:6px 12px;border-radius:6px;color:var(--mut)}.tabs button.on{background:var(--bg);color:var(--ink);font-weight:600}
 /* Fitts: every control is at least 36px tall; keyboard users always see where focus is */
@@ -16,7 +16,10 @@ input,select,textarea{min-height:36px}textarea{min-height:0}
 .chip{display:inline-flex;align-items:center;font-size:11px;padding:0 0 0 8px;border-radius:10px;border:1px solid var(--line);color:var(--b);text-decoration:none;margin:3px 4px 0 0;max-width:260px;overflow:hidden;white-space:nowrap;vertical-align:bottom}.chip span{overflow:hidden;text-overflow:ellipsis}
 .chip button{min-height:0;height:22px;width:26px;padding:0;border:0;background:none;color:var(--mut);font-size:14px;line-height:1}.chip button:hover{color:var(--r)}
 /* toasts: every action is acknowledged, undo where it is cheap */
-#toasts{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:30;max-width:min(560px,calc(100vw - 32px))}
+/* a full-width line of the sticky header itself (#50, #52 review): always in view, and it takes its own room, so a
+   toast never lies over a checklist row or the save bar; at most 3 at once (toast()) */
+#toasts{flex-basis:100%;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0}#toasts:empty{display:none}
+#toasts .toast{max-width:min(560px,100%)}
 .toast{background:var(--ink);color:var(--bg);border-radius:8px;padding:10px 14px;font-size:13px;display:flex;gap:12px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .toast.err{background:#7f1d1d;color:#fff}.toast button{min-height:28px;padding:2px 10px;background:transparent;color:inherit;border-color:currentColor;font-size:12px}
 /* one dialog for every "type something" moment: snooze, note, link, closing a vault item */
@@ -24,6 +27,8 @@ dialog{border:1px solid var(--line);border-radius:10px;padding:0;background:var(
 dialog::backdrop{background:rgba(0,0,0,.45)}dialog .box{margin:0;border:0}dialog label{display:block;margin-top:10px;font-size:12px;color:var(--mut)}
 dialog input,dialog textarea{width:100%;margin-top:4px}dialog .quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .card.busy{opacity:.5;pointer-events:none}
+/* a click still waiting after a second (the app may be holding its save lock for up to 10 s, #64): say so on the card */
+.card.saving>.acts::before{content:'Saving…';font-size:12px;color:var(--ink);align-self:center;margin-right:6px}
 /* radio/checkbox labels are real targets too (people picks, settings toggles) */
 label:has(>input[type=radio]),label:has(>input[type=checkbox]){display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 6px;border-radius:6px;cursor:pointer}
 label:has(>input:checked){background:var(--bg)}
@@ -48,6 +53,7 @@ pre.log{background:var(--card);border:1px solid var(--line);border-radius:8px;pa
 .pill{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--line);color:var(--mut)}
 details summary{cursor:pointer;color:var(--mut);font-size:12px}
 #banner{display:none;background:#fee2e2;color:#7f1d1d;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px}
+#sched_warn{display:none;background:#fee2e2;color:#7f1d1d;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px}#sched_warn div{margin:4px 0 8px}
 .steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}.steps span{font-size:12px;padding:3px 10px;border-radius:12px;border:1px solid var(--line);color:var(--mut)}
 .steps span.done{border-color:var(--g);color:var(--g)}.steps span.now{background:var(--b);border-color:var(--b);color:#fff}
 input[type=text],input:not([type]),textarea{font:inherit;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
@@ -73,44 +79,94 @@ details.cfg.danger{border-color:var(--r)}details.cfg>.body>.card:last-child,deta
 select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink)}select.pri.high{color:var(--r);font-weight:600}
 #con{max-height:260px;margin:0 0 12px;user-select:text}
 @media(max-width:720px){.person{grid-template-columns:1fr auto}.person .sum{grid-column:1/-1}.blocks{max-width:none}}
+#st_connect.no_agent_btn .agent_btn_help{display:none}   /* the help never names a button the page has hidden (#50) */
 #savebar{position:sticky;bottom:0;background:var(--card);border-top:1px solid var(--line);margin:8px -24px 0;padding:10px 24px;display:flex;gap:10px;align-items:center;z-index:2}
+/* Set-up (#28): three cards, each with its state and one action; the AI picker is three big targets (Fitts) */
+.su-head{display:flex;align-items:center;gap:12px;margin:0 0 4px}.su-head h3{margin:0;flex:1;font-size:16px}
+.su-top{display:flex;align-items:center;gap:10px;margin-bottom:2px}.su-top h3{margin:0;flex:1}
+.su-state{font-size:12px;padding:2px 10px;border-radius:12px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
+.su-state.done{border-color:var(--g);color:var(--g)}.su-state.progress{border-color:var(--b);color:var(--b)}.su-state.needs{border-color:var(--a);color:var(--a);font-weight:600}
+.su-pick{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0 6px}
+.su-pick button{text-align:left;display:flex;flex-direction:column;gap:4px;padding:10px 12px}.su-pick button b{font-size:14px}.su-pick button .sub{margin:0}
+.su-pick button[aria-checked=true]{border-color:var(--b);box-shadow:inset 0 0 0 1px var(--b)}.su-pick button[aria-checked=true] b::after{content:" ✓";color:var(--b)}
+.su-act{margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.su-act:empty{display:none}
+#su_start .box{margin:10px 0 0;background:var(--bg)}
+#su_repair{border:1px solid var(--a);border-radius:8px;padding:10px 14px;margin:0 0 12px;font-size:13px}
+#setup section:focus{outline:2px solid var(--b);outline-offset:2px}
+/* the checklist lives in Every check (setupEmbed): its old "1 · Let's get you connected" heading and paragraph are not shown
+   there (#56); paintSetupDone() still writes the repair line into #st_connect_h, which #su_repair shows above the cards */
+#st_connect_h,#st_connect_intro{display:none!important}
+@media(max-width:720px){.su-pick{grid-template-columns:1fr}}
 </style></head><body>
 <header><h1>Open Loops</h1>
 <div class="tabs"><button id="tab_home" class="on" onclick="showTab('home')">Home</button><button id="tab_settings" onclick="showTab('settings')">⚙ Settings</button></div>
-<button class="primary" id="refresh" onclick="refresh()" title="">Refresh</button>
+<button class="primary" id="refresh" onclick="refresh()" title="" style="display:none">Refresh</button>
 <button id="uslack" onclick="refresh(true)" title="quick pass: Slack only, skips email" style="display:none">Update Slack</button>
-<span class="pill" id="gmail"></span>
-<span class="meta" id="meta"></span></header>
+<span class="pill" id="gmail" style="display:none"></span>
+<span class="pill" id="isolated_pill" style="display:none" title="An isolated test copy: it reads no to-do file and starts no scan by itself">Test copy: no automatic scans</span>
+<span class="meta" id="meta"></span>
+<div id="toasts" aria-live="polite"></div></header>
 <main>
 <div id="banner"></div>
+<div id="sched_warn" role="alert"></div>
 
 <!-- ================= HOME ================= -->
 <div id="page_home">
- <div id="steps" class="steps"></div>
+ <div id="steps" class="steps"><span class="sub"><span class="spin"></span>Checking your connections…</span></div>
+
+ <!-- Set-up (#28): what a new user sees first, and ⚙ Settings → Set-up later. Three cards read from the connection check;
+      the full checklist (#st_connect) and the first-scan box (#st_start) are moved into it when the page loads (setupEmbed) -->
+ <div id="setup" style="display:none">
+  <div class="su-head"><h3>Set up Open Loops</h3><button class="quiet" id="setup_back" onclick="closeSetup()" style="display:none">Back to your loops</button></div>
+  <div id="su_repair" role="status" style="display:none"></div>
+  <div class="sub" id="su_intro" style="margin:0 0 12px">Three steps, top to bottom. Nothing reads your messages until you press <b>Start the first scan</b> at the end.</div>
+  <section class="box" id="su_ai" tabindex="-1" aria-labelledby="su_ai_h">
+   <div class="su-top"><h3 id="su_ai_h">1 · Your AI</h3><span class="su-state" id="su_ai_state"></span></div>
+   <div class="sub">The AI assistant that reads your messages and writes the nudges. It runs on this computer, on your own plan.</div>
+   <div class="su-pick" id="su_ai_pick" role="radiogroup" aria-labelledby="su_ai_h" onkeydown="suPickKey(event)"></div>
+   <div class="sub" id="su_ai_why" role="status" style="display:none"></div>
+   <div id="su_ai_rows"></div>
+   <div class="su-act" id="su_ai_act"></div>
+  </section>
+  <section class="box" id="su_src" tabindex="-1" aria-labelledby="su_src_h">
+   <div class="su-top"><h3 id="su_src_h">2 · Your sources</h3><span class="su-state" id="su_src_state"></span></div>
+   <div class="sub" id="su_src_help"></div>
+   <div id="su_src_rows"></div>
+   <div class="su-act" id="su_src_act"></div>
+  </section>
+  <section class="box" id="su_sched" tabindex="-1" aria-labelledby="su_sched_h">
+   <div class="su-top"><h3 id="su_sched_h">3 · Your schedule</h3><span class="su-state" id="su_sched_state"></span></div>
+   <div class="sub" id="su_time"></div>
+   <div id="su_sched_rows"></div>
+   <div class="sub" id="su_scan" style="margin-top:8px"></div>
+   <div id="su_start"></div>
+  </section>
+  <details class="cfg" id="su_all" ontoggle="cfgRemember(this)"><summary><b>Every check</b><span class="sub" id="su_all_sub"></span></summary><div class="body" id="su_all_body"></div></details>
+ </div>
 
  <!-- stage: connect -->
  <div id="st_connect" class="box" style="display:none">
-  <h3>1 · Let's get you connected</h3>
-  <div class="sub" style="margin-bottom:10px">Open Loops reads the messages <i>you</i> send on Slack and email, and reminds you when someone hasn't replied. It needs to see those accounts — a one-off. The ticks below update by themselves; you don't need to press anything to refresh them.</div>
-  <div id="setup_steps"></div>
+  <h3 id="st_connect_h">1 · Let's get you connected</h3>
+  <div class="sub" style="margin-bottom:10px" id="st_connect_intro">Open Loops reads the messages <i>you</i> send on Slack and email, and reminds you when someone hasn't replied. It needs to see those accounts — a one-off. The ticks below update by themselves; you don't need to press anything to refresh them.</div>
+  <div id="setup_steps" tabindex="-1" aria-label="Every check"></div>
   <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
    <button class="primary" id="agent_btn" onclick="openClaude()">Open Claude</button>
    <button onclick="doctor(true)">Check again</button>
    <span class="sub" id="setup_msg"></span>
   </div>
-  <div class="sub" style="margin-top:10px" id="agent_help"><b>Open Claude</b> opens a black window. If it asks you to sign in, follow the link. For Slack or Gmail, type <code>/mcp</code> in that window, press Enter, pick <b>Slack</b> or <b>claude.ai Gmail</b>, choose <b>Authenticate</b>, and click Allow in your browser. If they're already connected there's nothing to do here — the ticks will appear within a minute.</div>
+  <div class="sub" style="margin-top:10px" id="agent_help">Press the button on each row that isn't ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can't do.</span></div>
  </div>
 
  <!-- stage: people -->
  <!-- stage: checkfail - the checker did not answer; not a connection problem, and never a raw exit code in the user's face -->
  <div id="st_checkfail" class="box" style="display:none">
   <h3>I couldn't run the connection check</h3>
-  <div class="sub" style="margin-bottom:10px">Nothing is wrong with your Slack or email: the checker itself didn't answer. It usually works on the next try, and the page tries again by itself. If it keeps happening, the details are in the <a href="#" onclick="return conShow()">Console</a> at the bottom of the page: <b>Copy all</b> there gives you everything to paste into a report.</div>
+  <div class="sub" style="margin-bottom:10px"><span id="checkfail_said"></span> If it keeps happening, the details are in the <a href="#" onclick="return conShow()">Console</a> at the bottom of the page: <b>Copy all</b> there gives you everything to paste into a report.</div>
   <div style="display:flex;gap:8px;align-items:center"><button class="primary" onclick="doctor(true)">Retry</button><span class="sub" id="checkfail_msg"></span></div>
  </div>
 
  <div id="st_people" class="box" style="display:none">
-  <h3>2 · Who's who?</h3>
+  <h3>Who's who?</h3>
   <div class="sub" style="margin-bottom:8px">So nudges hit the right note, tell it who's senior to you, a peer, junior, or outside the company. It's looked at who you message most and taken a guess — correct anything that's wrong, then press Save. You can change this later in ⚙ Settings.</div>
   <div id="people_list"></div>
   <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
@@ -120,10 +176,26 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
   </div>
  </div>
 
+ <!-- before the first automatic job (who's who, tone, first scan): say what it reads and wait for a press (#38) -->
+ <div id="st_start" class="box" style="display:none">
+  <h3>Start the first scan?</h3>
+  <div class="sub" id="start_said" style="margin-bottom:4px"></div>
+  <div class="sub" id="start_ask"></div>
+  <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+   <button class="primary" id="start_go" onclick="startScan()">Start the first scan</button>
+   <button id="start_later" onclick="notNow()">Not now</button>
+   <button id="start_retry" onclick="retryChoice()" style="display:none">Retry</button>
+   <span class="sub" id="start_msg"></span>
+  </div>
+ </div>
+
  <!-- stage: voice / scan (automatic) -->
  <div id="st_auto" class="box" style="display:none"><h3 id="auto_title"></h3><div class="sub" id="auto_sub"></div><div style="margin-top:10px"><button id="auto_retry" onclick="retryStage()" style="display:none">Try again</button></div></div>
 
- <div id="lists">
+ <!-- Gmail connected after a Slack-only setup: offered, never forced; setup stays done (#38 review) -->
+ <div id="gmail_later" class="box" style="display:none"><span class="sub">Gmail is connected now. Run a full scan?</span> <button class="primary" id="gmail_later_btn" onclick="refresh()">Run a full scan</button></div>
+
+ <div id="lists" style="display:none">
   <!-- Pinned: the boards and docs you open every day, yours rather than a loop's. Miro boards can open in a view-only embed here. -->
   <div id="pins_wrap" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 4px">
    <span class="sub" style="letter-spacing:.08em;text-transform:uppercase;font-size:11px;margin-right:4px">Pinned</span>
@@ -199,11 +271,23 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
    <button type="button" onclick="dlgClose()">Cancel</button>
   </div>
 </form></dialog>
-<div id="toasts" aria-live="polite"></div>
+<!-- the one step the app cannot do for you: clicking Allow in the browser. Closes by itself once that row goes green (#28) -->
+<dialog id="allow_dlg" aria-labelledby="allow_title"><div class="box" style="padding:16px 18px;margin:0;border:0">
+  <h3 id="allow_title"></h3>
+  <div class="sub" id="allow_sub"></div>
+  <div class="sub" id="allow_link" style="margin-top:10px"></div>
+  <div class="sub" id="allow_msg" style="margin-top:8px"></div>
+  <div style="margin-top:14px;display:flex;gap:8px">
+   <button class="primary" id="allow_check" onclick="allowCheck()" style="display:none">Check again</button>
+   <button type="button" id="allow_stop" onclick="allowStop()" style="display:none"></button>
+   <button type="button" onclick="allowDismiss()">Close</button>
+  </div>
+</div></dialog>
 
 <!-- ================= SETTINGS ================= -->
 <div id="page_settings" style="display:none" oninput="cfgDirty()" onchange="cfgDirty()">
  <div class="cfg-head"><h2>Settings</h2><button class="quiet" type="button" onclick="cfgAll(true)">Open all</button><button class="quiet" type="button" onclick="cfgAll(false)">Close all</button></div>
+ <div class="box" id="cs_setup" style="display:flex;align-items:center;gap:12px;padding:10px 16px"><div style="flex:1"><b>Set-up</b><div class="sub">your AI, your sources and your schedule: fix a broken connection from here</div></div><button type="button" id="setup_open" onclick="openSetup()">Open Set-up</button></div>
  <details class="cfg" id="cs_personal" ontoggle="cfgRemember(this)"><summary><b>Personal</b><span class="sub">your name · how you write · who's who · exclusions</span></summary><div class="body">
  <div class="box">
   <h3>Your name</h3>
@@ -260,12 +344,13 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <div class="box">
   <h3>Your AI</h3>
   <div class="sub">Which AI assistant reads your messages and writes the nudges. It must be installed and signed in on this computer — after switching, the Home tab re-checks the connections.</div>
-  <select id="cfg_agent" style="margin:6px 0 0;font:inherit;padding:4px" onchange="if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=this.value==='grok'?'':'none';$('#cfg_model_wrap').style.display=this.value==='claude'?'':'none'"><option value="claude">Claude (Claude Code)</option><option value="grok">Grok (Grok CLI)</option></select>
+  <select id="cfg_agent" style="margin:6px 0 0;font:inherit;padding:4px" onchange="agentFormUI(this.value)"><option value="claude">Claude (Claude Code)</option><option value="grok">Grok (Grok CLI)</option><option value="codex">Codex (ChatGPT)</option></select>
   <div id="cfg_model_wrap" style="margin-top:10px">
    <label>Model <select id="cfg_model" style="font:inherit;padding:4px"><option value="sonnet">Sonnet (recommended)</option><option value="haiku">Haiku (cheapest)</option><option value="opus">Opus</option><option value="">Claude Code's default</option></select></label>
-   <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="xhigh">xhigh (recommended with Sonnet)</option><option value="max">max</option><option value="high">high</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
-   <div class="sub">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at xhigh or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
+   <label style="margin-left:12px">Effort <select id="cfg_effort" style="font:inherit;padding:4px"><option value="high">high (recommended with Sonnet)</option><option value="xhigh">xhigh</option><option value="max">max</option><option value="medium">medium (recommended with Opus)</option><option value="low">low</option><option value="">Claude Code's default</option></select></label>
+   <div class="sub" id="cfg_model_note">Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at high or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code's default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.</div>
   </div>
+  <div class="sub" id="cfg_codex_note" style="margin-top:8px;display:none"><b>Before you schedule a daily refresh:</b> Codex runs on your ChatGPT plan, which only allows so much Codex use every 5 hours and every week, shared with ChatGPT's other Codex tools. Every scan, refresh and chase uses some of it. If it runs out, Open Loops can't read anything until it comes back. Gmail and Slack are the ones connected in your ChatGPT account (chatgpt.com/apps). <span id="cfg_codex_miro"></span></div>
   <div class="sub" id="cfg_slack_src" style="margin-top:6px"></div>
   <div id="cfg_slack_wrap" style="margin-top:10px">
    <label><input type="checkbox" id="cfg_use_slack"> Use Slack</label>
@@ -296,7 +381,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <div class="box">
   <h3>Your own to-do file (optional)</h3>
   <div class="sub">A markdown file you already keep, anywhere on this computer (a notes vault, a synced folder, a git repo). Its open lines show under <b>Needs me</b>; pressing <b>done</b> asks how you closed the item and writes that back into the file. Re-read about once a minute. Leave blank if you don't keep one.</div>
-  <input id="cfg_standing" style="margin:6px 0 0;width:100%" oninput="clearTimeout(window.stT);window.stT=setTimeout(standingStatus,400)" placeholder="C:\Users\you\Notes\standing-items.md   (a folder also works: <folder>\02-Research\standing-items.md)">
+  <input id="cfg_standing" style="margin:6px 0 0;width:100%" oninput="clearTimeout(window.stT);window.stT=setTimeout(standingStatus,400)" placeholder="/Users/you/Documents/to-do.md">
   <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="sub" id="standing_status"></span><button id="standing_create" type="button" style="display:none" onclick="standingCreate()">Create a starter file there</button></div>
   <details style="margin-top:8px"><summary>The file format</summary>
    <div class="sub" style="margin-top:6px">One item per line, ids A1, A2… Snooze an item by adding <code>| snoozed-until YYYY-MM-DD</code>. Tick it here or in Open Loops.</div>
@@ -316,7 +401,7 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  <details class="cfg danger" id="cs_app" ontoggle="cfgRemember(this)"><summary><b>App</b><span class="sub">quit · start over</span></summary><div class="body">
  <div class="box">
   <h3>Quit</h3>
-  <div class="sub">Closing this tab stops the app by itself a few seconds later (after any running job). This button does the same without closing the tab. To start again, double-click the Open Loops icon.</div>
+  <div class="sub">Closing this tab stops the app by itself a few seconds later (after any running job). This button does the same without closing the tab. <span id="quit_again">To start again, double-click the Open Loops icon.</span></div>
   <button id="quitbtn" onclick="quitApp()" style="margin-top:6px">Quit Open Loops</button>
  </div>
  <div class="box">
@@ -351,30 +436,66 @@ const host=u=>{try{return new URL(u).host.replace(/^www\./,'')}catch(e){return u
 const linkify=s=>esc(s).replace(/https?:\/\/[^\s<]+/g,u=>`<a href="${u}" target="_blank" rel="noopener">${u.length>48?host(u)+'/…':u}</a>`);
 // Every request carries this page's id; closing the tab sends a goodbye and the app quits a few seconds later (see app.py).
 const PAGE=Math.random().toString(36).slice(2)+Date.now().toString(36);let stopped=false;
-const api=async(u,b)=>{let r;try{r=await fetch(u,b?{method:'POST',headers:{'Content-Type':'application/json','X-OL-Page':PAGE},body:JSON.stringify(b)}:{headers:{'X-OL-Page':PAGE}})}catch(e){clog('no answer from '+u+': '+e.message);throw e}
- if(!r.ok){const m=u+' -> '+r.status+' '+(await r.text()).slice(0,300);clog(m);throw new Error(m)}return r.json()};
+// messages.py's table of failures, for this platform: app.py fills it in as it serves the page (#25). msg(id, {ai:…}) is
+// "<what happened> <what to do>". Kept on the page, so it can still say "not running" once the server has gone.
+const MSG=/*OL_MESSAGES*/{};
+// A card click the app could not save: "Couldn't snooze that: <why>" (messages.py ACTION_FAILED, #64)
+const ACT_FAILED=/*OL_ACTION_FAILED*/{};
+// messages.py LABELS (#67): words that are not sentences (a button's name, a Console mark), filled in the same way
+const LABEL=/*OL_LABELS*/{};
+const fill=(t,f)=>String(t||'').replace(/\{(\w+)\}/g,(m,k)=>f&&f[k]!==undefined?f[k]:m);
+function msg(id,f){const m=MSG[id];return m?fill(m.what,f)+' '+fill(m.fix,f):''}
+function msgFollow(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_follow&&f&&f.row?' '+fill(m.fix_follow,f):''):''}   // "what" + "follow the <row> row": for a row with no button
+function msgBusy(id,f){const m=MSG[id];return m?fill(m.what,f)+(m.fix_busy?' '+fill(m.fix_busy,f):''):''}   // "what" + "please wait": that row's step is under way
+// A fetch that throws never reached the app (it is not running); an HTTP error did, and carries its status and body.
+const api=async(u,b,signal)=>{let r;try{r=await fetch(u,Object.assign(b?{method:'POST',headers:{'Content-Type':'application/json','X-OL-Page':PAGE},body:JSON.stringify(b)}:{headers:{'X-OL-Page':PAGE}},signal?{signal}:{}))}catch(e){clog('no answer from '+u+': '+e.message);e.offline=true;throw e}
+ if(!r.ok){const t=await r.text(),m=u+' -> '+r.status+' '+t.slice(0,300);clog(m);const e=new Error(m);e.status=r.status;try{e.body=JSON.parse(t)}catch(x){}throw e}return r.json()};
 let lastBanner='';
-function banner(msg){const b=$('#banner');if(!msg){b.style.display='none';lastBanner='';return}b.style.display='';b.textContent=msg;if(msg!==lastBanner){lastBanner=msg;clog('banner: '+msg)}}
+function banner(msg){const b=$('#banner');if(!msg){b.style.display='none';lastBanner='';return}b.style.display='block';b.textContent=msg;if(msg!==lastBanner){lastBanner=msg;clog('banner: '+msg)}}   // 'block': '' would fall back to the stylesheet's display:none
+// The page could not talk to the app: not running at all (the usual case: it quits when its last tab closes), or it answered with an error
+const appDown=e=>banner(e&&e.offline?msg('server_offline'):msg('server_error'));
+// The one sentence to show for a failed request: the app's own plain words (its "said", else its "error"), never the raw
+// body, status or "detail" - api() has already put those in the Console.
+// A check made on the page itself ('pick a date', 'already pinned'): its own words are the sentence, so it says so
+const localErr=m=>Object.assign(new Error(m),{local:true});
+const errSaid=e=>(e&&e.local&&e.message)||(e&&e.body&&(e.body.said||e.body.error))||(e&&e.offline?msg('server_offline'):msg('server_error'));
 // ---------- console: what the page did, timestamped, kept across reloads, one Copy away from a bug report ----------
 const CON_KEY='ol.console',CON_MAX=400;let CON=[];
 try{CON=JSON.parse(localStorage.getItem(CON_KEY)||'[]');if(!Array.isArray(CON))CON=[]}catch(e){CON=[]}
-function clog(msg){const line=new Date().toISOString().slice(0,19).replace('T',' ')+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);if(CON.length>CON_MAX)CON=CON.slice(-CON_MAX);
+const stamp=(d=new Date())=>{const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`};   // local time, as the rest of the page (#34)
+// Trimmed to CON_MAX lines, but never past the last restart mark (review of #68): dropped, a reload would find no mark
+// for the running start and announce it again. The mark then heads the kept lines, which all come after it.
+function clog(msg){const line=stamp()+'  '+String(msg).replace(/\s+/g,' ').slice(0,400);CON.push(line);
+ if(CON.length>CON_MAX){let m=-1;for(let i=CON.length-1;i>=0;i--)if(CON[i].includes(LABEL.console_started)){m=i;break}
+  const mark=m>=0&&m<CON.length-CON_MAX?CON[m]:'';CON=CON.slice(-CON_MAX);if(mark)CON[0]=mark}
  try{localStorage.setItem(CON_KEY,JSON.stringify(CON))}catch(e){}conPaint()}
 function conPaint(){const p=$('#con');if(!p)return;p.textContent=CON.join('\n')||'(nothing yet)';p.scrollTop=p.scrollHeight;
- $('#con_meta').textContent=CON.length?`${CON.length} lines · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
+ $('#con_meta').textContent=CON.length?`${CON.length} line${CON.length===1?'':'s'} · last ${CON[CON.length-1].slice(11,19)}`:'what the page has been doing, for a bug report'}
 function conClear(){CON=[];try{localStorage.removeItem(CON_KEY)}catch(e){}conPaint();conSay('cleared')}
 function conSay(m){$('#con_msg').textContent=m;setTimeout(()=>{if($('#con_msg').textContent===m)$('#con_msg').textContent=''},4000)}
 function conShow(){const d=cfgShow('console_wrap');if(d)d.scrollIntoView({behavior:'smooth',block:'start'});return false}
 async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand('copy')}catch(e2){}a.remove();return ok}}
 async function conCopy(all){let t=CON.join('\n');
- if(all){try{const d=await api('/api/diag');t='--- Open Loops diagnostics '+new Date().toISOString().slice(0,19)+'\n'+JSON.stringify(d,null,1)+'\n\n--- console\n'+t}catch(e){t='--- diagnostics unavailable: '+e.message+'\n\n--- console\n'+t}}
+ if(all){try{const d=await api('/api/diag');t='--- Open Loops diagnostics '+stamp()+'\n'+JSON.stringify(d,null,1)+'\n\n--- console\n'+t}catch(e){t='--- diagnostics unavailable: '+e.message+'\n\n--- console\n'+t}}
  conSay((await copyText(t))?'copied'+(all?' with diagnostics':''):'could not copy - select the text and press Ctrl+C')}
 window.addEventListener('error',e=>clog('script error: '+e.message+' ('+(e.filename||'').split('/').pop()+':'+e.lineno+')'));
 window.addEventListener('unhandledrejection',e=>clog('unhandled: '+((e.reason&&e.reason.message)||e.reason)));
 // ---------- feedback: a toast for every action (Doherty), with Undo where it is cheap (Postel) ----------
-function toast(msg,opt){opt=opt||{};clog((opt.err?'error: ':'')+msg);const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
+const TOAST_MAX=3;   // the oldest goes when a fourth arrives: the stack never grows over the page (#52 review)
+// under 600 px wide three toasts took about 40% of the screen (#56): two there
+const toastMax=()=>typeof innerWidth==='number'&&innerWidth<600?2:TOAST_MAX;
+function toast(msg,opt){opt=opt||{};if(!opt.quiet)clog((opt.err?'error: ':'')+msg);   // quiet: the caller logged its own line (#67)
+ const t=document.createElement('div');t.className='toast'+(opt.err?' err':'');t.textContent=msg;
  if(opt.undo){const b=document.createElement('button');b.textContent=opt.undoLabel||'Undo';b.onclick=async()=>{t.remove();try{await opt.undo()}catch(e){toast('Undo failed: '+e.message,{err:true})}};t.appendChild(b)}
- $('#toasts').appendChild(t);setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
+ // The header grows by the toast; with the page scrolled, the browser's scroll anchoring would keep the rows where they
+ // were, i.e. under the grown header. Off for this one layout, the rows move down with it and stay in view (#52 review).
+ const box=$('#toasts'),de=document.documentElement;de.style.overflowAnchor='none';
+ while(box.children.length>=toastMax())box.firstElementChild.remove();
+ box.appendChild(t);requestAnimationFrame(()=>requestAnimationFrame(()=>{de.style.overflowAnchor=''}));
+ setTimeout(()=>t.remove(),opt.ms||(opt.undo?8000:4000));return t}
+// A window narrowed while three toasts are up keeps only the newest two, once the resizing settles (review of #59)
+function trimToasts(){const box=$('#toasts');while(box.children.length>toastMax())box.firstElementChild.remove()}
+let toastRT=null;addEventListener('resize',()=>{clearTimeout(toastRT);toastRT=setTimeout(trimToasts,150)});
 // ---------- one dialog for snooze / note / link / vault close ----------
 let dlgOk=null;
 function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textContent=o.sub||'';$('#dlg_err').textContent='';$('#dlg_ok').textContent=o.ok||'OK';$('#dlg_ok').disabled=false;
@@ -383,7 +504,7 @@ function dlgOpen(o){$('#dlg_title').textContent=o.title||'';$('#dlg_sub').textCo
 function dlgClose(){dlgOk=null;$('#dlg').close()}
 function dlgVal(id){const e=$('#dlg_'+id);return e?e.value.trim():''}
 async function dlgSubmit(ev){ev.preventDefault();if(!dlgOk)return false;const b=$('#dlg_ok');b.disabled=true;$('#dlg_err').textContent='';
- try{const r=await dlgOk();if(r!==false)dlgClose()}catch(e){$('#dlg_err').textContent=e.message.replace(/^.*-> \d+ /,'')}b.disabled=false;return false}
+ try{const r=await dlgOk();if(r!==false)dlgClose()}catch(e){$('#dlg_err').textContent=errSaid(e)}b.disabled=false;return false}
 // Enter in a single-line dialog field submits; textarea keeps Enter for new lines
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.tagName==='INPUT'&&e.target.closest('#dlg')){e.preventDefault();$('#dlg_ok').click()}});
 
@@ -400,50 +521,528 @@ function showTab(t,sec){$('#page_home').style.display=t==='home'?'':'none';$('#p
  if(t==='settings'&&!formPainted)paintForm();if(t==='settings'&&sec){const d=cfgShow(sec);if(d)d.scrollIntoView({behavior:'smooth',block:'start'})}}
 
 // ---------- data ----------
-async function loadState(){const r=await api('/api/state');S=r.state;J=r.jobs;TODAY=r.today}
+// Polls can overlap and answer out of order: only a newer answer than the last one applied is taken (ST_SEQ). A job this
+// page just started (jobStarted) stays "running" until a poll asked AFTER the start (its number past the one noted at the
+// start) shows it running or ended after the start (seq past the one then known, or finished_at after it). A poll asked
+// before the start never releases it, even if it carries the previous run's end; 15 s without either and it lets go.
+async function loadState(){const my=++ST_SEQ,r=await api('/api/state');if(my<ST_DONE)return;ST_DONE=my;S=r.state;const jobs=r.jobs||{};
+ for(const k of Object.keys(PENDING_START)){const t=PENDING_START[k],j=jobs[k]||{};
+  if((my>t.req&&(j.running||(j.seq||0)>t.seq||(j.finished_at&&Date.parse(j.finished_at)>t.at)))||Date.now()-t.at>15000)delete PENDING_START[k];else jobs[k]=Object.assign({},j,{running:true})}
+ J=jobs;TODAY=r.today;ISO=!!r.isolated;INST=r.instance||'';conBoundary(INST)}let ST_SEQ=0,ST_DONE=0;const PENDING_START={};
+// #67: the Console is kept across reloads and restarts, so its "no answer" lines from while the app was not running
+// stayed until Clear. The first answer from a new start of the app (its /api/state "instance", new at every start)
+// adds one line, "— Open Loops started — (<first 8 of the instance>)": what is above it is from before. Nothing is
+// deleted. Whether this start is marked is read from the Console itself, its last mark (review of #68): the mark lives
+// in the buffer that is saved, so another tab saving its own copy cannot leave the saved Console without one.
+let conInstSeen='';
+function conBoundary(inst){if(!inst||inst===conInstSeen)return;conInstSeen=inst;const mark=LABEL.console_started+' ('+inst.slice(0,8)+')';
+ for(let i=CON.length-1;i>=0;i--)if(CON[i].includes(LABEL.console_started)){if(CON[i].endsWith(mark))return;break}
+ clog(mark)}
 async function loadCfg(){const r=await api('/api/config');C=r.config;V=r.voice;P=r.people_suggested;agentUI()}
-const agentLabel=()=>(C&&C.agent)==='grok'?'Grok':'Claude';
-function agentUI(){if(!$('#agent_btn'))return;$('#agent_btn').textContent='Open '+agentLabel();
+const agentLabel=()=>({grok:'Grok',codex:'Codex'})[C&&C.agent]||'Claude';
+function agentUI(){if(!$('#agent_btn'))return;
  const grok=(C&&C.agent)==='grok';
+ $('#agent_btn').textContent='Open '+agentLabel()+(grok?'':' (advanced)');$('#agent_btn').classList.toggle('primary',grok);   // Claude, Codex: the row buttons are the way in; the terminal is the fallback
  if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=grok?'':'none';
  $('#agent_help').innerHTML=grok
   ?((C&&C.use_slack)
-    ?'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.'
-    :'<b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.')
-  :'Slack and Gmail are both optional — connect whichever you actually use; <b>one is enough</b>. <b>Open Claude</b> opens a black window. If it asks you to sign in, follow the link. For Slack or Gmail, type <code>/mcp</code> in that window, press Enter, pick <b>Slack</b> or <b>claude.ai Gmail</b>, choose <b>Authenticate</b>, and click Allow in your browser. If they\'re already connected there\'s nothing to do here — the ticks will appear within a minute.';}
+    ?'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. For Slack, type <code>/mcps</code>, select <b>slack</b>, press <b>i</b>, and click Allow. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do. Already connected? The ticks appear within a minute.</span>'
+    :'<span class="agent_btn_help"><b>Open Grok</b> opens a black window. If it asks you to sign in, follow the link. Slack is <b>off</b> — Gmail alone is enough. Tick <b>Use Slack</b> in ⚙ Settings if you want DMs scanned. Gmail needs a one-off extra step of its own — the Gmail row above says exactly what to do.</span>')
+  :(C&&C.agent)==='codex'
+  ?esc(msg('sources_needed'))+' <b>Sign in</b> opens your browser at ChatGPT: use the ChatGPT account whose Gmail and Slack Open Loops should read. Gmail and Slack are connected in your ChatGPT account, not here: press <b>Connect</b>, connect them on chatgpt.com/apps, come back and press <b>Check again</b>. Each check asks Codex once, which uses a little of your ChatGPT plan\'s Codex allowance. Your sign-ins stay with ChatGPT; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Codex (advanced)</b> opens a black window running Codex, for anything a button can\'t do.</span>'
+  :esc(msg('sources_needed'))+' Press the button on each row that isn\'t ticked: your browser opens the sign-in page and you only click <b>Allow</b>. The tick appears a few seconds after. Your sign-ins stay with Claude; Open Loops keeps no passwords or tokens.<span class="agent_btn_help"> <b>Open Claude (advanced)</b> opens Claude in a Terminal window, for anything a button can\'t do.</span>';}
+// Model and effort per AI. Claude keeps "model" / "effort", Codex has "codex_model" / "codex_effort" (agent.py), so
+// switching AI never hands one CLI the other's model. Grok takes neither.
+const MODELS={
+ claude:{keys:['model','effort'],def:['sonnet','high'],
+  model:[['sonnet','Sonnet (recommended)'],['haiku','Haiku (cheapest)'],['opus','Opus'],['',"Claude Code's default"]],
+  effort:[['high','high (recommended with Sonnet)'],['xhigh','xhigh'],['max','max'],['medium','medium (recommended with Opus)'],['low','low'],['',"Claude Code's default"]],
+  note:'Claude only. Which Claude model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. Sonnet at high or Opus at medium both do the job; Sonnet is the cheaper of the two. "Claude Code\'s default" uses whatever <code>claude</code> is set to on this computer, which is often the most expensive model.'},
+ codex:{keys:['codex_model','codex_effort'],def:['gpt-5.6-sol','low'],
+  model:[['gpt-5.6-sol','GPT-5.6 Sol (recommended)'],['gpt-6-astra','GPT-6 Astra'],['',"Codex's default"]],
+  effort:[['low','low (recommended)'],['medium','medium'],['high','high'],['xhigh','xhigh'],['',"Codex's default"]],
+  note:'Codex only. Which OpenAI model the scans, refreshes and chase drafts run on, and how hard it thinks per turn. GPT-5.6 Sol at low does the job and uses the least of your ChatGPT plan\'s Codex allowance; higher effort uses more. "Codex\'s default" is Codex\'s own built-in choice: Open Loops runs Codex with settings of its own, not the ones in your Codex app.'}};
+function modelUI(a){const m=MODELS[a];$('#cfg_model_wrap').style.display=m?'':'none';$('#cfg_codex_note').style.display=a==='codex'?'':'none';$('#cfg_codex_miro').textContent=CODEX_MIRO;if(!m)return;
+ const pick=(i,list)=>{const v=C&&C[m.keys[i]]!==undefined?String(C[m.keys[i]]):m.def[i];   // a hand-typed model id keeps its own option
+  return [list.some(o=>o[0]===v)?list:list.concat([[v,v]]),v]};
+ [['#cfg_model',0,m.model],['#cfg_effort',1,m.effort]].forEach(([id,i,list])=>{const [opts,v]=pick(i,list);$(id).innerHTML=opts.map(([x,t])=>`<option value="${esc(x)}">${esc(t)}</option>`).join('');$(id).value=v});
+ $('#cfg_model_note').innerHTML=m.note}
+function agentFormUI(a){if($('#cfg_slack_wrap'))$('#cfg_slack_wrap').style.display=a==='grok'?'':'none';modelUI(a)}
 const running=n=>!!(J&&J[n]&&J[n].running);
 const havePeople=()=>!!(C&&C.people&&Object.keys(C.people).length);
 const haveVoice=()=>!!(V&&V.people&&Object.keys(V.people).length);
 
 // ---------- the stage machine: derived from facts on disk every tick, never from what fired earlier ----------
-function stage(){if(!DOC)return 'checking';if(DOC.error)return 'checkfail';if(!DOC.all_ok)return 'connect';if(!havePeople())return 'people';if(!haveVoice())return 'voice';if(!S.last_refresh)return 'scan';return 'ready'}
+function stage(){if(!DOC||aiPending())return 'checking';if(DOC.error)return 'checkfail';if(!DOC.all_ok)return 'connect';if(!havePeople())return 'people';if(!haveVoice())return 'voice';if(!scanned())return 'scan';return 'ready'}
+// Your AI is being changed (#28), or the latest check was of another AI (Settings saved a new one): nothing may start on
+// that answer. The page waits as it does before the first check, and every button that starts a job says why it waits.
+let aiSwitching='';const aiPending=()=>!!aiSwitching||!!(DOC&&!DOC.error&&DOC.agent&&C&&DOC.agent!==(C.agent||'claude'));
+const aiWait=()=>{if(!aiPending())return false;toast(`Open Loops is still checking ${({grok:'Grok',codex:'Codex'})[aiSwitching||(C&&C.agent)]||'Claude'} on this computer. Try again once that has finished.`);return true};
+// Which sources the checklist has ticked. The first scan is done once a full refresh ran (last_refresh), or, on an
+// install without Gmail, once the Slack-only pass ran (last_slack_refresh): that pass is then the first scan (#38).
+const srcOk=id=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id===id&&x.ok));
+// Once setup has finished (setup_done, saved the first time the page reaches "ready"), it stays finished: Gmail
+// connected later is offered a full scan (#gmail_later), it does not reopen setup (#38 review).
+const scanned=()=>!!(S&&(S.setup_done||S.last_refresh||(S.last_slack_refresh&&!srcOk('gmail'))));
+let setupSaving=false;
+function keepSetupDone(st){if(st!=='ready'||!S||S.setup_done||setupSaving)return;setupSaving=true;
+ api('/api/setup-done',{}).then(()=>{S.setup_done=true;clog('setup done: saved')},()=>{}).finally(()=>{setupSaving=false})}
+function paintGmailLater(st){const show=st==='ready'&&!!S&&!!S.setup_done&&!S.last_refresh&&srcOk('gmail');
+ $('#gmail_later').style.display=show?'':'none';$('#gmail_later_btn').disabled=running('refresh')}
+const slackOnlyScan=()=>slackOk()&&!srcOk('gmail');
+const scanSources=()=>srcOk('slack')&&srcOk('gmail')?'Slack and Gmail':srcOk('slack')?'Slack':srcOk('gmail')?'Gmail':'Slack and Gmail';
+const histDays=()=>Math.min(+(C&&C.history_days)||30,365);   // app.py history_days(): how far back the first scan reads
+// Nothing reads your accounts by itself: the first automatic job (who's who, tone, first scan) waits for Start the first
+// scan, remembered for this tab (sessionStorage: another tab asks again) (#38). An isolated test copy (#36) never goes on by itself, not even after a
+// reload: only a press on this page load starts it.
+const GO_KEY='ol.firstscan';let GO=null,ISO=false,pressed=false;try{GO=sessionStorage.getItem(GO_KEY)}catch(e){}
+const scanAllowed=()=>pressed||(!ISO&&GO==='go');
+const JOB_OF={people:'people',voice:'voice',scan:'refresh'};
+function waitsForGo(st){return !scanAllowed()&&!!JOB_OF[st]&&!kicked[st]&&!running(JOB_OF[st])&&!(st==='people'&&P)}
+function goRemember(v){GO=v;try{v?sessionStorage.setItem(GO_KEY,v):sessionStorage.removeItem(GO_KEY)}catch(e){}}
+// The choice goes to config.json "first_scan" first, which the weekday task obeys (store.scheduled_skip); only once
+// that is saved does the page act on it. A failed save changes nothing: the box stays, says so, and offers Retry.
+let choiceFailed='',choiceBusy=false;
+async function saveChoice(v){choiceBusy=true;try{await api('/api/config',{first_scan:v});choiceFailed='';return true}
+ catch(e){choiceFailed=v;clog('first scan choice not saved: '+errSaid(e));return false}finally{choiceBusy=false}}
+async function startScan(){if(choiceBusy||aiWait())return;if(!await saveChoice('go')){paintStart();return}
+ pressed=true;goRemember('go');clog('first scan: started by the button');tick()}
+async function notNow(){if(choiceBusy)return;if(!await saveChoice('later')){paintStart();return}
+ goRemember('later');clog('first scan: not now');tick()}
+function retryChoice(){return choiceFailed==='later'?notNow():startScan()}
+function paintStart(){$('#st_start').style.display='';$('#start_said').textContent=msg('first_scan',{days:histDays(),sources:scanSources()});
+ $('#start_ask').textContent=srcOk('slack')?msg('first_scan_ask_slack'):msg('first_scan_ask');$('#start_retry').style.display=choiceFailed?'':'none';   // the Slack-id check ran only with Slack connected
+ $('#start_msg').textContent=choiceFailed?msg('first_scan_not_saved'):GO==='later'?msg('first_scan_later'):''}
 const kicked={};   // which automatic jobs this page load has already started (so a failure shows instead of looping)
 let lastStage=null;
-const ORDER=[['connect','Connect'],['people',"Who's who"],['voice','Learn tone'],['scan','First scan'],['ready','Ready']];
+// One numbering on the page (#56): the Set-up cards' three steps. While the Set-up view is up its cards say where things
+// are, so paintSetup() hides this bar; after Start the first scan it shows the same three, the third naming the part of
+// the first scan under way (Who's who, then your tone, then the scan itself: the jobs JOB_OF names).
+const ORDER=[['connect','Your AI'],['sources','Your sources'],['scan','First scan']],SCAN_PART={people:"Who's who",voice:'learning your tone',scan:'reading your messages'};
+// A part is lit only while its job runs, or while it waits for you (Who's who with its list up): never before (#54)
+function stepsBar(st){const conn=st==='connect'||st==='checkfail',part=SCAN_PART[st],job=JOB_OF[st];
+ const lit=!!part&&!waitsForGo(st)&&(running(job)||(st==='people'&&!!P&&!!P.people&&P.people.length>0));
+ return ORDER.map(([k,t],i)=>{const done=!conn&&i<2,now=conn?i===0:k==='scan'&&lit;
+  return `<span class="${done?'done':now?'now':''}">${i+1} · ${t}${k==='scan'&&part&&!waitsForGo(st)?': '+part:''}${done?' ✓':''}</span>`}).join('')}
+// Setup finished once (setup_done) and the checklist is back (a sign-out, a source that stopped answering): not setup
+// starting over, so no "1 · Connect, 2 · Who's who…" bar, and one line on top of the checklist says so (#50).
+const setupDone=()=>!!(S&&S.setup_done);
+// The instruction comes from the row that needs it: its own button's label when it has one (setupBtn, as connectBtn
+// draws it), otherwise "follow the <row> row" (Grok's Open Grok, a Codex keyring sign-in, no installer here).
+function paintSetupDone(){const h=$('#st_connect_h'),intro=$('#st_connect_intro');if(!h)return;if(h.dataset.first===undefined)h.dataset.first=h.textContent;
+ const done=setupDone(),steps=(DOC&&DOC.steps)||[],row=id=>steps.find(x=>x.id===id),inst=row('claude'),login=row('login');
+ // an optional row (Miro, or the other source once one is in) is an extra, not a failing connection: only a required
+ // row or an alert (the morning refresh) puts the repair line up, so all green is reachable without Miro (#56).
+ // With no source left (the required "At least one source" row), the fix is a source's own Connect: name that one.
+ let bad=(inst&&!inst.ok?inst:login&&!login.ok?login:steps.find(x=>!x.ok&&(!x.optional||x.alert)))||null;
+ if(bad&&bad.id==='channel')bad=steps.find(x=>!x.ok&&(x.id==='slack'||x.id==='gmail')&&x.connect)||bad;
+ if(done&&!bad){h.textContent='';h.style.display='none';if(intro)intro.style.display='none';return}   // set up and nothing failing: no line at all (#52 review)
+ h.style.display='';if(!bad){h.textContent=h.dataset.first;if(intro)intro.style.display='';return}   // not set up yet: the plain heading
+ const id=bad===inst?'setup_done_install':bad===login?'setup_done_signin':'setup_done_other';
+ const f={ai:bad===login&&(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),button:setupBtn(bad),row:bad.title||''};
+ const busy=!!(bad.connect&&CONN[bad.connect]&&CONN[bad.connect].busy);   // its button is a spinner now: nothing to press
+ h.textContent=!done?h.dataset.first:busy?msgBusy(id,f):f.button?msg(id,f):msgFollow(id,f);
+ if(intro)intro.style.display=done?'none':''}
 async function tick(){
- const st=stage(),sv=st==='checkfail'?'connect':st;   // the steps bar treats "checker did not answer" as step 1, not as a new step
- $('#steps').innerHTML=st==='ready'?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':ORDER.filter(x=>x[0]!=='ready').map(([k,t],i)=>`<span class="${ORDER.findIndex(o=>o[0]===sv)>i?'done':k===sv?'now':''}">${i+1} · ${t}${ORDER.findIndex(o=>o[0]===sv)>i?' ✓':''}</span>`).join('');
- for(const k of ['connect','checkfail','people','auto'])$('#st_'+k).style.display='none';
+ const st=stage();   // the steps bar treats "checker did not answer" as step 1, not as a new step (stepsBar)
+ for(const k of ['connect','checkfail','people','auto','start'])$('#st_'+k).style.display='none';
  if(st!==lastStage)clog('stage: '+st);
  // Hick / Prägnanz: while setting up, the page is the setup - the lists, Day log and Roadmap wait until "ready"
  $('#lists').style.display=st==='ready'?'':'none';
- if(lastStage&&!['ready','checking','checkfail'].includes(lastStage)&&st==='ready')toast(`All set. Open Loops now refreshes itself every weekday morning at ${(C&&C.refresh_time)||'09:15'}; press Refresh any time for a fresh pass.`,{ms:10000});
+ if(lastStage&&!['ready','checking','checkfail'].includes(lastStage)&&st==='ready'&&!schedBad()&&!setupDone())toast(`All set. Open Loops now refreshes itself every weekday morning at ${(C&&C.refresh_time)||'09:15'}; press Refresh any time for a fresh pass.`,{ms:10000});
  lastStage=st;
  if(st==='connect')paintConnect();
- else if(st==='checkfail'){$('#st_checkfail').style.display='';$('#checkfail_msg').textContent=docFails>1?`tried ${docFails} times`:''}
+ else if(st==='checkfail'){$('#st_checkfail').style.display='';$('#checkfail_said').textContent=msg('check_failed');$('#checkfail_msg').textContent=docFails>1?`tried ${docFails} times`:''}
+ else if(waitsForGo(st))paintStart();   // nothing starts until Start the first scan is pressed
  else if(st==='people'){$('#st_people').style.display='';await stagePeople()}
  else if(st==='voice'||st==='scan'){$('#st_auto').style.display='';await stageAuto(st)}
- renderLists();paintVoice();paintButtons(st)}
+ // the steps bar last, so a job this tick started is already lit (stepsBar lights a part only once its job runs)
+ // no bar once the first scan is done: Who's who reopened from Settings is not another "3 · First scan" (review of #59)
+ $('#steps').innerHTML=st==='ready'||scanned()||(setupDone()&&(st==='connect'||st==='checkfail'))?'':st==='checking'?'<span class="sub"><span class="spin"></span>Checking your connections…</span>':stepsBar(st);
+ keepSetupDone(st);paintGmailLater(st);renderLists();paintVoice();paintButtons(st);paintSchedule(st);paintSetup(st)}
 
 function paintConnect(){$('#st_connect').style.display='';
- $('#setup_steps').innerHTML=DOC.steps.map(s=>`<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px">${s.ok?'✅':s.optional?'▫️':'⬜'}</span><div><b>${s.title}</b>${s.ok?'':`<div class="sub">${s.fix}</div>`}</div></div>`).join('')}
+ // the checklist is the Every check fold under the Set-up cards (setupEmbed), and the cards hold the one primary action,
+ // so its Connect buttons are all plain (#56)
+ // a red row with a download page (the morning refresh, #24) carries its button inside the row, so the row is one piece
+ paintRows($('#setup_steps'),DOC.steps.map(s=>checkRow(s,false,!s.ok&&s.link?`<button data-href="${esc(s.link)}" onclick="window.open(this.dataset.href,'_blank','noopener')" style="margin-top:6px">Open the download page</button>`:'')))}
+// One checklist row: tick or cross, the title, and while red its sentence and button (more: anything else the red row
+// holds, under its button). The Set-up cards use it too (#28).
+const checkRow=(s,primary,more)=>`<div class="row" style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)"><span style="font-size:16px;min-width:22px;text-align:center">${s.ok?'✅':!s.optional||s.connect||s.alert?'<b style="color:var(--r)" title="needs attention" aria-label="needs attention">✗</b>':'<b style="color:var(--mut)" title="nothing to do here yet" aria-label="nothing to do here yet">–</b>'}</span><div><b>${esc(s.title)}</b>${s.ok?'':`<div class="sub">${s.fix}</div>${connectBtn(s,primary)}${more||''}`}</div></div>`
+// #62: the rows are painted on every tick. Writing the whole list each time replaced every button, so a click landing
+// mid-repaint hit a node already gone and focus was lost. Each row lives in a box of its own that is rewritten only
+// when that row's HTML (its signature) changed: an unchanged row keeps its nodes, its button the same element.
+// htmls: one HTML string per row, in order. The first paint clears whatever the container held before. If focus was in
+// a row that is replaced or goes, it moves to that row's new button, else to the card (the checklist: its own list,
+// which takes focus for this), so a keyboard user is never dropped at the top of the page.
+function paintRows(el,htmls){if(!el._rows){el.innerHTML='';el._rows=true}
+ const f=typeof document!=='undefined'&&document.activeElement,kids=el.children,held=n=>!!(f&&n&&n.contains&&n.contains(f));
+ let lost=false,back=null;   // focus was in a row rewritten or removed here / that row's new button
+ htmls.forEach((h,i)=>{const old=kids[i];if(old&&old._sig===h)return;   // unchanged: left alone
+  const n=document.createElement('div');n.innerHTML=h;n._sig=h;
+  if(held(old)){lost=true;back=(n.querySelector&&n.querySelector('button:not([disabled])'))||null}
+  if(old)el.replaceChild(n,old);else el.appendChild(n)});
+ while(kids.length>htmls.length){const x=kids[kids.length-1];if(held(x))lost=true;el.removeChild(x)}   // rows gone since the last paint
+ if(lost){const t=back||(el.closest&&el.closest('section'))||el;if(t.focus)t.focus()}}
+
+// ---------- Setup buttons: each red row names a step; the app runs `claude auth login` / `claude mcp login …` ----------
+// and the browser does the rest. The row shows a spinner while the CLI waits for Allow, then the check re-runs.
+// "install" (any AI) runs the installer command the row shows under its button. The page says what went wrong in plain
+// words (the app's "said"); the installer's own output goes to the Console only.
+const CONNECT_WAIT_MS=5.5*60000;   // app.py CONNECT_TIMEOUT_S (5 min) plus a little: the page stops watching only once the app has stopped the run
+const INSTALL_WAIT_MS=10.5*60000;  // app.py INSTALL_TIMEOUT_S (10 min) plus a little
+const CONNECT_LABEL={install:'Install',login:'Sign in',slack_install:'Install Slack plugin',slack:'Connect Slack',gmail:'Connect Gmail',miro:'Connect Miro'};
+const SRC_NAME={gmail:'Gmail',slack:'Slack'};
+const pageStep=step=>(C&&C.agent)==='codex'&&!!SRC_NAME[step];   // Codex: Gmail / Slack are connected on chatgpt.com/apps, the app only opens it
+const CONN={};   // step -> {busy, url, msg, agent, command}: kept here because the rows are repainted on every tick
+const AI_NAME={claude:'Claude',grok:'Grok',codex:'Codex'},aiName=a=>AI_NAME[a]||String(a||'the AI');   // the install names its AI from the row, never from cached settings
+const repaint=()=>{if(DOC&&stage()==='connect')paintConnect();if(DOC)paintSetup(stage())};   // never bring the checklist back once the page has moved on
+function setupBtn(s){return !s||!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect]?'':s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect]}   // the label connectBtn gives a row's button, '' when it draws none
+function connectBtn(s,primary){if(!s.connect||((C&&C.agent)==='grok'&&s.connect!=='install')||!CONNECT_LABEL[s.connect])return '';const c=CONN[s.connect]||{};
+ const shown=c.busy&&c.command?c.command:s.command;   // while it runs: the command the app captured for this run, not what the row says now
+ // shown before the press (nothing runs unseen), folded away: a non-technical user needs the button, not the shell (#25)
+ const cmd=shown?`<details class="sub" style="margin-top:4px"${CMD_OPEN[s.connect]?' open':''} ontoggle="CMD_OPEN['${s.connect}']=this.open"><summary>Show the exact command${c.busy?' that is running':''}</summary><code style="display:block;white-space:pre-wrap;word-break:break-all">${esc(shown)}</code></details>`:'';
+ // #67: a sign-in waiting in the browser can be stopped from its row (not an install: app.py STOPPABLE)
+ const stop=canStop(s.connect)?` <button onclick="connectStop('${s.connect}')"${c.stopping||!c.run?' disabled':''}>${esc(c.stopping?LABEL.stopping:LABEL.stop_signin)}</button>`:'';   // disabled until the app has said which run it is
+ if(c.busy)return `<div class="sub" style="margin-top:6px"><span class="spin"></span>${esc(c.msg)}${c.url?` Nothing opened? <a href="${esc(c.url)}" target="_blank" rel="noopener">Open the sign-in page</a>.`:''}${stop}</div>${cmd}`;
+ const label=s.connect==='install'?'Install '+aiName(s.agent):CONNECT_LABEL[s.connect];   // the same row identity the press sends
+ return `<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="${primary?'primary':''}" onclick="connectStep('${s.connect}')">${label}</button>${c.msg?`<span class="sub">${esc(c.msg)}</span>`:''}</div>${cmd}`}
+// #67: which rows offer Stop this sign-in: a sign-in waiting in the browser (app.py STOPPABLE), not Codex's Gmail / Slack
+// (a page that opens and is done) and not an install (left to finish)
+const canStop=step=>['login','slack','gmail','miro'].includes(step)&&!pageStep(step);
+const CMD_OPEN={};   // which rows have "Show the exact command" open: the rows are repainted on every tick
+const PARTY=step=>({login:(C&&C.agent)==='codex'?'ChatGPT':agentLabel(),slack:'Slack',slack_install:'Slack',gmail:'Google',miro:'Miro'})[step]||agentLabel();   // who the sign-in is with
+const installing=a=>`Installing ${aiName(a)}. This can take a few minutes.`;
+// what a busy row says while its step runs (a = the AI an install is for)
+const connectWaitSaid=(step,a)=>step==='install'?installing(a):step==='slack_install'?'Installing the Slack plugin…':pageStep(step)?'Opening ChatGPT in your browser…':'Waiting for you in the browser: click Allow there.';
+async function connectStep(step){
+ const inst=step==='install',row=inst?(DOC.steps.find(s=>s.connect==='install')||{}):{};   // label, text, command and the press all come from this row
+ delete RUN_OVER[step];   // a new run of the step from here: what ended before is forgotten (#67 review)
+ const mine=CONN[step]={busy:true,msg:connectWaitSaid(step,row.agent),...(inst?{agent:row.agent,command:row.command}:{})};repaint();
+ const ours=()=>CONN[step]===mine;   // #67 review: after each await, only a row still showing this press is written to
+ let rid='';   // the run's id (#27), from the app's answer: the run it started, or the one already running
+ try{const r=await api('/api/connect/'+step,inst?{agent:row.agent,command_id:row.command_id}:{});rid=r.run_id||'';
+  clog('setup: '+step+(r.started?' started':' already running'));if(!ours())return;mine.run=rid;if(!r.started&&r.said)mine.msg=r.said;repaint()}
+ catch(e){const changed=inst&&e.status===409;   // the app says which: the AI changed in Settings, or Open Loops was updated
+  if(!ours())return;
+  CONN[step]={msg:changed?((e.body&&e.body.said)||msg('app_updated'))
+   :inst?msg('install_start',{ai:aiName(row.agent)}):msg('connect_start_failed')};repaint();if(changed)doctor(true);return}
+ // a step that waits for Allow in the browser opens the pop-up (the Set-up cards' and the checklist's buttons alike), once
+ // the app has said which run it is, so a closed pop-up is remembered for that run and no other
+ if(ALLOW_ROW[step]&&mine.busy)allowOpen(step,rid);
+ return connectWatch(step,row)}
+// #67 review: whether the row for step still shows run, waiting. Every callback that was started for a run (a Stop's
+// answer, the watcher's poll, a 409) checks this after each await and changes nothing otherwise: the row may have taken
+// another run meanwhile (adoption keeps the row object and changes its run), been replaced by a new press, or removed by
+// a change of AI. The run id, not the object, is what says "still this run".
+// #67 review: the runs this page has seen end or be replaced, per step. A late 409 or status naming one of them is old
+// news and is never adopted (the row would go backwards, and the newer run's closed-pop-up note would go with it).
+// Cleared when this page starts a new run of the step.
+const RUN_OVER={};
+// Capped at RUN_OVER_MAX ids per step, the oldest going first (a Set keeps the order they were added in): repeated
+// adoptions from other tabs cannot grow it for ever, and a run that old is not coming back in a late answer.
+const RUN_OVER_MAX=20;
+function runOver(step,run){if(!run)return;const set=RUN_OVER[step]=RUN_OVER[step]||new Set();set.delete(run);set.add(run);
+ while(set.size>RUN_OVER_MAX)set.delete(set.values().next().value)}
+const runIsOver=(step,run)=>!!(RUN_OVER[step]&&RUN_OVER[step].has(run));
+const liveRun=(step,run)=>!!run&&!!CONN[step]&&!!CONN[step].busy&&CONN[step].run===run;
+// #67: the end of a stopped run, whoever sees it first (the Stop's answer, or the row's watcher polling): only while the
+// row still shows that run, it goes back to its button (which unlocks the AI picker), the pop-up closes if it is for that
+// step, the run's closed-pop-up note goes, and the connections are checked again: a sign-in can finish just before Stop
+// lands, and nothing undoes it (review of #68). -> true if it did this, false if the row had moved on.
+function connectStopped(step,run){if(!liveRun(step,run))return false;runOver(step,run);CONN[step]={};
+ if(ALLOW&&ALLOW.step===step)allowClose();if(run)allowClosedEnd(step,run);repaint();
+ doctor(true).catch(e=>clog('setup: '+step+' stopped, and the check after it did not answer: '+e.message));return true}
+// #67: Stop this sign-in. The app stops that one run and answers once it has ended; then connectStopped() above.
+// The POST names the run this row shows (run_id): the app stops that one, or none (409, another run holds the step now).
+// The answer changes the row only if it still shows that run (#67 review): the watcher may have cleared it meanwhile,
+// another run may hold it, or a change of AI may have removed it.
+// #67 review: the row shows run c.run, but the app says another run (s: its status, or a 409's body) holds the step now
+// (the shown one ended, another tab started a new one). The row takes the new run: its id (so the next Stop targets
+// it), its fallback link and start time, and the pop-up's run if the pop-up is open for this step. The ended run's
+// closed-pop-up note goes. -> true if the row changed.
+function connectAdopt(step,s){const c=CONN[step];if(!c||!c.busy||!s||!s.run_id||s.run_id===c.run||runIsOver(step,s.run_id))return false;const was=c.run;runOver(step,was);
+ Object.assign(c,{run:s.run_id,url:s.url||'',started:s.started||c.started,stopping:false});
+ if(was)allowClosedEnd(step,was);if(ALLOW&&ALLOW.step===step)Object.assign(ALLOW,{run:s.run_id,url:''});
+ clog('setup: '+step+' is now run '+s.run_id.slice(0,8)+' (the one shown had ended)');repaint();allowPaint();return true}
+// run: the run the caller shows (the pop-up's); given, a row that shows another run is not stopped for it.
+async function connectStop(step,run_){const c=CONN[step];if(!c||!c.busy||c.stopping||!c.run||(run_&&run_!==c.run))return;const run=c.run;c.stopping=true;repaint();allowPaint();
+ try{const r=await api('/api/connect/'+step+'/stop',{run_id:run});clog('setup: '+step+(r.ok?' stopped':' was not running'));
+  if(!liveRun(step,run))return;   // the row has moved on (another run, a new press, a change of AI): not this answer's
+  // tab_opened: "yes" a tab opened (it can be closed), "maybe" the browser was still being asked, "no" none
+  if(r.ok)toast(r.tab_opened==='yes'?msg('connect_stopped_tab',{party:PARTY(step)})
+   :r.tab_opened==='maybe'?msg('connect_stopped_maybe_tab',{party:PARTY(step)}):msg('connect_stopped',{party:PARTY(step)}));
+  if(r.running){CONN[step].stopping=false;repaint();allowPaint();return}   // not over yet: the row keeps waiting, and its watcher says how it ends
+  connectStopped(step,run)}
+ catch(e){if(!liveRun(step,run))return;   // as above: a late failure or 409 for a run the row no longer shows says nothing
+  CONN[step].stopping=false;   // a 409 names the run that holds the step now: the row takes it (#67 review)
+  if(!(e.status===409&&connectAdopt(step,e.body))){repaint();allowPaint()}toast(errSaid(e),{err:true})}}
+// Polls a running step every 3 s until the app has finished it, then says how it went and re-checks. row: the install
+// row the press came from ({} otherwise). Used by a press and by connectReattach() after a reload. It writes only to
+// the row it was started for (#67 review): once that row is replaced (a new run, a Stop's answer) or removed (a change
+// of AI), the watcher stops, touching nothing. When the row takes another run (adoption, from the watcher's own poll or
+// from a Stop's 409: the row object stays, its run changes), the watcher follows it: that run is the one it watches
+// from then on, with a time limit of its own, taken up before the limit is tested so the old run's deadline never ends it.
+async function connectWatch(step,row){const inst=step==='install',mine=CONN[step],ours=()=>!!mine&&CONN[step]===mine;let run=(mine&&mine.run)||'';
+ try{   // finally: this run is over, forget a pop-up closed for it (only it)
+ let t0=Date.now();
+ const follow=()=>{if(ours()&&mine.run!==run){run=mine.run;t0=Date.now()}};   // the row took another run: watch that one, afresh
+ for(;;){follow();if(Date.now()-t0>=(inst?INSTALL_WAIT_MS:CONNECT_WAIT_MS))break;
+  await new Promise(z=>setTimeout(z,3000));   // every 3 s until the app stops the run itself
+  if(!ours())return;
+  let s;try{s=await api('/api/connect/'+step)}catch(e){continue}
+  if(!ours())return;
+  if(mine.run!==run)continue;   // adopted while asking (a Stop's 409): this answer may be about the old run
+  // #67 review: another run holds the step now (the one shown ended, another tab started one): watch that one instead,
+  // with its own time limit, so the row's Stop and link are for the run that is really waiting
+  if(!inst&&s.running&&run&&s.run_id&&s.run_id!==run&&connectAdopt(step,s)){run=mine.run;t0=Date.now();continue}
+  if(s.url&&!mine.url){mine.url=s.url;repaint()}
+  if(inst&&s.running&&(s.agent!==mine.agent||s.command!==mine.command)){Object.assign(mine,{agent:s.agent,command:s.command,msg:installing(s.agent)});repaint()}   // the run's own identity
+  if(inst&&s.running&&s.last&&s.last!==mine.last){mine.last=s.last;clog('install: '+s.last)}   // raw progress: Console only
+  if(s.running)continue;
+  if(s.stopped){connectStopped(step,run);return}   // #67: stopped (here or in another tab), not failed
+  clog(`setup: ${step} finished rc=${s.rc}`+(s.last?' · '+s.last:''));
+  if(s.opened){const n=SRC_NAME[step]||step;   // a page, not a sign-in: nothing to re-check until the user says they are done
+   CONN[step]={msg:s.rc===0?`ChatGPT opened in your browser. Connect ${n} there, come back and press Check again.`
+    :msg('codex_browser_failed',{service:n})};CONN[step].opened=s.rc===0;repaint();return}
+  const ai=aiName(mine.agent||row.agent);
+  const after=CONN[step]=s.rc===0?{}:{msg:inst?(s.said||msg('install_error',{ai}))   // the CLI's own last line went to the Console above
+   :step==='slack_install'?msg('slack_install_failed')
+   :s.reason==='private_file'?msg('signin_private_failed'):msg('connect_failed',{party:PARTY(step)})};   // not started: no private file (Windows)
+  if(s.reason==='private_file')toast(msg('signin_private_failed'),{err:true});   // once: this watcher ends here
+  await doctor(true);   // repaints the checklist: the row goes green, or offers its next step
+  if(CONN[step]!==after)return;   // changed meanwhile: not this watcher's to say more
+  if(s.rc===0&&!inst&&DOC&&DOC.steps&&DOC.steps.some(x=>!x.ok&&x.connect===step)){CONN[step]={msg:msg('connect_no_change',{party:PARTY(step)})};repaint()}   // finished fine, row still red: say so
+  return}
+ if(!ours()||mine.run!==run)return;
+ CONN[step]={msg:inst?`The install is taking too long, so Open Loops stopped it. Press Install ${aiName(mine.agent||row.agent)} to try again.`:msg('connect_timeout')};repaint()}
+ finally{if(run)allowClosedEnd(step,run);if(!liveRun(step,run))runOver(step,run)}}   // over, unless the row still waits on it
+
+// #27: the page reloaded (or the app came back after the "not running" banner) while a step was still running: ask the
+// app about each step and pick up any still running, as if its button had just been pressed here. One GET per step:
+// app.py has no "all steps" call, and six answers from this computer cost nothing. They go out together, each on its
+// own (one failing or never answering does not stop the others), and the sweep ends by REATTACH_MS whatever happens.
+// -> true only when every step answered; false and the poll loop sweeps again (a step restored meanwhile is skipped).
+const CONNECT_ALL=['install','login','slack_install','slack','gmail','miro'];   // app.py agent.CONNECT_STEPS + INSTALL_STEP
+// Never while the AI is being changed (the cards hide the old AI's rows then), nor with an answer that arrives after a
+// change; and a run the app says was started for another AI (its "agent") is not this one's.
+const aiGate=()=>suBusy==='agent'||aiPending();
+let REATTACH_MS=15000;
+async function connectReattach(){if(aiGate())return false;const was=(C&&C.agent)||'claude';
+ const ac=typeof AbortController!=='undefined'?new AbortController():null;let dl;
+ const limit=new Promise(ok=>{dl=setTimeout(()=>{if(ac)ac.abort();ok(null)},REATTACH_MS)});   // null: no answer in time
+ const one=async step=>{if(CONN[step]&&CONN[step].busy)return true;   // this page is watching it already
+  let s;try{s=await Promise.race([api('/api/connect/'+step,null,ac&&ac.signal),limit])}catch(e){clog('setup: '+step+' status not read: '+e.message);return false}
+  if(!s)return false;
+  if(aiGate()||((C&&C.agent)||'claude')!==was)return false;   // the AI changed meanwhile: not this AI's run; asked again later
+  if(!s.running){if(s.run_id)allowClosedEnd(step,s.run_id);return true}   // finished (or never ran): the row stays as the check paints it
+  if(CONN[step]&&CONN[step].busy)return true;
+  if(s.agent!==was){clog('setup: '+step+' is running for '+aiName(s.agent)+', not picked up');return true}   // started for another AI: not this one's row
+  if(!s.run_id){clog('setup: '+step+' is running with no run id (an older Open Loops), not picked up');return true}   // no identity: not guessed at
+  const inst=step==='install';clog('setup: '+step+' still running, picked up again');
+  CONN[step]={busy:true,msg:connectWaitSaid(step,s.agent),url:s.url||'',run:s.run_id,...(inst?{agent:s.agent,command:s.command}:{})};repaint();
+  if(ALLOW_ROW[step]&&!ALLOW&&!allowClosedFor(step,s.run_id))allowOpen(step,s.run_id);   // the pop-up with the fallback link, as the press opens it, unless closed for this run
+  connectWatch(step,inst?{agent:s.agent}:{}).catch(e=>clog('setup: '+step+': '+e));return true};
+ try{return (await Promise.all(CONNECT_ALL.map(one))).every(Boolean)}finally{clearTimeout(dl)}}
+// One sweep at a time, until one completes, for the AI it was made for (#62). A completed sweep counts only for that AI:
+// once the AI has changed and the new AI's check is in (aiGate() open again), the next call sweeps afresh, so a sign-in
+// started for the AI you switched back to is picked up without a reload. Called by the poll loop, after a change on
+// the set-up page and after Settings saved a new AI. Nothing sweeps while the AI is being changed.
+let reattachedFor='';   // the AI the last completed sweep was for
+function reattachSweep(){if(aiGate())return;const a=(C&&C.agent)||'claude';
+ if(reattached&&reattachedFor!==a)reattached=false;   // swept for another AI: not this one's
+ if(reattached||reattaching)return;reattaching=true;
+ connectReattach().then(ok=>{reattached=ok;if(ok)reattachedFor=a},()=>{}).finally(()=>{reattaching=false})}
+
+// The Mac's weekday morning refresh did not start (doctor.py "schedule" row, #24). The checklist is only up while setting
+// up, so once set up the same row shows here, above everything: what happened, what to do, and the download page.
+let schedSaid='',SCHED;   // SCHED: the latest /api/schedule/status answer; until the first one, the doctor's row
+const schedStep=()=>SCHED!==undefined?SCHED:(DOC&&DOC.steps&&DOC.steps.find(x=>x.id==='schedule'))||null;
+const schedBad=()=>{const s=schedStep();return !!(s&&!s.ok)};   // also stops the "refreshes itself every morning" toast
+function paintSchedule(st){const w=$('#sched_warn'),s=schedBad()?schedStep():null;
+ if(!s||st==='connect'||s.test_copy){w.style.display='none';return}   // a test copy's schedule is not this person's problem (grey row only)   // while connecting, the checklist row says it already
+ w.style.display='block';w.textContent='';const t=document.createElement('b'),f=document.createElement('div');t.textContent=s.title;f.textContent=s.fix;w.append(t,f);
+ if(s.link){const b=document.createElement('button');b.textContent='Open the download page';b.onclick=()=>window.open(s.link,'_blank','noopener');w.append(b)}
+ if(s.detail!==schedSaid){schedSaid=s.detail;clog('morning refresh did not start: '+(s.detail||s.kind))}}   // the developer detail goes to the Console only
+// Past the connection step the connection check no longer runs every minute, so re-read the schedule's logs on their own
+// (file reads on the server, no CLI): a morning failure shows, and a recovery clears, without a reload.
+let schedSeq=0;   // only the newest poll may set SCHED: an older, slower answer must not undo a newer one
+async function checkSchedule(){const st=stage();if(['connect','checking','checkfail'].includes(st))return;const seq=++schedSeq;try{const r=await api('/api/schedule/status');if(seq!==schedSeq)return;SCHED=r.step||null;paintSchedule(stage())}catch(e){}}
+setInterval(checkSchedule,60000);
+// What goes with the checklist: the Open <AI> button and the repair line. Wraps paintConnect instead of editing it (#21
+// rewrites that function).
+const paintConnectBase=paintConnect;
+paintConnect=function(){paintConnectBase();
+ const inst=DOC.steps.find(x=>x.id==='claude'),noBtn=!!(inst&&!inst.ok);$('#agent_btn').style.display=noBtn?'none':'';   // it would only say "command not found"
+ $('#st_connect').classList.toggle('no_agent_btn',noBtn);   // ...and the help paragraph's sentence about it goes too (#50)
+ paintSetupDone()};   // a row's download button (s.link) is part of the row now (paintConnectBase), so it survives repaints (#62)
+
+// ---------- Set-up view (#28): your AI, your sources, your schedule ----------
+// Three cards over the same connection check as the checklist (DOC.steps): each shows its rows (checkRow), its state
+// and one action. Up on first run while connecting and while the first scan waits for its press; from ⚙ Settings →
+// Set-up any time after (SETUP_OPEN), so a broken connection is fixed from the same place.
+// Codex and Miro, said once (#64): the Miro row's sentence, which the picker and the Settings note repeat word for word
+const CODEX_MIRO=(MSG.codex_no_miro&&MSG.codex_no_miro.what)||'';
+// Check again with Codex chosen: its check takes about half a minute (#64); said next to the button while it runs
+const codexWait=a=>suBusy==='check'&&a==='codex'&&MSG.codex_checking?` <span class="sub">${esc(MSG.codex_checking.fix)}</span>`:'';
+const AI_CHOICES=[   // what each needs and costs, and what it cannot do (#26, INSTALL.md "More than one account")
+ ['claude','Claude','Needs a paid Claude plan. Slack, Gmail and Miro each connect by clicking Allow in your browser; one Slack and one Gmail per Claude account.'],
+ ['codex','ChatGPT (Codex)','Needs a ChatGPT account: Codex comes with Free and paid plans, but whether Free gets Gmail and Slack isn\'t confirmed. Every scan uses some of its Codex allowance. Gmail and Slack are the ones your ChatGPT account connected. '+CODEX_MIRO],
+ ['grok','Grok','Needs a Grok account. Gmail needs a one-off Google Cloud set-up of your own (INSTALL.md says how); Slack is off unless you turn it on.']];
+const SU_STATE={todo:'Not started',progress:'In progress',done:'Done',needs:'Needs you',unchecked:'Not checked'};
+// Windows: the connection check has no morning-refresh row there (doctor.py reads the Mac's only), so it is never "Done"
+let PAGE_WIN=/Win/.test((typeof navigator!=='undefined'&&navigator.platform)||'');
+const SU_AI=['claude','login'],SU_SRC=['slack','gmail','miro','self'],SU_SRC_STEPS=['slack_install','slack','gmail','miro'];
+let SETUP_OPEN=false,suBusy='',suDoc=false;   // suBusy: 'agent' while a new choice is saved and checked, 'check' during Check again
+// the card's rows, in card order; "Knows who you are on Slack" only while it holds setup up
+const suRows=ids=>ids.map(id=>DOC&&DOC.steps&&DOC.steps.find(x=>x.id===id)).filter(s=>s&&(s.id!=='self'||(!s.ok&&!s.optional)));
+const suRunning=steps=>steps.some(k=>CONN[k]&&CONN[k].busy);
+const aiReady=()=>{const r=suRows(SU_AI);return r.length===2&&r.every(s=>s.ok)};
+const srcReady=()=>(srcOk('slack')||srcOk('gmail'))&&!suRows(['self']).length;
+// Not started: an earlier card comes first. Needs you: this card's turn. In progress: a step of it is running.
+const jobRunning=()=>!!J&&Object.keys(J).some(k=>J[k]&&J[k].running);
+function suState(card,st){
+ if(aiPending())return card==='ai'?'progress':'todo';   // the other cards wait for the new AI's check
+ if(card==='ai')return suBusy==='agent'||suRunning(['install','login'])?'progress':aiReady()?'done':'needs';
+ if(card==='src')return suRunning(SU_SRC_STEPS)?'progress':srcReady()?'done':aiReady()?'needs':'todo';
+ const s=schedStep(),red=!!(s&&!s.ok&&!s.test_copy);
+ if(scanned())return red?'needs':!s&&PAGE_WIN&&!ISO?'unchecked':'done';
+ if(!aiReady()||!srcReady())return 'todo';
+ return !waitsForGo(st)&&['people','voice','scan'].includes(st)?'progress':'needs'}
+const setupFirstRun=st=>st==='connect'||(st==='checking'&&aiPending())||(!!JOB_OF[st]&&waitsForGo(st));
+// Repainted every tick, but only when it changed; if focus was inside, it comes back to the same control (data-fk), or else
+// to the card, so a keyboard user is never dropped at the top of the page.
+const setHTML=(el,h)=>{if(el._h===h)return;const f=typeof document!=='undefined'&&document.activeElement;
+ const had=f&&el.contains&&el.contains(f)?((f.dataset&&f.dataset.fk)||''):null;el._h=h;el.innerHTML=h;
+ if(had!==null){const n=had&&el.querySelector(`[data-fk="${had}"]`);const t=n&&!n.disabled?n:(el.closest&&el.closest('section'))||el;if(t.focus)t.focus()}};
+function suPill(id,k){const p=$(id);p.textContent=SU_STATE[k];p.className='su-state '+k}
+function paintSetup(st){const v=$('#setup'),show=!!DOC&&!DOC.error&&(SETUP_OPEN||setupFirstRun(st));
+ v.style.display=show?'':'none';$('#steps').style.display=show?'none':'';allowPaint();if(!show)return;   // its cards are the steps meanwhile (#56)
+ $('#lists').style.display='none';$('#gmail_later').style.display='none';   // while Set-up is up, it is the page
+ if(!aiPending())paintConnect();   // Every check: the whole checklist, from this check, at every stage the view is up (not only while connecting)
+ // Setup was done once and something needs fixing again: the checklist heading's one line (#52 writes it) goes on top
+ paintSetupDone();   // the line follows the checks now: a connection that recovered takes it away
+ const hh=$('#st_connect_h'),fix=S&&S.setup_done&&hh&&hh.dataset&&hh.dataset.first!==undefined&&hh.textContent!==hh.dataset.first?hh.textContent:'';
+ $('#su_repair').textContent=fix;$('#su_repair').style.display=fix?'':'none';$('#su_intro').style.display=fix?'none':'';
+ $('#setup_back').style.display=SETUP_OPEN&&!setupFirstRun(st)?'':'none';
+ if(SETUP_OPEN&&!['connect','checking','checkfail'].includes(st)&&Date.now()-docAt>60000&&!suDoc){   // past setup nothing else re-checks
+  suDoc=true;doctor(false).catch(()=>{}).finally(()=>{suDoc=false;paintSetup(stage())})}
+ const a=aiSwitching||(C&&C.agent)||'claude',stale=suBusy==='agent'||aiPending(),anyRun=suRunning(Object.keys(CONN))||jobRunning();
+ // 1. your AI: the choice, then its two rows (installed, signed in); the one button is the row's, else Open Grok / Check again
+ setHTML($('#su_ai_pick'),AI_CHOICES.map(([k,t,l])=>`<button type="button" role="radio" aria-checked="${k===a}" tabindex="${k===a?0:-1}" data-fk="ai-${k}"${suBusy||anyRun||stale?' disabled':''} onclick="chooseAI('${k}')"><b>${esc(t)}</b><span class="sub">${esc(l)}</span></button>`).join(''));
+ // #62: greyed out because something is running: say why, under the picker (not while it is changing: the rows say that)
+ const why=!suBusy&&!stale&&anyRun?aiLockSaid(true):'';$('#su_ai_why').textContent=why;$('#su_ai_why').style.display=why?'':'none';
+ const ai=stale?[]:suRows(SU_AI),aiFirst=(ai.find(s=>!s.ok&&s.connect)||{}).connect;
+ paintRows($('#su_ai_rows'),stale?[`<div class="sub" style="padding:6px 0"><span class="spin"></span>${a==='codex'?esc(msg('codex_checking')):`Checking ${esc(aiName(a))} on this computer…`}</div>`]:ai.map(s=>checkRow(s,s.connect===aiFirst)));
+ const rowBtn=rows=>rows.some(s=>!s.ok&&connectBtn(s,false));
+ const openAgent=a==='grok'&&ai.length===2&&ai[0].ok&&!ai[1].ok;   // Grok signs in in its own window
+ setHTML($('#su_ai_act'),stale||rowBtn(ai)?'':openAgent?`<button class="primary" onclick="suOpenAgent()">Open ${esc(agentLabel())}</button>`
+  :`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>${codexWait(a)}`);
+ suPill('#su_ai_state',suState('ai',st));
+ // 2. your sources: one row each, one Connect each; one is enough
+ $('#su_src_help').textContent=a==='grok'?'Gmail alone is enough (Slack only if you turn it on). Each row says the one-off step it needs.'
+  :msg('sources_needed')+(a==='codex'?' Gmail and Slack are connected in your ChatGPT account: Connect opens ChatGPT\'s apps page.'
+  :' Each Connect opens your browser, where you click Allow.');
+ const src=stale?[]:suRows(SU_SRC),srcFirst=srcReady()?'':(src.find(s=>!s.ok&&s.connect)||{}).connect;   // once one is connected, the rest are extras, not the next step
+ paintRows($('#su_src_rows'),src.map(s=>checkRow(s,s.connect===srcFirst)));
+ setHTML($('#su_src_act'),stale||rowBtn(src)||!aiReady()?'':`<button onclick="setupCheck()"${suBusy?' disabled':''}>${suBusy==='check'?'Checking…':'Check again'}</button>${codexWait(a)}`);
+ suPill('#su_src_state',suState('src',st));
+ // 3. your schedule: the morning time, whether the morning refresh started (Mac, doctor.py "schedule"), and last the first scan
+ $('#su_time').innerHTML=ISO?esc(msg('sched_test_copy'))
+  :`After the first scan, Open Loops refreshes itself on weekdays at <b>${esc((C&&C.refresh_time)||'09:15')}</b>, while you're logged in.${PAGE_WIN?' Open Loops can\'t yet see from here whether Windows started it.':''} <a href="#" onclick="showTab('settings','cs_prefs');return false">Change the time</a>`;
+ const sr=schedStep();
+ paintRows($('#su_sched_rows'),sr?[checkRow(sr,false)+(sr.link&&!sr.ok?`<button data-href="${esc(sr.link)}" onclick="window.open(this.dataset.href,'_blank','noopener')">Open the download page</button>`:'')]:[]);
+ const go=waitsForGo(st);
+ $('#su_scan').textContent=stale?`Checking ${aiName(a)} first; the first scan waits until that has finished.`:scanned()?'The first scan is done.':go?'':!aiReady()||!srcReady()?'Last comes the first scan. It waits for you to press Start; nothing runs by itself.'
+  :'The first scan has started; how far it has got shows below.';
+ suPill('#su_sched_state',suState('sched',st));
+ $('#su_all_sub').textContent='each check on its own, and Open '+agentLabel()+' for anything a button can\'t do'}
+// Why your AI can't be changed just now, '' when it can (#62): an install, a sign-in waiting in the browser or the Slack
+// plugin's install this page is watching, or (jobs) a job running with the current AI. The picker's line and Settings'
+// refusal both say it.
+function aiLockSaid(jobs){const run=Object.keys(CONN).filter(k=>CONN[k]&&CONN[k].busy);
+ if(run.includes('install'))return msg('ai_change_install',{ai:aiName(CONN.install.agent)});
+ if(run.some(k=>k!=='slack_install'))return msg('ai_change_signin');
+ if(run.length)return msg('ai_change_plugin');
+ return jobs&&jobRunning()?msg('ai_change_job',{ai:aiName((C&&C.agent)||'claude')}):''}
+async function chooseAI(a){if(suBusy||aiPending()||!C||(C.agent||'claude')===a||suRunning(Object.keys(CONN)))return;   // aiPending: the last change's check is not in yet (#56)
+ if(jobRunning()){toast(aiLockSaid(true),{err:true});return}
+ suBusy='agent';aiSwitching=a;tick();   // "checking" until the new AI's own check is in: nothing starts meanwhile
+ try{await api('/api/config',{agent:a});clog('set-up: your AI is now '+a);
+  try{await loadCfg()}catch(e){clog('set-up: settings not re-read, trying once more');try{await loadCfg()}catch(e2){if(C){C.agent=a;agentUI()}}}   // saved: C must say so before the check
+  for(const k of Object.keys(CONN))delete CONN[k];   // what the other AI's rows said
+  if(formPainted){$('#cfg_agent').value=a;agentFormUI(a)}   // Settings shows the same choice, keeping its unsaved edits
+  await doctor(true)}
+ catch(e){toast('Your AI was not changed: '+errSaid(e),{err:true})}
+ finally{suBusy='';aiSwitching='';tick();reattachSweep()}}   // #62: the new AI's check is in: look for its sign-ins again
+// The AI picker as a radio group: arrow keys (and Home / End) move between the three, Enter or Space picks. Moving does not
+// pick by itself, since picking re-checks the new AI; the one that can be tabbed to follows the focus (roving tabindex).
+function suPickKey(e){const step={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(!step&&e.key!=='Home'&&e.key!=='End')return;
+ const bs=[...$('#su_ai_pick').querySelectorAll('button')];if(!bs.length)return;e.preventDefault();
+ const i=Math.max(0,bs.indexOf(document.activeElement)),n=e.key==='Home'?0:e.key==='End'?bs.length-1:(i+step+bs.length)%bs.length;
+ bs.forEach((b,j)=>{b.tabIndex=j===n?0:-1});bs[n].focus()}
+async function setupCheck(){if(suBusy)return;suBusy='check';paintSetup(stage());try{await doctor(true)}finally{suBusy='';paintSetup(stage())}}
+async function suOpenAgent(){try{await openClaude();toast($('#setup_msg').textContent)}catch(e){toast(errSaid(e),{err:true})}}
+async function openSetup(){SETUP_OPEN=true;clog('set-up: opened from Settings');showTab('home');await tick();const v=$('#setup');if(v.scrollIntoView)v.scrollIntoView({block:'start'})}
+function closeSetup(){SETUP_OPEN=false;allowClose();return tick()}
+// the checklist and the first-scan box, unchanged, as the cards' detail (once, as the page loads)
+function setupEmbed(){$('#su_all_body').appendChild($('#st_connect'));$('#su_start').appendChild($('#st_start'))}
+// ---- the pop-up: a setup step that waits for Allow in the browser. It shows the link in case no tab opened, looks
+// every 3 s, and closes itself once the step's row is green. Codex's Gmail / Slack are a page to connect on instead:
+// there Check again asks (each check uses a little of the ChatGPT plan), rather than asking every 3 s.
+const ALLOW_ROW={login:'login',slack:'slack',gmail:'gmail',miro:'miro'};   // step -> the row that turns green
+let ALLOW=null,allowT=null;
+function allowOpen(step,run){ALLOW={step,url:'',run:run||''};   // run: the app's run_id for the run it waits on (#27)
+ clearInterval(allowT);allowT=setInterval(allowPoll,3000);
+ const page=pageStep(step);
+ $('#allow_title').textContent=page?`Connect ${SRC_NAME[step]} on the ChatGPT page that just opened, then come back`:'Click Allow in the tab that just opened, then come back';
+ $('#allow_sub').textContent=page?'ChatGPT keeps that connection. Back here, press Check again.':`This closes by itself once ${PARTY(step)} has said yes.`;
+ allowPaint();const d=$('#allow_dlg');if(!d.open)d.showModal();clog('set-up: waiting for Allow: '+step)}
+function allowPaint(){if(!ALLOW)return;const c=CONN[ALLOW.step]||{},u=ALLOW.url||c.url||'',page=pageStep(ALLOW.step);
+ $('#allow_link').innerHTML=u?`Nothing opened? <a href="${esc(u)}" target="_blank" rel="noopener">${page?'Open ChatGPT\'s apps page':'Open the sign-in page'}</a>.`:c.busy?'<span class="spin"></span>Opening your browser…':'';
+ // what went wrong, in the app's words: the step's own failure (a Codex page that would not open included), or what the row
+ // said after a Check again pressed here. A Codex page that did open needs no second sentence: the title says what to do.
+ $('#allow_msg').textContent=ALLOW.said||(!c.busy&&c.msg&&!c.opened?c.msg:'');
+ $('#allow_check').style.display=page||(!c.busy&&c.msg)?'':'none';
+ // #67 review: the pop-up covers the row, so it has the row's Stop too: the same handler, for the run the pop-up is for
+ const st=$('#allow_stop'),can=c.busy&&canStop(ALLOW.step);st.style.display=can?'':'none';st.textContent=c.stopping?LABEL.stopping:LABEL.stop_signin;
+ st.disabled=!can||!!c.stopping||!c.run||(!!ALLOW.run&&ALLOW.run!==c.run)}
+function allowStop(){const a=ALLOW;return a?connectStop(a.step,a.run):Promise.resolve()}
+async function allowPoll(){const a=ALLOW;if(!a)return;const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
+ if(row&&row.ok){allowClose();toast(row.title.replace(/ \(optional.*\)$/,'')+'.');return}
+ // the fallback link, from the run's own status. The pop-up object stays when its row takes another run (adoption changes
+ // a.run in place), so the answer is used only while the pop-up is still for the run it was asked for (review of #68)
+ if(!a.url){const run=a.run;try{const s=await api('/api/connect/'+a.step);if(ALLOW===a&&a.run===run&&s.url&&(!s.run_id||!run||s.run_id===run))a.url=s.url}catch(e){}}
+ allowPaint()}
+function allowClose(){const a=ALLOW;ALLOW=null;clearInterval(allowT);allowT=null;const d=$('#allow_dlg');if(d.open)d.close();if(a)allowFocus(a.step)}
+// #27: the person closed the pop-up (Close, or Escape) while its step still runs: remember that run for this tab, as
+// {step: run_id} (the app's id for the run, which the pop-up got from the POST that started it or from the status a
+// reload read), so a reload shows the row's spinner and link again but not the pop-up. Nothing is compared but the id,
+// and nothing is removed but a note for the exact run that ended: another run, even one started in the same second, is
+// never taken for it. A pop-up with no run id (an older app) is not remembered.
+const ALLOW_GONE='ol.allowDismissed';
+function allowGone(){try{return JSON.parse(sessionStorage.getItem(ALLOW_GONE)||'{}')||{}}catch(e){return {}}}
+function allowGoneSet(step,v){try{const g=allowGone();if(v)g[step]=v;else delete g[step];sessionStorage.setItem(ALLOW_GONE,JSON.stringify(g))}catch(e){}}
+function allowForget(a){if(a.run&&(CONN[a.step]||{}).busy)allowGoneSet(a.step,a.run)}
+const allowClosedFor=(step,run)=>!!run&&allowGone()[step]===run;   // the pop-up was closed for exactly this run
+function allowClosedEnd(step,run){if(allowClosedFor(step,run))allowGoneSet(step,'')}   // only this run's note
+function allowDismiss(){if(ALLOW)allowForget(ALLOW);allowClose()}
+// after the pop-up: focus back on that step's Connect / Sign in button, or on its card once the row has gone green
+function allowFocus(step){if(typeof document==='undefined'||!document.querySelector)return;
+ const b=document.querySelector(`#setup button[onclick="connectStep('${step}')"]`),t=b||document.querySelector(step==='login'?'#su_ai':'#su_src');if(t&&t.focus)t.focus()}
+async function allowCheck(){const a=ALLOW,run=a&&a.run,b=$('#allow_check');if(!a)return;b.disabled=true;a.said='';$('#allow_msg').textContent='Checking…';
+ try{await doctor(true)}finally{b.disabled=false}
+ const row=DOC&&DOC.steps&&DOC.steps.find(x=>x.id===ALLOW_ROW[a.step]);
+ if(ALLOW===a&&a.run===run&&!(row&&row.ok))a.said=DOC&&DOC.error?msg('check_failed'):(row&&row.fix)||'';   // still not ticked: the row's own sentence, here
+ await allowPoll()}
+// ---------- end of the Set-up view
 
 let peopleRendered='';
 async function stagePeople(){
- if(!P&&!running('people')&&!kicked.people){kicked.people=true;await api('/api/people',{});J.people={running:true}}
- if(running('people')){$('#people_list').innerHTML='<span class="sub"><span class="spin"></span>Looking at who you talk to on Slack and email… about a minute.</span>';peopleRendered='';$('#people_save').disabled=true;$('#people_again').disabled=true;return}
+ if(!P&&!running('people')&&!kicked.people){kicked.people=true;await api('/api/people',{});jobStarted('people')}
+ if(running('people')){$('#people_list').innerHTML='<span class="sub"><span class="spin"></span>'+esc(msg('people_running',{sources:scanSources()}))+'</span>';peopleRendered='';$('#people_save').disabled=true;$('#people_again').disabled=true;return}
  $('#people_again').disabled=false;
- if(!P||!P.people||!P.people.length){$('#people_list').innerHTML='<span class="sub">Couldn\'t find anyone. '+(J.people&&J.people.log?'Details under Settings → History → "Last job output". ':'')+'Press <b>Look again</b>.</span>';$('#people_save').disabled=true;peopleRendered='';return}
+ if(!P||!P.people||!P.people.length){$('#people_list').innerHTML='<span class="sub">'+(J.people&&J.people.said?jobSaid('people'):'Couldn\'t find anyone. Press <b>Look again</b>.')+'</span>';$('#people_save').disabled=true;peopleRendered='';return}
  $('#people_save').disabled=false;
  const key=JSON.stringify(P);if(peopleRendered===key)return;peopleRendered=key;   // only redraw when the suggestions change - never while you're clicking radios
  const L=['senior','peer','junior','external'];
@@ -451,7 +1050,7 @@ async function stagePeople(){
   <div><b>${p.name}</b><div class="sub">${p.email||p.channel||''}</div></div>
   <div class="sub"><i>“${(p.example||'').slice(0,110)}”</i></div>
   <div style="white-space:nowrap">${L.map(l=>`<label style="margin-left:6px;font-size:12px"><input type="radio" name="lv${i}" value="${l}" ${p.guess===l?'checked':''}> ${l}</label>`).join('')}</div></div>`).join('')}
-async function findPeople(force){if(running('people'))return;kicked.people=true;P=null;peopleRendered='';await api('/api/people',{});J.people={running:true};tick()}
+async function findPeople(force){if(running('people')||aiWait())return;kicked.people=true;P=null;peopleRendered='';await api('/api/people',{});jobStarted('people');tick()}
 async function savePeople(){const people={},sample=[];P.people.forEach((p,i)=>{const v=document.querySelector(`input[name="lv${i}"]:checked`);if(!v)return;people[p.name]={level:v.value,aliases:[p.name.split(' ')[0]],email:p.email||null};if(sample.length<6&&v.value!=='external')sample.push(p.name)});
  if(!Object.keys(people).length){$('#people_msg').textContent='pick a level for at least one person';return}
  await api('/api/config',{people,voice_sample_people:sample});await loadCfg();formPainted=false;kicked.voice=false;stage=stage0;tick()}
@@ -462,22 +1061,29 @@ const stage0=stage;
 
 async function stageAuto(st){const t=$('#auto_title'),s=$('#auto_sub'),r=$('#auto_retry');r.style.display='none';
  if(st==='voice'){
-  if(!running('voice')&&!kicked.voice){kicked.voice=true;await api('/api/voice',{});J.voice={running:true}}
-  if(running('voice')){t.innerHTML='<span class="spin"></span>3 · Learning how you write…';s.textContent='Reading your own messages to the people you just picked, so chases sound like you. About a minute.'}
-  else{t.textContent='3 · Learning your tone didn\'t finish';s.innerHTML='Press <b>Try again</b>. If it fails again, the last lines of the log are:<pre class="log" style="margin-top:6px">'+esc(((J.voice||{}).log||'').trim().slice(-400)||'(no output)')+'</pre>';r.style.display=''}}
+  if(!running('voice')&&!kicked.voice){kicked.voice=true;await api('/api/voice',{});jobStarted('voice')}
+  if(running('voice')){t.innerHTML='<span class="spin"></span>Learning how you write…';s.textContent='Reading your own messages to the people you just picked, so chases sound like you. About a minute.'}
+  else{t.textContent='Learning your tone didn\'t finish';s.innerHTML=jobSaid('voice','Learning your tone');r.style.display=''}}
  else{
-  if(!running('refresh')&&!kicked.scan){kicked.scan=true;await api('/api/refresh',{});J.refresh={running:true}}
-  if(running('refresh')){t.innerHTML='<span class="spin"></span>4 · First scan of your Slack and email…';s.textContent='Looking for things you\'ve asked people for in the last week. Two or three minutes.'}
-  else{t.textContent='4 · The first scan didn\'t finish';s.innerHTML='Press <b>Try again</b>. If it fails again, the last lines of the log are:<pre class="log" style="margin-top:6px">'+esc(((J.refresh||{}).log||'').trim().slice(-400)||'(no output)')+'</pre>';r.style.display=''}}}
+  if(!running('refresh')&&!kicked.scan){kicked.scan=true;await api('/api/refresh',slackOnlyScan()?{slack_only:true}:{});jobStarted('refresh')}
+  if(running('refresh')){t.innerHTML='<span class="spin"></span>First scan of your '+esc(scanSources())+'…';s.textContent=msg('first_scan',{days:histDays(),sources:scanSources()})}
+  else{t.textContent='The first scan didn\'t finish';s.innerHTML=jobSaid('refresh','The first scan');r.style.display=''}}}
+// A setup job that failed: the app's plain sentence (who stopped it, what to do); what it printed is one click away (#25)
+function jobSaid(k,job){const j=J[k]||{},tail=(j.log||'').trim().slice(-400);
+ return esc(j.said||msg('job_failed',{job}))+(tail?`<details style="margin-top:6px"><summary>Show what it printed</summary><pre class="log" style="margin-top:6px">${esc(tail)}</pre></details>`:'')}
 function retryStage(){const st=stage();kicked[st==='voice'?'voice':'scan']=false;tick()}
 
 // Update Slack needs Slack connected AND the owner's Slack id known (refresh --slack-only is SKIPPED without it)
-const slackOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='slack'&&x.ok)&&DOC.steps.some(x=>x.id==='self'&&x.ok));
+const slackOk=()=>!aiPending()&&!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='slack'&&x.ok)&&DOC.steps.some(x=>x.id==='self'&&x.ok));
 function paintButtons(st){const rb=$('#refresh');rb.style.display=st==='ready'&&$('#page_home').style.display!=='none'?'':'none';rb.disabled=running('refresh');rb.textContent=running('refresh')?'Refreshing…':'Refresh';   // hidden, not disabled, until setup is done
- const ub=$('#uslack');ub.style.display=st==='ready'&&slackOk()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
+ // Update Slack: once Slack is connected and the first scan is done (#56: during set-up it ran a real Slack pass
+ // before the first scan, next to a page that says nothing reads your messages until you press Start)
+ const ub=$('#uslack');ub.style.display=slackOk()&&scanned()&&$('#page_home').style.display!=='none'?'':'none';ub.disabled=running('refresh');ub.textContent=running('refresh')?'Updating…':'Update Slack';
  const vb=$('#voicebtn');vb.disabled=!havePeople()||running('voice');vb.textContent=running('voice')?'Learning…':'Learn my tone';vb.title=havePeople()?'':'save Who\'s who first';
- $('#meta').textContent=S?'last refresh '+(S.last_refresh?fmt(S.last_refresh):'never')+(S.last_slack_refresh?' · slack '+fmt(S.last_slack_refresh):''):'';
- const g=DOC?DOC.steps.find(x=>x.id==='gmail'):null;$('#gmail').textContent=g?(g.ok?'gmail ok':'gmail: not connected (optional)'):'';
+ $('#meta').textContent=S?[S.last_refresh?'last refresh '+fmt(S.last_refresh):S.last_slack_refresh?'':'last refresh never',S.last_slack_refresh?'slack '+fmt(S.last_slack_refresh):''].filter(Boolean).join(' · '):'';
+ $('#isolated_pill').style.display=ISO?'':'none';
+ const src=['slack','gmail'].map(id=>DOC&&DOC.steps&&DOC.steps.find(x=>x.id===id)).filter(Boolean);   // only after a check, and not over the checklist that says it already
+ $('#gmail').textContent=['checking','checkfail','connect'].includes(st)?'':src.map(x=>(x.id==='slack'?'Slack':'Gmail')+(x.ok?' connected':' not connected')).join(' · ');$('#gmail').style.display=$('#gmail').textContent?'':'none';
  $('#log').textContent=J?Object.keys(J).map(k=>J[k]&&J[k].log?`--- ${k}\n${J[k].log}`:'').filter(Boolean).join('\n'):'';
  paintDaylog();paintRm()}
 
@@ -511,9 +1117,9 @@ function priSel(l){const id=esc(l.id);return `<div class="sub" title="${l.priori
 function card(l,dim){const w=workdays(l.asked_at);const sn=l.snooze_until&&l.snooze_until>TODAY;
  const vault=l.channel==='vault';
  const note=l.channel==='note'||(l.manual&&!vault);
- return `<div class="card ${dim||sn?'snoozed':''}"><div class="dot ${col(l)}"></div>
+ return `<div class="card ${dim||sn?'snoozed':''}${actCls(l.id)}"><div class="dot ${col(l)}"></div>
  <div><div class="who">${esc(l.owner || (note?'note':''))}</div><div class="sub">${vault?esc(l.vault_id||l.notes||''):note?(l.owner?'note':''):`${esc(l.channel)} · ${w}wd`}${l.chases?` · chased ${l.chases}x`:''}${l.last_chase_at?(l.last_chase_mode==='send'?`<br><b style="color:var(--g)">➤ chase sent ${fmt(l.last_chase_at)}</b>`:`<br><b style="color:var(--a)" title="a draft is waiting in Slack/Gmail - check it before drafting again">✎ chase drafted ${fmt(l.last_chase_at)}</b>`):''}${sn?` · snoozed → ${esc(l.snooze_until)}`:''}${vault&&l.vault_flag?` · <span class="pill">${esc(l.vault_flag)}</span>`:''}</div>${l.status!=='done'?priSel(l):''}</div>
- <div><div>${esc(l.ask)}</div><div class="sub">${vault?`from ${esc(l.source||'your to-do file')} · added ${fmt(l.asked_at)}${l.vault_changed_at?` · wording changed ${fmt(l.vault_changed_at)}`:''}`:note?`added ${fmt(l.asked_at)}`:`asked ${fmt(l.asked_at)}`}${l.last_reply_at?` · they: <i>"${esc((l.reply_snippet||'').slice(0,100))}"</i> ${fmt(l.last_reply_at)}`:vault||note?'':` · no reply yet`}${l.link?` · <a href="${esc(l.link)}" target="_blank">open</a>`:''}${!vault&&l.notes?`<br>${linkify(l.notes)}`:''}${(l.links||[]).length?`<br>${l.links.map(x=>`<a class="chip" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.url)}"><span>${esc(x.label||host(x.url))}</span><button type="button" aria-label="remove link" title="remove link" onclick="event.preventDefault();dropLink('${esc(l.id)}','${esc(x.url)}')">×</button></a>`).join('')}`:''}</div></div>
+ <div><div>${esc(l.ask)}</div><div class="sub">${vault?`from ${esc(l.source||'your to-do file')} · added ${fmt(l.asked_at)}${l.vault_changed_at?` · wording changed ${fmt(l.vault_changed_at)}`:''}`:note?`added ${fmt(l.asked_at)}`:`asked ${fmt(l.asked_at)}`}${l.last_reply_at?` · they: <i>"${esc((l.reply_snippet||'').slice(0,100))}"</i> ${fmt(l.last_reply_at)}`:vault||note?'':l.inbound?` · you haven't replied yet`:` · they haven't replied yet`}${l.link?` · <a href="${esc(l.link)}" target="_blank" rel="noopener">open</a>`:''}${!vault&&l.notes?`<br>${linkify(l.notes)}`:''}${(l.links||[]).length?`<br>${l.links.map(x=>`<a class="chip" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.url)}"><span>${esc(x.label||host(x.url))}</span><button type="button" aria-label="remove link" title="remove link" onclick="event.preventDefault();dropLink('${esc(l.id)}','${esc(x.url)}')">×</button></a>`).join('')}`:''}</div></div>
  <div class="acts" data-id="${esc(l.id)}">${(()=>{
    // Von Restorff: one primary per card - chase when waiting on them, done when it needs you; everything else quiet
    const id=esc(l.id),chaseable=l.status==='waiting'&&!note&&!vault;
@@ -534,7 +1140,7 @@ function renderLists(){if(!S)return;const L=S.loops||[];const live=l=>l.status!=
  $('#waiting').innerHTML=wait.length?sortBar(wait.length)+gW.map(([n,ls])=>personRow('wait',n,ls)).join(''):'<div class="empty">nothing outstanding</div>';
  $('#rest').innerHTML=rest.map(l=>card(l,true)).join('');
  const by=wait.reduce((m,l)=>{m[ageCol(l)]=(m[ageCol(l)]||0)+1;return m},{});
- $('#n1').textContent=needs.length?`${needs.length} · ${ppl(gN)} · they replied or you wrote a note, you owe a reply`:'nothing waiting on you';
+ $('#n1').textContent=needs.length?`${needs.length} · ${ppl(gN)} · someone asked you something, replied to you, or you wrote a note`:'nothing waiting on you';
  $('#n2').textContent=wait.length?`${wait.length} · ${ppl(gW)} · `+[[by.g,'fresh'],[by.a,'amber'],[by.r,'red']].filter(x=>x[0]).map(x=>x.join(' ')).join(', '):'nothing outstanding';
  $('#n3').textContent=rest.length?`${rest.length} · watched for 5 days in case they come back`:'none yet';paintPins();
  const dl=$('#need_people');if(dl)dl.innerHTML=Object.keys((C&&C.people)||{}).sort().map(n=>`<option value="${esc(n)}">`).join('')}
@@ -542,10 +1148,22 @@ const who=l=>l?((l.owner?l.owner+' — ':'')+(l.ask||'')).slice(0,60):'';
 // every card action: card dims at once (pending), then a toast says what happened; done/snooze/reopen offer Undo
 const UNDO={done:'reopen',reopen:'done',snooze:'unsnooze',unsnooze:'snooze',auto_off:'auto_on',auto_on:'auto_off'};
 const SAID={priority:'Priority set',done:'Marked done',reopen:'Reopened',snooze:'Snoozed',unsnooze:'Unsnoozed',note:'Note saved',add_link:'Link added',drop_link:'Link removed',auto_off:'Auto-chase off for',auto_on:'Auto-chase on for'};
-async function act(id,action,extra,quiet){const l=S&&S.loops.find(x=>x.id===id);const card=document.querySelector(`.acts[data-id="${CSS.escape(id)}"]`);if(card)card.closest('.card').classList.add('busy');
- try{await api('/api/action',Object.assign({id,action},extra||{}))}
- catch(e){if(card)card.closest('.card').classList.remove('busy');toast((SAID[action]||action)+' failed: '+e.message.replace(/^.*-> \d+ /,''),{err:true});throw e}
- await loadState();renderLists();
+// Card clicks still waiting for the app, by card id (#64, review of #66): how many, and whether "Saving…" is due. The
+// lists are drawn afresh on every refresh, so a card takes its busy / saving look from here (actCls, in the card's
+// markup) and never only from an element a redraw may already have replaced. Cleared when the last click on it is over.
+const PENDING_ACT=new Map();
+const actCls=id=>{const p=PENDING_ACT.get(id);return p?' busy'+(p.saving?' saving':''):''};
+function actPaint(id){const a=document.querySelector(`.acts[data-id="${CSS.escape(id)}"]`),c=a&&a.closest('.card');if(!c)return;
+ const p=PENDING_ACT.get(id);c.classList.toggle('busy',!!p);c.classList.toggle('saving',!!(p&&p.saving))}
+async function act(id,action,extra,quiet){const l=S&&S.loops.find(x=>x.id===id);
+ const p=PENDING_ACT.get(id)||{n:0,saving:false};p.n++;PENDING_ACT.set(id,p);actPaint(id);   // dims at once
+ // no answer after a second: "Saving…" on the card until there is one (the app waits up to 10 s for its lock, #64)
+ const slow=setTimeout(()=>{if(PENDING_ACT.get(id)===p){p.saving=true;actPaint(id)}},1000);
+ try{
+  try{await api('/api/action',Object.assign({id,action},extra||{}))}
+  catch(e){toast((ACT_FAILED[action]||ACT_FAILED.other||"Couldn't save that")+': '+errSaid(e),{err:true});throw e}
+  await loadState();renderLists();
+ }finally{clearTimeout(slow);if(--p.n<=0)PENDING_ACT.delete(id);actPaint(id)}   // also when the refresh after it fails
  if(quiet)return;const undoTo=UNDO[action];
  if(undoTo)toast(`${SAID[action]}: ${who(l)}${action==='snooze'?' until '+extra.until:''}`,{undo:()=>act(id,undoTo,undoTo==='snooze'?{until:l.snooze_until||extra.until}:null,true)});
  else toast(`${SAID[action]||action}: ${who(l)}`)}
@@ -553,12 +1171,12 @@ function snooze(id){const l=S.loops.find(x=>x.id===id);if(!l)return;const day=n=
  const nextMon=()=>{const d=new Date();d.setDate(d.getDate()+((8-d.getDay())%7||7));return d.toISOString().slice(0,10)};
  dlgOpen({title:'Snooze',sub:who(l),ok:'Snooze',fields:[{id:'until',label:'Until',type:'date',value:day(2)}],
   html:`<div class="quick"><button type="button" onclick="$('#dlg_until').value='${day(1)}'">tomorrow</button><button type="button" onclick="$('#dlg_until').value='${day(2)}'">2 days</button><button type="button" onclick="$('#dlg_until').value='${nextMon()}'">next Monday</button><button type="button" onclick="$('#dlg_until').value='${day(7)}'">a week</button></div>`,
-  onOk:async()=>{const d=dlgVal('until');if(!d)throw new Error('pick a date');await act(id,'snooze',{until:d})}})}
+  onOk:async()=>{const d=dlgVal('until');if(!d)throw localErr('pick a date');await act(id,'snooze',{until:d})}})}
 function editNote(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  dlgOpen({title:l.notes?'Edit note':'Add a note',sub:who(l),ok:'Save',fields:[{id:'notes',label:'Note (links become clickable)',type:'textarea',value:l.notes||'',rows:4}],onOk:()=>act(id,'note',{notes:dlgVal('notes')})})}
 function addLink(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  dlgOpen({title:'Attach a link',sub:who(l),ok:'Add link',fields:[{id:'url',label:'Link (Drive, Miro, Notion, Figma…)',type:'url',placeholder:'https://…'},{id:'label',label:'Label (optional)',placeholder:'e.g. brief v2'}],
-  onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw new Error('the link must start with http:// or https://');await act(id,'add_link',{url:u,label:dlgVal('label')})}})}
+  onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw localErr('the link must start with http:// or https://');await act(id,'add_link',{url:u,label:dlgVal('label')})}})}
 function dropLink(id,url){act(id,'drop_link',{url})}
 
 // ---------- pinned links: yours, not a loop's. Stored in config.pinned_links; Miro boards can open in a view-only embed ----------
@@ -569,10 +1187,10 @@ function paintPins(){const el=$('#pins');if(!el||!C)return;
  el.innerHTML=pins().map(p=>`<a class="chip" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(p.url)}"><span>${esc(p.label||host(p.url))}</span>${miroBoard(p.url)?`<button type="button" aria-label="view here" title="view here, read-only" onclick="event.preventDefault();pinEmbed('${esc(p.url)}')">▣</button>`:''}<button type="button" aria-label="unpin" title="unpin" onclick="event.preventDefault();pinDrop('${esc(p.url)}')">×</button></a>`).join('')||'<span class="sub">nothing pinned yet - boards and docs you open every day</span>';
  if(pinShown&&!pins().some(p=>p.url===pinShown))pinEmbed(null)}
 async function savePins(list,msg,undo){const prev=pins();try{await api('/api/config',{pinned_links:list});await loadCfg();paintPins();if(msg)toast(msg,undo?{undo:()=>savePins(prev)}:undefined)}
- catch(e){toast('Pins not saved: '+e.message.replace(/^.*-> \d+ /,''),{err:true});throw e}}
+ catch(e){toast('Pins not saved: '+errSaid(e),{err:true});throw e}}
 function pinAdd(){dlgOpen({title:'Pin a board or document',sub:'Shown at the top of Home. Miro boards can also open here, read-only.',ok:'Pin',
  fields:[{id:'url',label:'Link',type:'url',placeholder:'https://miro.com/app/board/…  or any document link'},{id:'label',label:'Label (optional)',placeholder:'e.g. Planning board'}],
- onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw new Error('the link must start with http:// or https://');if(pins().some(p=>p.url===u))throw new Error('already pinned');
+ onOk:async()=>{const u=dlgVal('url');if(!/^https?:\/\//i.test(u))throw localErr('the link must start with http:// or https://');if(pins().some(p=>p.url===u))throw localErr('already pinned');
   await savePins(pins().concat([{url:u,label:dlgVal('label')}]),'Pinned: '+(dlgVal('label')||host(u)))}})}
 function pinDrop(url){const p=pins().find(x=>x.url===url);savePins(pins().filter(x=>x.url!==url),'Unpinned: '+((p&&p.label)||host(url)),true)}
 function pinEmbed(url){const w=$('#pin_embed_wrap'),f=$('#pin_embed');if(!url||url===pinShown){pinShown=null;w.style.display='none';f.removeAttribute('src');return}
@@ -583,22 +1201,22 @@ function noteFor(id){const l=S.loops.find(x=>x.id===id);if(!l)return;$('#need_wh
 function closeVault(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
  dlgOpen({title:'How are you closing '+(l.vault_id||id)+'?',sub:(l.owner?l.owner+' — ':'')+l.ask,ok:'Mark done',
   fields:[{id:'closure',label:'What did you do? Name any other standing items this changes (A7, A8…).',type:'textarea',rows:5}],
-  onOk:async()=>{const closure=dlgVal('closure');if(!closure)throw new Error('say how you closed it - this goes into the vault');
-   await api('/api/action',{id,action:'done',closure});if(J)J.standing={running:true};await loadState();renderLists();toast('Marked done and written to the vault: '+(l.vault_id||id))}})}
+  onOk:async()=>{const closure=dlgVal('closure');if(!closure)throw localErr('say how you closed it - this goes into the vault');
+   await api('/api/action',{id,action:'done',closure});jobStarted('standing');await loadState();renderLists();toast('Marked done and written to the vault: '+(l.vault_id||id))}})}
 async function addNeed(){const owner=$('#need_who').value.trim(),ask=$('#need_ask').value.trim(),notes=$('#need_notes').value.trim();
  if(!ask){$('#need_ask').focus();toast('Type what needs doing first',{err:true});return}
  try{const r=await api('/api/action',{action:'add',owner,ask,notes});$('#need_who').value='';$('#need_ask').value='';$('#need_notes').value='';banner('');await loadState();renderLists();
   toast('Added to Needs me: '+(owner?owner+' — ':'')+ask,{undo:()=>act(r.id,'done',null,true),undoLabel:'Undo'})}
- catch(e){toast('Could not add that: '+e.message.replace(/^.*-> \d+ /,''),{err:true})}}
+ catch(e){toast('Could not add that: '+errSaid(e),{err:true})}}
 const counts=()=>{const L=(S&&S.loops)||[],live=l=>l.status!=='done'&&!(l.snooze_until&&l.snooze_until>TODAY);return{needs:L.filter(l=>l.status==='needs_me'&&live(l)).length,wait:L.filter(l=>l.status==='waiting'&&live(l)).length,ids:new Set(L.map(l=>l.id))}};
 let before=null;   // counts when a refresh started, so the finish toast can say what changed
-async function refresh(slackOnly){if(running('refresh'))return;before=counts();
- try{await api('/api/refresh',{slack_only:!!slackOnly})}catch(e){toast('Refresh could not start: '+e.message.replace(/^.*-> \d+ /,''),{err:true});return}
- J.refresh={running:true};tick()}
+async function refresh(slackOnly){if(running('refresh')||aiWait())return;before=counts();
+ try{await api('/api/refresh',{slack_only:!!slackOnly})}catch(e){toast('Refresh could not start: '+errSaid(e),{err:true});return}
+ jobStarted('refresh');tick()}
 
 // ---------- day log: instant digest from state, prose on demand ----------
 let DL=null;
-async function loadDaylog(){try{DL=await api('/api/daylog')}catch(e){DL=null}paintDaylog()}
+async function loadDaylog(strict){try{DL=await api('/api/daylog')}catch(e){DL=null;if(strict){paintDaylog();throw e}}paintDaylog()}   // strict: a job-end follow-up, retried if this fails
 function paintDaylog(){const d=DL;if(!d||!$('#dl_digest'))return;const g=d.digest||{};
  const line=(k,t)=>(g[k]||[]).length?`<div><b>${t}:</b> ${g[k].map(x=>esc((x.owner?x.owner+' — ':'')+x.ask)).join(' · ')}</div>`:'';
  $('#dl_digest').innerHTML=line('closed','Closed today')+line('opened','Asked today')+line('chased','Chased today')+`<div>${g.waiting||0} waiting on them · ${g.needs_me||0} need you</div>`;
@@ -606,16 +1224,16 @@ function paintDaylog(){const d=DL;if(!d||!$('#dl_digest'))return;const g=d.diges
  const has=!!d.text;$('#dl_text').style.display=has?'':'none';$('#dl_text').textContent=d.text||'';$('#dl_copy').style.display=has?'':'none';$('#dl_open').style.display=d.has_page?'':'none';
  const b=$('#dl_run');b.disabled=running('daylog');b.textContent=running('daylog')?'Writing…':(has?'Write it again':'Write it up');
  if(running('daylog'))$('#dl_msg').textContent='reading today\'s messages… about a minute';else if($('#dl_msg').textContent.startsWith('reading'))$('#dl_msg').textContent=''}
-async function writeDaylog(){if(running('daylog'))return;try{await api('/api/daylog',{});J.daylog={running:true};paintDaylog()}catch(e){$('#dl_msg').textContent=e.message}}
+async function writeDaylog(){if(running('daylog')||aiWait())return;try{await api('/api/daylog',{});jobStarted('daylog');paintDaylog()}catch(e){$('#dl_msg').textContent=errSaid(e)}}
 async function copyDaylog(){try{await navigator.clipboard.writeText((DL&&DL.text)||'');$('#dl_msg').textContent='copied'}catch(e){$('#dl_msg').textContent='copy failed — select the text instead'}}
 
 // ---------- roadmap: stage rows here, add cards to the Miro frame through Claude ----------
 let RM=null,rmSaveT=null,rmArmT=null,rmArmed=false,rmRendered='';
 const miroOk=()=>!!(DOC&&DOC.steps&&DOC.steps.some(x=>x.id==='miro'&&x.ok));
 function rmRows(){return (RM&&RM.store&&RM.store.rows)||[]}
-async function loadRm(){try{RM=await api('/api/roadmap')}catch(e){RM=null}rmRendered='';paintRm()}
+async function loadRm(strict){try{RM=await api('/api/roadmap')}catch(e){RM=null;if(strict){rmRendered='';paintRm();throw e}}rmRendered='';paintRm()}
 function paintRm(){if(!RM||!$('#roadmap'))return;
- if(!miroOk()){$('#rm_head').textContent='· connect Miro in Claude to use this (see the connection checklist)';$('#roadmap').style.display='none';return}
+ if(!miroOk()){$('#rm_head').textContent=(C&&C.agent)==='codex'?"· Miro isn't available with Codex (see the connection checklist)":'· connect Miro in Claude to use this (see the connection checklist)';$('#roadmap').style.display='none';return}
  if(!RM.configured.ok){$('#rm_head').innerHTML='· <a href="#" onclick="showTab(&quot;settings&quot;,&quot;cs_connections&quot;);return false" title="opens Settings">set the board and frame in Settings</a>';$('#roadmap').style.display='none';return}
  $('#roadmap').style.display='';const b=RM.store.board||{};
  $('#rm_head').textContent='· '+(b.frame||RM.configured.frame)+(b.read_at?' · read '+fmt(b.read_at):' · board not read yet');
@@ -643,8 +1261,8 @@ function rmSet(i,f,v){rmRows()[i][f]=v;rmDisarm();rmSave()}
 function rmDrop(i){rmRows().splice(i,1);rmRendered='';paintRm();rmDisarm();rmSave()}
 function rmAddRow(){const b=RM.store.board||{};rmRows().push({title:'',detail:'',owners:'',lane:(b.lanes||[])[0]||'',column:(b.columns||[])[0]||'',state:'not_started',source:'hand'});rmRendered='';paintRm();rmDisarm();rmSave()}
 function rmTouch(){rmDisarm();rmSave()}
-function rmSave(){clearTimeout(rmSaveT);rmSaveT=setTimeout(async()=>{try{RM.store.pasted=$('#rm_paste').value;rmRendered=JSON.stringify(RM.store);await api('/api/roadmap',{mode:'save',rows:rmRows(),pasted:RM.store.pasted})}catch(e){$('#rm_msg').textContent='not saved: '+e.message}},500)}
-async function rmJob(mode,extra){try{$('#rm_msg').textContent='';const r=await api('/api/roadmap',Object.assign({mode},extra||{}));if(r.started===false){$('#rm_msg').textContent='already running';return}J.roadmap={running:true};paintRm()}catch(e){$('#rm_msg').textContent=e.message.replace(/^.*-> \d+ /,'')}}
+function rmSave(){clearTimeout(rmSaveT);rmSaveT=setTimeout(async()=>{try{RM.store.pasted=$('#rm_paste').value;rmRendered=JSON.stringify(RM.store);await api('/api/roadmap',{mode:'save',rows:rmRows(),pasted:RM.store.pasted})}catch(e){$('#rm_msg').textContent='not saved: '+errSaid(e)}},500)}
+async function rmJob(mode,extra){if(aiWait())return;try{$('#rm_msg').textContent='';const r=await api('/api/roadmap',Object.assign({mode},extra||{}));if(r.started===false){$('#rm_msg').textContent='already running';return}jobStarted('roadmap');paintRm()}catch(e){$('#rm_msg').textContent=errSaid(e)}}
 function rmRead(){rmJob('read')}
 function rmParse(){const p=$('#rm_paste').value.trim();if(!p){$('#rm_msg').textContent='paste some notes first';return}clearTimeout(rmSaveT);rmJob('parse',{pasted:p})}
 function rmPreview(){rmDisarm();rmJob('preview')}
@@ -657,14 +1275,14 @@ function renderRmPreview(){const pv=RM.store.preview||{},plan=pv.plan||[],rows=r
  if(adds&&!running('roadmap')){b.disabled=false;b.textContent=`Add ${adds} to the roadmap`}}
 async function rmPost(){if(!rmArmed){rmArmed=true;$('#rm_armmsg').textContent='press again within 6s — this adds cards to a board other people share';clearTimeout(rmArmT);rmArmT=setTimeout(()=>{rmArmed=false;$('#rm_armmsg').textContent=''},6000);return}
  rmArmed=false;$('#rm_armmsg').textContent='';await rmJob('build',{confirm:true})}
-async function chase(id){const l=S.loops.find(x=>x.id===id);if(!l)return;
+async function chase(id){const l=S.loops.find(x=>x.id===id);if(!l||aiWait())return;
  if(willSend(l)&&!confirm(`This will SEND a chase to ${l.owner} right now, in your name, without you seeing it first.\n\nSend?`))return;
  if(!willSend(l)&&l.last_chase_at&&!confirm(`You already ${l.last_chase_mode==='send'?'sent':'drafted'} a chase for ${l.owner} on ${fmt(l.last_chase_at)}.\nIf a draft is still unsent this will create a second one.\n\nDraft another?`))return;
- try{await api('/api/chase',{id})}catch(e){toast('Chase could not start: '+e.message.replace(/^.*-> \d+ /,''),{err:true});return}
- J.chase={running:true};toast((willSend(l)?'Sending a chase to ':'Drafting a chase for ')+l.owner+'… about a minute');tick()}
+ try{await api('/api/chase',{id})}catch(e){toast('Chase could not start: '+errSaid(e),{err:true});return}
+ jobStarted('chase');toast((willSend(l)?'Sending a chase to ':'Drafting a chase for ')+l.owner+'… about a minute');tick()}
 
 // ---------- settings form: painted only on first open and after Save, never by background ticks ----------
-function paintForm(){if(!C)return;formPainted=true;$('#cfg_name').value=C.owner_name||'';$('#cfg_agent').value=C.agent||'claude';$('#cfg_model').value=C.model===undefined?'sonnet':(C.model||'');$('#cfg_effort').value=C.effort===undefined?'xhigh':(C.effort||'');$('#cfg_model_wrap').style.display=(C.agent||'claude')==='claude'?'':'none';$('#cfg_use_slack').checked=!!C.use_slack;$('#cfg_history').value=String(C.history_days||30);$('#cfg_time').value=C.refresh_time||'09:15';
+function paintForm(){if(!C)return;formPainted=true;$('#cfg_name').value=C.owner_name||'';$('#cfg_agent').value=C.agent||'claude';modelUI(C.agent||'claude');$('#cfg_use_slack').checked=!!C.use_slack;$('#cfg_history').value=String(C.history_days||30);$('#cfg_time').value=C.refresh_time||'09:15';
  $('#cfg_standing').value=C.standing_file||C.vault_path||'';standingStatus();
  $('#cfg_rm_board').value=C.roadmap_board||'';$('#cfg_rm_frame').value=C.roadmap_frame||'';
  $('#cfg_slack_src').textContent=(C.agent||'claude')==='claude'?[C.slack_source?'Slack route detected: '+(C.slack_source==='connector'?'claude.ai connector':'Slack plugin'):'',C.miro_source?'Miro route detected: '+(C.miro_source==='connector'?'claude.ai connector':'Miro plugin'):''].filter(Boolean).join(' · ')+(C.slack_source||C.miro_source?' — jobs use the matching tools automatically.':''):'';
@@ -679,46 +1297,103 @@ function paintForm(){if(!C)return;formPainted=true;$('#cfg_name').value=C.owner_
 function paintVoice(){if(V&&haveVoice()){$('#voice_meta').textContent='learned '+fmt(V.learned_at);
   $('#voice').innerHTML=`<div class="sub" style="margin:6px 0 10px"><b>General:</b> ${V.general||''}</div><b style="font-size:12px">Sample chases in your voice</b>`+Object.entries(V.samples||{}).map(([k,v])=>`<div class="sub" style="margin:6px 0"><b style="text-transform:capitalize">${k}:</b> ${v}</div>`).join('')+`<b style="font-size:12px;display:block;margin-top:10px">Per person</b>`+Object.entries(V.people||{}).map(([k,v])=>`<div class="sub" style="margin:6px 0"><b>${k}</b> (${v.level}) — ${v.style}${(v.examples||[]).map(e=>`<br><i>“${e}”</i>`).join('')}</div>`).join('')}
  else{$('#voice_meta').textContent=havePeople()?'not learned yet':'save Who\'s who first';$('#voice').innerHTML=''}}
-async function saveCfg(){try{const tone={};document.querySelectorAll('[data-tone]').forEach(t=>tone[t.dataset.tone]=t.value);
+// -> true once saved and read back; false when not saved (refused, or the save failed) or not confirmed (saved, but
+// reading the settings back failed). The form keeps its edits; a caller that saves and then acts on the saved
+// settings (standingCreate) stops on false (review of #65)
+async function saveCfg(){
+ // #62: as the set-up page's picker, no change of AI while a sign-in or install runs: that run is the old AI's. Nothing
+ // is saved; the form keeps its edits, so Save works once the sign-in is over.
+ const lock=C&&$('#cfg_agent').value!==(C.agent||'claude')?aiLockSaid(false):'';if(lock){$('#cfg_msg').textContent='not saved: '+lock;clog('not saved: '+lock);toast(lock,{err:true,quiet:true});return false}   // #67: a note, not an error
+ try{const tone={};document.querySelectorAll('[data-tone]').forEach(t=>tone[t.dataset.tone]=t.value);
  // people: radios in the table win; the JSON box is the fallback for adding/removing entries
  let people=JSON.parse($('#cfg_people').value);Object.keys(C.people||{}).forEach((n,i)=>{const v=document.querySelector(`input[name="pp${i}"]:checked`);if(v&&people[n])people[n].level=v.value});
- const body={agent:$('#cfg_agent').value,model:$('#cfg_model').value,effort:$('#cfg_effort').value,use_slack:$('#cfg_use_slack').checked,history_days:+$('#cfg_history').value||30,owner_name:$('#cfg_name').value.trim(),standing_file:$('#cfg_standing').value.trim(),vault_path:'',roadmap_board:$('#cfg_rm_board').value.trim(),roadmap_frame:$('#cfg_rm_frame').value.trim(),chase_external_email:$('#cfg_ext').checked,send_internal:$('#cfg_send_int').checked,send_external:$('#cfg_send_ext').checked,internal_domains:$('#cfg_domains').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),auto_chase:{enabled:$('#cfg_auto').checked,after_workdays:+$('#cfg_auto_days').value||3,max_chases:+$('#cfg_auto_max').value||3},tone,people,
+ const body={agent:$('#cfg_agent').value,use_slack:$('#cfg_use_slack').checked,history_days:+$('#cfg_history').value||30,owner_name:$('#cfg_name').value.trim(),standing_file:$('#cfg_standing').value.trim(),vault_path:'',roadmap_board:$('#cfg_rm_board').value.trim(),roadmap_frame:$('#cfg_rm_frame').value.trim(),chase_external_email:$('#cfg_ext').checked,send_internal:$('#cfg_send_int').checked,send_external:$('#cfg_send_ext').checked,internal_domains:$('#cfg_domains').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),auto_chase:{enabled:$('#cfg_auto').checked,after_workdays:+$('#cfg_auto_days').value||3,max_chases:+$('#cfg_auto_max').value||3},tone,people,
   exclude_people:$('#cfg_excl_people').value.split(',').map(s=>s.trim()).filter(Boolean),exclude_topics:$('#cfg_excl_topics').value.split(',').map(s=>s.trim()).filter(Boolean)};
+ const mk=(MODELS[body.agent]||{}).keys;if(mk){body[mk[0]]=$('#cfg_model').value;body[mk[1]]=$('#cfg_effort').value}   // only the chosen AI's own keys
  const agentChanged=(C.agent||'claude')!==body.agent,slackChanged=!!C.use_slack!==body.use_slack;
- await api('/api/config',body);dirty=false;$('#cfg_save').textContent='Save settings';$('#cfg_msg').textContent='saved '+new Date().toLocaleTimeString()+(agentChanged||slackChanged?' - re-checking connections on Home':'');toast('Settings saved');await loadCfg();paintForm();if(agentChanged||slackChanged)doctor(true);await loadRm();tick()}catch(e){$('#cfg_msg').textContent='not saved: '+e.message;toast('Settings not saved: '+e.message.replace(/^.*-> \d+ /,''),{err:true})}}
+ await api('/api/config',body);dirty=false;$('#cfg_save').textContent='Save settings';$('#cfg_msg').textContent='saved '+new Date().toLocaleTimeString()+(agentChanged||slackChanged?' - re-checking connections on Home':'');toast('Settings saved');await loadCfg();paintForm();if(agentChanged||slackChanged)doctor(true).then(reattachSweep);await loadRm();tick();return true}catch(e){$('#cfg_msg').textContent='not saved: '+errSaid(e);toast('Settings not saved: '+errSaid(e),{err:true});return false}}
 // the to-do file box: say whether the file is there and how many open items it has; offer to create it
 async function standingStatus(){try{const typed=$('#cfg_standing').value.trim();const s=await api('/api/standing'+(typed?'?path='+encodeURIComponent(typed):''));const el=$('#standing_status'),b=$('#standing_create');
   if(s.exists){el.textContent=`found: ${s.path} · ${s.open} open item${s.open===1?'':'s'}`;b.style.display='none'}
   else{el.textContent=$('#cfg_standing').value.trim()?`no file at ${s.path} yet`:'not set - nothing is read';b.style.display=$('#cfg_standing').value.trim()?'':'none'}}catch(e){}}
-async function standingCreate(){const b=$('#standing_create');b.disabled=true;try{if(dirty){await saveCfg()}const r=await api('/api/standing/create',{});toast('Starter file created: '+r.path+' - open it in your editor and replace the example line');await standingStatus();await loadState();renderLists()}
- catch(e){toast('Could not create it: '+e.message.replace(/^.*-> \d+ /,''),{err:true})}b.disabled=false}
+async function standingCreate(){const b=$('#standing_create');b.disabled=true;try{if(dirty&&!(await saveCfg())){b.disabled=false;return}   // not saved: the file would go to the old path
+  const r=await api('/api/standing/create',{});toast('Starter file created: '+r.path+' - open it in your editor and replace the example line');await standingStatus();await loadState();renderLists()}
+ catch(e){toast('Could not create it: '+errSaid(e),{err:true})}b.disabled=false}
 // Zeigarnik: an edited-but-unsaved form says so on the sticky bar (Save is always within reach) and on leaving the tab
 let dirty=false;
 function cfgDirty(){if(dirty)return;dirty=true;$('#cfg_save').textContent='Save settings (unsaved changes)';$('#cfg_msg').textContent=''}
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
 async function saveTime(){$('#time_msg').textContent='updating task…';const r=await api('/api/schedule',{time:$('#cfg_time').value});$('#time_msg').textContent=r.ok?'scheduled weekdays at '+$('#cfg_time').value:'failed: '+(r.error||r.out)}
-async function learnVoice(){if(!havePeople()||running('voice'))return;kicked.voice=true;await api('/api/voice',{});J.voice={running:true};paintButtons(stage())}
-async function startOver(){if(!confirm('Wipe the list, people picks and learned tone, and go back to step 1?\n\nThis cannot be undone.'))return;await api('/api/reset',{});DOC=null;docAt=0;P=null;peopleRendered='';Object.keys(kicked).forEach(k=>delete kicked[k]);formPainted=false;await loadCfg();showTab('home');loop()}
+async function learnVoice(){if(!havePeople()||running('voice')||aiWait())return;kicked.voice=true;await api('/api/voice',{});jobStarted('voice');paintButtons(stage())}
+async function startOver(){if(!confirm('Wipe the list, people picks and learned tone, and go back to step 1?\n\nThis cannot be undone.'))return;await api('/api/reset',{});DOC=null;docAt=0;P=null;peopleRendered='';Object.keys(kicked).forEach(k=>delete kicked[k]);pressed=false;goRemember(null);formPainted=false;await loadCfg();showTab('home');loop()}
 async function openClaude(){await api('/api/open-claude',{});$('#setup_msg').textContent=agentLabel()+' window opened — finish there, then come back. The ticks update by themselves.'}
 
 // ---------- doctor + the main loop ----------
-let docAt=0,docFails=0,docT=null,docSaid='';
+let docAt=0,docFails=0,docT=null,docSaid='',docSeq=0,docReread='';   // docReread: the agent a mismatch last re-read settings for
+// The page's own limit on one check. app.py's /api/doctor makes up to two attempts of 240 s each, 2 s apart (482 s at most),
+// so a request still open after 500 s never will answer. It then counts as a check that did not run (the Retry box), and
+// whatever waited on it (an AI change) lets go. A timer bounds it too where the browser has no AbortController.
+let DOC_DEADLINE_MS=500000;
 async function doctor(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent=force?'checking…':'';
- let r;try{r=await api('/api/doctor',{force:!!force,detect:true})}catch(e){r={all_ok:false,error:e.message,steps:[]}}
+ const seq=++docSeq;   // only the newest check may repaint: an older one can finish last and would undo a tick
+ const ac=typeof AbortController!=='undefined'?new AbortController():null;let dl,late=false;
+ const limit=new Promise((_,no)=>{dl=setTimeout(()=>{late=true;if(ac)ac.abort();no(new Error('late'))},DOC_DEADLINE_MS)});
+ let r;try{r=await Promise.race([api('/api/doctor',{force:!!force,detect:true},ac&&ac.signal),limit])}
+ catch(e){r={all_ok:false,error:late?'no answer within '+Math.round(DOC_DEADLINE_MS/1000)+' s':e.message,steps:[]}}
+ finally{clearTimeout(dl)}
+ if(seq!==docSeq)return;
  docAt=Date.now();
  if(r.error){docFails++;clog(`connection check did not run (${docFails}x): `+r.error);
-  if(!DOC||DOC.error)DOC=r;                                   // nothing good to fall back on: the page says so, plainly
+  if(!DOC||DOC.error||aiPending())DOC=r;                                   // nothing good to fall back on: the page says so, plainly
   else if(docFails===1)toast("Couldn't re-check your connections just now. Trying again in a moment.",{ms:6000});   // otherwise the list stays; one quiet line
   if(docFails<4){clearTimeout(docT);docT=setTimeout(()=>doctor(true).catch(()=>{}),15000)}}   // three quiet retries, then the normal once-a-minute rhythm
  else{if(docFails)clog('connection check ran fine again');docFails=0;DOC=r;
-  const said=r.all_ok?'all ok':'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
+  if(aiSwitching&&r.agent===aiSwitching&&C&&C.agent===aiSwitching)aiSwitching='';   // the new AI's own answer is in: however the change went, the gate lets go
+  // A good answer for another AI with no change under way here: another tab changed it, or a save went through but its
+  // answer was lost. This tab's settings are stale, and aiPending() would keep the picker disabled for good, so read
+  // them again, once per mismatch (review of #59).
+  if(r.agent&&C&&r.agent!==(C.agent||'claude')&&!aiSwitching&&docReread!==r.agent){   // one re-read per answer at most
+   // the marker is set only once the re-read worked: a failed one is tried again on the next good check (review of #59)
+   try{await loadCfg();docReread=r.agent;clog('set-up: the check was for '+r.agent+', settings re-read')}catch(e){clog('set-up: the check was for '+r.agent+', settings not re-read, trying on the next check')}}
+  else if(r.agent&&C&&r.agent===(C.agent||'claude'))docReread='';
+  // all ok with an optional source red (Miro, say): the line says so, so it doesn't read as everything connected (#62).
+  // Red as checkRow paints it (a Connect button, or an alert such as a source listed under a name Open Loops can't use);
+  // a grey row (nothing to do yet) is left out, and so is any row that is not a source (the morning refresh's alert).
+  // Each says why: a Connect button means not connected; an alert alone means listed under a name Open Loops can't use.
+  const SRC_OFF={slack:'Slack',gmail:'Gmail',miro:'Miro'},red=r.all_ok?r.steps.filter(x=>!x.ok&&x.optional&&(x.connect||x.alert)&&SRC_OFF[x.id]):[];
+  const part=(id,rows)=>rows.length&&MSG[id]?fill(MSG[id].what,{names:rows.map(x=>SRC_OFF[x.id]).join(', ')}).replace(/\.$/,''):'';
+  const off=[part('check_optional_off',red.filter(x=>x.connect)),part('check_optional_unusable',red.filter(x=>!x.connect))].filter(Boolean);
+  const said=r.all_ok?'all ok'+(off.length?' ('+off.join('; ')+')':''):'needs attention: '+r.steps.filter(x=>!x.ok&&!x.optional).map(x=>x.id).join(', ');if(said!==docSaid){docSaid=said;clog('connection check: '+said)}}
  if(force){for(const id of ['setup_msg','checkfail_msg'])$('#'+id).textContent='';tick()}}
-let wasRunning=false,loopT=null,said={},runSeen=new Set();
+let loopT=null,inLoop=false,pendingLoop=false,offline=false,runSeen=new Set(),reattached=false,reattaching=false;   // #27: a whole connectReattach() sweep has answered / one is under way
+const CLAIMED=new Set();   // job ends being handled right now ("<instance>:<job>:<seq>"): never handled twice at once
+// A job's end is noticed by its "seq" (app.py _ended: one number per job end, always going up), never by seeing it
+// running and then not (#49): a job that fails within a second is over before the next poll, and was never seen
+// running. SEEN holds the last seq handled per job, for the server SEEN_INST (null until the first poll, which only
+// takes note: nothing that ended before this page opened is announced). A new server instance (the app restarted and
+// counts from 1 again) starts SEEN afresh, so its ends are all new. An end is acknowledged (ack) only once it has
+// been handled: a follow-up load that fails leaves it for the next poll. WATCH: jobs this page started, polled every
+// 1.5 s until their end.
+let SEEN=null,SEEN_INST=null,INST='';const WATCH={};
+function jobStarted(k){if(!J)J={};PENDING_START[k]={seq:(J[k]&&J[k].seq)||0,at:Date.now(),req:ST_SEQ};J[k]=Object.assign({},J[k]||{},{running:true});WATCH[k]=Date.now();if(!runSeen.has(k)){runSeen.add(k);clog(k+' started')}pollSoon()}
+function pollSoon(){if(inLoop||stopped)return;clearTimeout(loopT);loopT=setTimeout(loop,1000)}
+function newlyEnded(){const out=[];if(!J)return out;
+ if(SEEN===null){SEEN={};SEEN_INST=INST;for(const k of Object.keys(J))SEEN[k]=J[k].seq||0;return out}
+ if(SEEN_INST!==INST){SEEN={};SEEN_INST=INST}   // another server: its seq numbers are its own
+ for(const k of Object.keys(J)){const j=J[k];if(j&&!j.running&&j.seq&&j.seq!==(SEEN[k]||0)&&!CLAIMED.has(INST+':'+k+':'+j.seq))out.push(k)}
+ for(const k of Object.keys(WATCH))if(!out.includes(k)&&Date.now()-WATCH[k]>15000&&!running(k))delete WATCH[k];   // never started after all
+ return out}
+function ack(keys,seqs){keys.forEach((k,i)=>{SEEN[k]=seqs[i];delete WATCH[k]})}
+// "Forget where I was" (#56): the app replaces only the unreadable cursors, with the last refresh's time when it has one
+async function forgetCursor(){try{const r=await api('/api/cursor/forget',{});toast(r.since==='recorded'?msg('cursor_forgotten'):r.since==='history'?msg('cursor_forgotten_window'):msg('cursor_fine'),{ms:8000})}
+ catch(e){toast(errSaid(e),{err:true})}}   // its own sentence, not the toast's "Undo failed"
 // Peak-End: when a job ends, say what it did and what is next - never just let the spinner vanish
-function finished(){if(!J)return;for(const k of Object.keys(J)){const j=J[k];if(!j||j.running||j.rc===undefined||said[k]===j.log)continue;said[k]=j.log;
+function finished(keys){if(!J)return;for(const k of keys){const j=J[k];if(!j||j.running||j.rc===undefined)continue;
  const ok=j.rc===0,tail=(j.log||'').trim().split('\n').pop()||'';clog(`${k} finished rc=${j.rc}`+(tail?' · '+tail.slice(0,200):''));
  if(!ok&&j.rc===2){toast(`${k}: skipped - ${tail.replace(/^SKIPPED:?\s*/i,'')}`,{ms:6000});continue}
- if(!ok){toast(`${k} didn't finish - details under Settings → History → "Last job output"`,{err:true,ms:8000});continue}
+ // an unreadable cursor (refresh.py) gets its light fix on the toast itself; Start over stays the last resort (#56)
+ const fix=j.failure==='cursor_unreadable'?{undo:forgetCursor,undoLabel:'Forget where I was',ms:30000}:{};
+ if(!ok){toast(j.said||`${k} didn't finish - details under Settings → History → "Last job output"`,{err:true,ms:10000,...fix});if(MSG[j.failure]&&MSG[j.failure].recheck)doctor(true);continue}   // signed out and the like: bring the checklist and its Sign in back   // the log stays in the Console and Settings
  if(k==='refresh'){const a=counts(),b=before||a;const fresh=[...a.ids].filter(x=>!b.ids.has(x)).length;before=null;
   toast(`Refresh done: ${fresh} new, ${a.needs} need you, ${a.wait} waiting on them`);continue}
  if(k==='chase')toast('Chase '+(/sent/i.test(tail)?'sent':'drafted')+' - check the thread',{ms:6000});
@@ -726,24 +1401,48 @@ function finished(){if(!J)return;for(const k of Object.keys(J)){const j=J[k];if(
  else if(k==='roadmap')toast('Roadmap step done - see the result in the Roadmap section');
  else if(k==='voice')toast('Tone learned - chases will sound like you');
  else if(k==='people')toast('People suggested - pick their seniority');}}
-async function loop(){clearTimeout(loopT);try{
+// One pass at a time, whoever asks (timer, a job start, the tab coming back, Start over): a call during a pass only
+// asks for one more pass once it is done (review of #48, P2 2).
+// The app answered, but was busy saving (503 with code app_busy, a job or a repair holding state.json, #61): not
+// "down". The last state stays up, no banner, and the next poll comes at the usual pace; api() has already put the
+// one Console line for it. After a failed poll it means the app is back: the offline banner and backoff go.
+const appBusy=e=>!!(e&&e.status===503&&e.body&&e.body.code==='app_busy');
+async function loop(){if(inLoop){pendingLoop=true;return}clearTimeout(loopT);inLoop=true;try{
   await loadState();
-  const now=Object.values(J).some(j=>j.running);
   for(const k of Object.keys(J))if(J[k].running&&!runSeen.has(k))clog(k+' started');runSeen=new Set(Object.keys(J).filter(k=>J[k].running));
-  if(wasRunning&&!now){await loadCfg();await loadDaylog();await loadRm();finished()}   // a job just finished: pick up new people/voice/config/day log/roadmap, say what happened
-  wasRunning=now;
+  const ended=newlyEnded();
+  if(ended.length){const seqs=ended.map(k=>J[k].seq),keys=ended.map((k,i)=>INST+':'+k+':'+seqs[i]);   // a job just ended: pick up new people/voice/config/day log/roadmap, say what happened
+   keys.forEach(x=>CLAIMED.add(x));   // claimed before anything is awaited
+   try{await loadCfg();await loadDaylog(true);await loadRm(true);finished(ended);ack(ended,seqs)}   // a load that throws skips the ack: next poll tries again
+   finally{keys.forEach(x=>CLAIMED.delete(x))}}
   const st=stage();
   if((st==='connect'||st==='checking'||st==='checkfail'||docFails)&&Date.now()-docAt>60000)await doctor(false);   // docFails: the list is up on an older answer; keep trying once a minute
-  await tick();banner('');
- }catch(e){banner('Something went wrong talking to the app: '+e.message+' — if it keeps happening, close this tab and open Open Loops again.')}
- const st=stage();loopT=setTimeout(loop,(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
+  await tick();banner('');if(offline)reattached=false;   // #27: on load, and once back after the banner, one sweep at a time until one completes
+  reattachSweep();offline=false;   // #62: and again once the AI has changed
+ }catch(e){if(!appBusy(e)){offline=true;appDown(e)}else if(offline){offline=false;reattached=false;banner('')}}   // not answering: no fast polls until it does (below); busy: back, one sweep once a poll gets through
+ inLoop=false;if(stopped)return;if(pendingLoop){pendingLoop=false;return loop()}   // asked for during this pass: once more, now
+ const st=stage();clearTimeout(loopT);   // a job started during this pass: one timer, not two
+ loopT=setTimeout(loop,offline?60000:Object.keys(WATCH).length?1500:(J&&Object.values(J).some(j=>j.running))||st!=='ready'?4000:60000)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped)loop()});
 window.addEventListener('pagehide',()=>{if(stopped)return;const b=new Blob([JSON.stringify({page:PAGE})],{type:'application/json'});if(!(navigator.sendBeacon&&navigator.sendBeacon('/api/bye',b)))fetch('/api/bye',{method:'POST',body:b,keepalive:true}).catch(()=>{})});
-window.addEventListener('pageshow',e=>{if(e.persisted&&!stopped)loop()});   // back/forward cache restore: say hello again before the grace runs out
+// Back/forward cache restore: reload, so the page's copy of the wording (MSG) and its code are the app's current ones.
+// Only if the app answers: with it gone, a reload would swap the "not running" banner for the browser's own error page.
+window.addEventListener('pageshow',e=>{if(e.persisted&&!stopped)fetch('/',{cache:'no-store'}).then(r=>{if(r.ok)location.reload();else loop()},()=>loop())});   // back/forward cache restore: say hello again before the grace runs out
 async function quitApp(){const b=$('#quitbtn');b.disabled=true;try{const r=await api('/api/quit',{});stopped=true;clearTimeout(loopT);
   const after=r.after_jobs&&r.after_jobs.length?' once the running '+r.after_jobs.join(', ')+' job finishes':'';
-  banner('Open Loops is stopping'+after+'. You can close this tab; double-click the Open Loops icon to start it again.')}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
+  banner('Open Loops is stopping'+after+'. You can close this tab. '+restartSaid())}catch(e){b.disabled=false;banner('Could not stop: '+e.message)}}
+// How to start it again, as the offline banner says it: the icon on an install, the command on a test copy (#50)
+function restartSaid(){return (MSG.server_offline&&MSG.server_offline.fix)||'To start again, double-click the Open Loops icon.'}
+$('#quit_again').textContent=restartSaid();
+setupEmbed();$('#allow_dlg').addEventListener('close',()=>{const a=ALLOW;ALLOW=null;clearInterval(allowT);if(a){allowForget(a);allowFocus(a.step)}});   // a (not allowClose's): Escape
 cfgRestore();
+// the to-do file example, as a path on this computer looks; and a name for the AI picker, which has no <label> of its own
+$('#cfg_standing').placeholder=/Win/.test(navigator.platform)?'C:\\Users\\you\\Documents\\to-do.md':/Mac/.test(navigator.platform)?'/Users/you/Documents/to-do.md':'/home/you/Documents/to-do.md';
+$('#cfg_agent').setAttribute('aria-label','Your AI');
 clog('page opened '+location.host+' · page '+PAGE);conPaint();
-(async()=>{try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm()}catch(e){banner('Could not start: '+e.message)}loop()})();
+// Busy saving at the first load (#66 review): no banner; try the first load again once, then the poll loop carries on.
+// Any other failure counts as offline, as in loop() (#67), so whatever answers next, busy included, clears its banner.
+async function pageStart(){for(let i=0;i<2;i++){try{await loadCfg();await loadState();await doctor(false);await loadDaylog();await loadRm();break}
+ catch(e){if(!appBusy(e)){offline=true;appDown(e);break}}}loop()}
+pageStart();
 </script></body></html>

@@ -3,23 +3,31 @@
     python3 -m openloops.refresh                # full: Slack + Gmail, both cursors advance
     python3 -m openloops.refresh --slack-only   # quick mid-day pass: Slack tools only
 
-Reads state.json, asks the agent to (a) find new asks the owner made since the cursor,
+Reads state.json, asks the agent to (a) find new asks the owner made since the cursor, and asks
+made OF the owner (Gmail inbox on a full run; Slack DMs and @-mentions whenever Slack is on),
 (b) re-check every open loop for a reply from its owner, and merges the JSON it returns
 back into state.json. Never sends anything.
 
 Two cursors. A slack-only run advances only `slack_cursor`; the full run advances both. If the
 quick pass moved the shared cursor, every email ask made between two Slack runs would be skipped
-forever by the next full refresh.
+forever by the next full refresh. Gmail reads from `gmail_cursor` (falling back to the shared `cursor`),
+which, like `slack_cursor`, moves only when Gmail was searched: a run without Gmail (Codex on a ChatGPT
+account with no Gmail connector, or a run reporting "gmail_available": false) leaves it where it was.
 
 The final write goes through store.update_state, so anything the page changed while the agent
 was running (a note, a snooze, a done click) is kept.
+
+Every cursor read from state.json goes through parse_when() (#51): a naive value (a hand-edited state.json, a very
+early build) is local time, so a refresh never stops on a TypeError comparing naive and aware times. A stored cursor
+that is not a date at all stops the refresh with a plain sentence (messages.py "cursor_unreadable") before anything is
+read: guessing a window would bring back loops closed long ago as new ones (#52 review).
 """
 import json, re, sys
 from datetime import datetime, timedelta
 
-from . import agent
+from . import agent, messages
 from .paths import ROOT
-from .store import load_cfg, load_state, update_state
+from .store import load_cfg, load_state, scheduled_skip, update_state
 LOG = ROOT / "state" / "logs"
 LOG.mkdir(parents=True, exist_ok=True)
 CFG = load_cfg()
@@ -33,8 +41,8 @@ SLACK_TOOLS = ["slack.read_channel", "slack.read_thread", "slack.search_public_a
 
 PROMPT = """UNATTENDED RUN - nobody can answer questions. Do not ask any. Output only what is requested.
 
-{mode_note}You maintain {name}'s "open loops": requests they made to a named person that have not yet
-been actioned.{slack_note} Today is {today}.
+{mode_note}You maintain {name}'s "open loops": requests they made to a named person, and requests people
+made of them, that have not yet been actioned.{slack_note} Today is {today}.
 
 ## Existing open loops (JSON)
 {loops}
@@ -69,31 +77,114 @@ been actioned.{slack_note} Today is {today}.
    a "links" array; omit it when there is nothing.
 
 ## Output
-Reply with ONLY a JSON object between the markers, nothing else:
+Reply with ONLY a JSON object between the markers, nothing else ("slack_available": false if the Slack searches failed):
 <<<OPENLOOPS>>>
 {{
   "new_loops": [{{"id": "<owner-slug>-<topic-slug>", "owner": "...", "owner_email": "... or null",
-                  "ask": "one line", "channel": "slack|email", "thread": "DM <name> <channel id> | #channel | email subject",
-                  "link": "slack://channel?team=&id=<id> or gmail search url", "asked_at": "ISO datetime",
+                  "owner_id": "Slack user id of the owner, or null", "ask_ts": "Slack ts of the asking message, or null",
+                  "ask": "one line", "channel": "slack|email", "thread": "DM <name> <channel id> <ask ts> | #<channel> <channel id> <thread ts> <ask ts> | email subject",
+                  "link": "Slack message permalink (required for Slack) or gmail search url", "asked_at": "ISO datetime",
                   "status": "waiting, or needs_me for inbound", "inbound": false, "notes": "",
                   "priority": "high|normal|low", "theme": "2-4 words",
                   "links": [{{"url": "https://...", "label": "short label"}}]}}],
   "updates": [{{"id": "<existing id>", "status": "waiting|needs_me|done", "last_reply_at": "ISO or null",
-                "reply_snippet": "<=120 chars", "asked_at": "ISO (only if a new ask by {name})",
+                "reply_snippet": "<=120 chars", "reply_ts": "Slack ts of that reply, or null", "reply_link": "Slack permalink of that reply (required for Slack)", "asked_at": "ISO (only if a new ask by {name})",
                 "priority": "high|normal|low (only if it changed)", "theme": "2-4 words (only if missing)",
                 "links": [{{"url": "https://...", "label": "short label"}}]}}],
-  "gmail_available": true
+  "gmail_available": true, "slack_available": true
 }}
 <<<END>>>
 """
 
 
 PRIORITIES = ("high", "normal", "low")
+SLACK_CID = re.compile(r"\b([CDG][A-Z0-9]{8,})\b")   # Slack conversation id: C channel, D DM, G group
+SLACK_TS = re.compile(r"\b(\d{10}\.\d{6})\b")        # Slack message / thread timestamp
 
 
 def from_mail(l):
     # typed reminders (channel "note") and vault items stay until the owner marks them done
     return not l.get("manual") and l.get("channel") not in ("note", "vault")
+
+
+def words(v):
+    return " ".join(str(v or "").lower().split())
+
+
+def slack_conv(l):
+    """The Slack conversation a loop lives in: the DM / channel / group id in `thread` (a message ts is
+    unique within one), else the thread text. None when there is no thread to go on."""
+    t = str(l.get("thread") or "")
+    cid = SLACK_CID.search(t)
+    return cid.group(1) if cid else (words(t) or None)
+
+
+def ask_ts(l):
+    """The ts of the message that asked: `ask_ts`, else the last ts in `thread`, else None."""
+    v = str(l.get("ask_ts") or "").strip()
+    if SLACK_TS.fullmatch(v):
+        return v
+    ts = SLACK_TS.findall(str(l.get("thread") or ""))
+    return ts[-1] if ts else None
+
+
+def sent_before_close(ts, iso):
+    """Whether Slack ts `ts` is no later than ISO `closed_at` (a naive one is local time). A missing or
+    malformed date is not evidence: False."""
+    try:
+        return datetime.fromtimestamp(float(ts)).astimezone() <= datetime.fromisoformat(str(iso)).astimezone()
+    except (TypeError, ValueError):
+        return False
+
+
+def link(l, key="link"):
+    """A permalink for comparison: no query string, fragment or trailing slash (the path keeps the p<ts>)."""
+    return re.split(r"[?#]", str(l.get(key) or "").strip(), maxsplit=1)[0].rstrip("/")
+
+
+# Principle: a missing ts or permalink is never proof that two messages are the same. With no evidence
+# the candidate becomes its own loop - a duplicate row the owner can press done on beats an ask that
+# silently never shows.
+def known_ask(c, loops):
+    """Whether Slack inbound candidate c is an ask already on the list. Evidence, strongest first:
+    - both have a ts: the same ts is the same message, open or closed (the agent may re-report a closed
+      one); a different ts is a different message, whatever the wording;
+    - the same permalink (it embeds the message ts): the same message; a loop with no ts takes c's ts -
+      unless it is closed and c was not provably sent before it closed;
+    Anything else - including the same asker and wording with no ts or permalink on either side - is a
+    new loop."""
+    conv, ts, lk = slack_conv(c), ask_ts(c), link(c)
+    for l in loops:
+        if slack_conv(l) != conv:
+            continue
+        lts, llk = ask_ts(l), link(l)
+        if ts and lts:
+            if ts == lts:
+                return True
+            continue
+        if lk and llk:
+            if lk != llk:
+                continue
+            if l.get("status") == "done" and not (ts and sent_before_close(ts, l.get("closed_at"))):
+                continue
+            if ts:
+                l["ask_ts"] = ts
+            return True
+    return False
+
+
+def reply_seen(c, replies):
+    """Whether Slack inbound candidate c is the very reply this run already reported on one of the owner's
+    loops (loop, update): the reply's ts is c's ask ts, or the reply's permalink is c's permalink. Wording
+    is not evidence; a reply reported with neither says nothing about c."""
+    conv, ts, lk = slack_conv(c), ask_ts(c), link(c)
+    for l, u in replies:
+        if slack_conv(l) != conv:
+            continue
+        rts = str(u.get("reply_ts") or "").strip()
+        if (ts and SLACK_TS.fullmatch(rts) and ts == rts) or (lk and lk == link(u, "reply_link")):
+            return True
+    return False
 
 
 def in_scope(l, slack_only, recent):
@@ -105,39 +196,92 @@ def in_scope(l, slack_only, recent):
         l["status"] == "done" and (l.get("closed_at") or "") >= recent)
 
 
+def history_days():
+    """Settings > History (config.json "history_days"), 1..365, 30 when unset or not a number (as app.history_days)."""
+    try:
+        return max(1, min(int(CFG.get("history_days") or 30), 365))
+    except (TypeError, ValueError):
+        return 30
+
+
+class CursorUnreadable(ValueError):
+    """A cursor is stored in state.json but is not a date: main() refuses the refresh (messages "cursor_unreadable")."""
+
+
+def parse_when(v, now=None, days=None):
+    """A cursor or last_refresh from state.json -> an aware datetime (#51).
+    - aware ISO ("2026-09-01T09:00+01:00"): as it is;
+    - naive ISO ("2026-09-01T09:00", a hand-edited or very old state.json): local time, like the rest of the app;
+    - missing (None or ""): a state.json with no cursor yet, as a fresh install without the installer's: now minus
+      Settings > History, the first scan's window;
+    - anything else: raises CursorUnreadable. Never a guessed window (#52 review: it re-found loops closed long ago)."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return (now or datetime.now().astimezone()) - timedelta(days=history_days() if days is None else days)
+    try:
+        d = datetime.fromisoformat(str(v).strip())
+    except (TypeError, ValueError):
+        raise CursorUnreadable(repr(v)[:80]) from None
+    return d if d.tzinfo is not None else d.astimezone()   # astimezone() on a naive value takes it as local time
+
+
+def when_str(d):
+    """An aware datetime as the cursors are written: minutes, with its offset (2026-09-01T09:00+01:00)."""
+    return d.isoformat(timespec="minutes")
+
+
 def build_prompt(s, slack_only, slack_on):
     recent = (datetime.now() - timedelta(days=5)).isoformat()
     open_loops = [l for l in s["loops"] if in_scope(l, slack_only, recent)]
-    slack_since = s.get("slack_cursor") or s["cursor"]
-    slack_date = (datetime.fromisoformat(slack_since) - timedelta(days=1)).date().isoformat()
-    gmail_date = (datetime.fromisoformat(s["cursor"]) - timedelta(days=1)).date().isoformat()
+    # every cursor through parse_when (#51): naive or unreadable values never reach a comparison with an aware one
+    slack_when = parse_when(s.get("slack_cursor") or s.get("cursor"))
+    gmail_when = parse_when(s.get("gmail_cursor") or s.get("cursor"))
+    slack_since = when_str(slack_when)
+    slack_date = (slack_when - timedelta(days=1)).date().isoformat()
+    gmail_date = (gmail_when - timedelta(days=1)).date().isoformat()
     name = CFG.get("owner_name") or "the owner"
     sources = []
     if slack_on:
         sources.append(f'   - Slack (if the Slack tools are available): slack_search_public_and_private query "from:<@{SELF_ID}> after:{slack_date}" sort=timestamp, paginate until you pass the cursor.')
     if not slack_only:
         sources.append(f'   - Gmail (if the Gmail tools are available): search_threads query "in:sent after:{gmail_date.replace("-", "/")}".')
-    inbound = "" if slack_only else (
-        "1b. ASKS OF {n} (inbound). Gmail (if available): search_threads query "
-        '"in:inbox after:{g} -category:promotions -category:social". Keep only mail from real people '
-        "(not newsletters, marketing, notifications, receipts, no-reply) where the thread's LATEST message "
-        "asks {n} for a specific action or answer and {n} has not replied since. These become new loops with "
-        '"status": "needs_me" and "inbound": true - owner is the person asking; ask = one line on what they '
-        "need from {n}. The same exclusions and duplicate rule apply.").format(n=name, g=gmail_date.replace("-", "/"))
+    # 1b. asks OF the owner: Gmail inbox on a full run, Slack DMs + @-mentions whenever Slack is on (so a
+    # slack-only pass has them too, from slack_cursor). One shared closing sentence keeps the JSON the same.
+    inbound = []
+    if not slack_only:
+        inbound.append(
+            '   - Gmail (if available): search_threads query '
+            '"in:inbox after:{g} -category:promotions -category:social". Keep only mail from real people '
+            "(not newsletters, marketing, notifications, receipts, no-reply) where the thread's LATEST message "
+            "asks {n} for a specific action or answer and {n} has not replied since.".format(n=name, g=gmail_date.replace("-", "/")))
+    if slack_on:
+        inbound.append(
+            '   - Slack (if the Slack tools are available): slack_search_public_and_private queries '
+            '"to:<@{u}> after:{d}" (DMs) and "<@{u}> after:{d}" (@-mentions), sort=timestamp, paginate until '
+            "you pass the cursor. Read each DM/thread; first ignore bots, apps, workflows, joins, reminders, "
+            "reactions and {n}'s own messages, then keep each message from someone else that asks {n} for a "
+            "specific action or answer and that {n} has not answered since (a later message from someone else "
+            "does not cancel it). Slack loops: channel \"slack\", "
+            'thread "DM <asker> <DM channel id> <ask ts>" or "#<channel> <channel id> <thread ts> <ask ts>" '
+            "(<ask ts> = the ts of the message that asks), link = that message's permalink (required). Several asks in one "
+            "DM/thread are separate loops; a message you report as a reply in updates is not also a new loop."
+            .format(n=name, u=SELF_ID, d=slack_date))
+    inbound = ("1b. ASKS OF {n} (inbound). Search what others sent {n}:\n{parts}\n   These become new loops with "
+               '"status": "needs_me" and "inbound": true - owner is the person asking; ask = one line on what they '
+               "need from {n}. The same exclusions (excluded people as askers too) and duplicate rule apply.").format(n=name, parts="\n".join(inbound)) if inbound else ""
     prompt = PROMPT.format(
         name=name,
-        mode_note=("SLACK-ONLY RUN: you have no Gmail tools. Ignore email entirely - do not report email loops.\n\n"
-                   if slack_only else ""),
+        mode_note=("SLACK-ONLY RUN: you have no Gmail tools. Ignore email entirely - do not report email loops. "
+                   f"Slack asks both ways (by {name} and of {name}) are in scope.\n\n" if slack_only else ""),
         inbound=inbound,
         slack_note=f" {name}'s Slack user id is <@{SELF_ID}>." if slack_on else "",
         sources="\n".join(sources),
         thread_howto=("Slack: read the DM/channel with the id in `thread`" if slack_only else
                       "Slack: read the DM/channel with the id in `thread`; Gmail: search the subject in `thread`"),
         today=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        loops=json.dumps([{k: l[k] for k in ("id", "owner", "ask", "channel", "thread", "asked_at", "status", "closed_at", "priority", "priority_by", "theme") if k in l} for l in open_loops], indent=1, ensure_ascii=False),
-        # headline cursor: the older of the two in a full run, or email asks made since the last
-        # slack-only pass would look "too old" to the model
-        since=slack_since if slack_only else s["cursor"],
+        loops=json.dumps([{k: l[k] for k in ("id", "owner", "ask", "channel", "thread", "asked_at", "status", "closed_at", "inbound", "priority", "priority_by", "theme") if k in l} for l in open_loops], indent=1, ensure_ascii=False),
+        # headline cursor: the OLDEST cut-off among the sources this run searches, so it never contradicts their own
+        # after: dates (a Gmail cursor held back while Gmail was not connected is older than the shared one)
+        since=slack_since if slack_only else when_str(min([gmail_when] + ([slack_when] if slack_on else []))),
         exclude_people=", ".join(CFG.get("exclude_people", [])) or "none",
         exclude_topics="; ".join(CFG.get("exclude_topics", [])) or "none",
     )
@@ -160,18 +304,18 @@ def merge_links(loop, links):
         seen.add(url)
 
 
-def apply(s, out, slack_only, now):
-    """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated)."""
+def apply(s, out, slack_only, now, slack_on=True, gmail_on=True):
+    """Merge the agent's JSON into a (fresh) state dict. Pure; returns (n_new, n_updated).
+    slack_on: whether this run searched Slack at all (a full run with Slack off did not); an agent
+    that reports "slack_available": false (the searches failed) leaves the Slack cursor where it was.
+    gmail_on / "gmail_available": the same for Gmail and gmail_cursor."""
     by_id = {l["id"]: l for l in s["loops"]}
     n_new = n_upd = 0
-    for nl in out.get("new_loops", []) or []:
-        nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
-        if not nl["id"] or nl["id"] in by_id:
-            continue
-        if slack_only and nl.get("channel") != "slack":
-            continue  # belt and braces: the prompt says no email, the merge enforces it
+
+    def add(nl):
+        nonlocal n_new
         links = nl.pop("links", None)
-        nl.setdefault("status", "waiting")
+        nl.setdefault("status", "needs_me" if nl.get("inbound") else "waiting")
         nl["priority"] = nl.get("priority") if nl.get("priority") in PRIORITIES else "normal"
         nl["priority_by"] = "ai"
         nl["theme"] = str(nl.get("theme") or "")[:40]
@@ -180,10 +324,10 @@ def apply(s, out, slack_only, now):
         s["loops"].append(nl)
         by_id[nl["id"]] = nl
         n_new += 1
-    for u in out.get("updates", []) or []:
-        l = by_id.get(u.get("id"))
-        if not l:
-            continue
+
+    def update(l, u):
+        nonlocal n_upd
+        was = l.get("status")
         for k in ("status", "last_reply_at", "reply_snippet", "asked_at"):
             if u.get(k):
                 l[k] = u[k]
@@ -195,41 +339,107 @@ def apply(s, out, slack_only, now):
         if l["status"] == "needs_me":
             l["snooze_until"] = None
             l.pop("closed_at", None)
+        elif l["status"] == "done" and was != "done":
+            l["closed_at"] = now
         n_upd += 1
+
+    # 1. new loops, except Slack asks of the owner (those wait until the list is settled)
+    slack_in = []
+    for nl in out.get("new_loops", []) or []:
+        nl["id"] = re.sub(r"[^a-z0-9._-]+", "-", str(nl.get("id") or "").lower()).strip("-")[:80]  # ids land in markup and CSS selectors: slugs only
+        if not nl["id"]:
+            continue
+        if slack_only and nl.get("channel") != "slack":
+            continue  # belt and braces: the prompt says no email, the merge enforces it
+        if nl.get("inbound") and nl.get("channel") == "slack" and slack_conv(nl):
+            slack_in.append(nl)   # a taken id is settled in step 3, by evidence
+        elif nl["id"] not in by_id:
+            add(nl)
+    # 2. updates (to loops that exist now; any to a Slack ask added below are applied after it)
+    later, replies = [], []
+    for u in out.get("updates", []) or []:
+        l = by_id.get(u.get("id"))
+        if not l:
+            later.append(u)
+            continue
+        update(l, u)
+        if l["status"] == "needs_me" and l.get("channel") == "slack" and u.get("status") == "needs_me":
+            replies.append((l, u))   # a reply reported on one of the owner's loops, created this run or before
+    # 3. Slack asks of the owner, against the settled list: a known ask (by message ts first; see known_ask)
+    # or a reply already reported in step 2 is not a second Needs me row
+    for nl in slack_in:
+        inbound = [l for l in s["loops"] if l.get("inbound") and l.get("channel") == "slack"]
+        if known_ask(nl, inbound) or reply_seen(nl, replies):
+            continue
+        if ask_ts(nl):
+            nl["ask_ts"] = ask_ts(nl)
+        # not the same message, but the agent reused an id (two asks can slug alike): -2, -3 ...
+        base_id, k = nl["id"][:77], 2
+        while nl["id"] in by_id:
+            nl["id"], k = f"{base_id}-{k}", k + 1
+        add(nl)
+    for u in later:
+        if u.get("id") in by_id:
+            update(by_id[u["id"]], u)
+    searched = slack_on and str(out.get("slack_available", True)).lower() == "true"   # missing -> trust the run, as before; "false"/junk -> not searched
     if slack_only:
-        s["slack_cursor"] = now
-        s["last_slack_refresh"] = now
+        if searched:
+            s["slack_cursor"] = now
+            s["last_slack_refresh"] = now
     else:
+        # Slack's cursor moves only when Slack was searched; with Slack off (or failing) it stays where Slack
+        # coverage stopped (first time: the old shared cursor), so the next working run catches up from there
+        s["slack_cursor"] = now if searched else (s.get("slack_cursor") or s.get("cursor"))
+        # Gmail likewise: its cursor moves only when Gmail was searched (missing flag -> trust the run, as for Slack)
+        mailed = gmail_on and str(out.get("gmail_available", True)).lower() == "true"
+        s["gmail_cursor"] = now if mailed else (s.get("gmail_cursor") or s.get("cursor"))
         s["cursor"] = now
-        s["slack_cursor"] = now
         s["last_refresh"] = now
-        s["gmail_available"] = bool(out.get("gmail_available"))
+        s["gmail_available"] = bool(out.get("gmail_available")) and gmail_on
     return n_new, n_upd
 
 
 def main():
+    # not started by the app (the weekday task): nothing is read before Start the first scan, or on an isolated copy
+    skip = scheduled_skip()
+    if skip:
+        print("SKIPPED: " + messages.say("scheduled_isolated" if skip == "isolated" else "scheduled_later")); sys.exit(2)
     slack_on = bool(SELF_ID) and agent.slack_enabled()
     if SLACK_ONLY and not slack_on:
         print("SKIPPED: Slack is off or your Slack id is not known yet - run a full Refresh"); sys.exit(2)
     s = load_state()
-    prompt, n_open = build_prompt(s, SLACK_ONLY, slack_on)
+    try:
+        prompt, n_open = build_prompt(s, SLACK_ONLY, slack_on)
+    except CursorUnreadable as e:   # nothing is read: the person decides (Start over, or mend state.json)
+        print(messages.say("cursor_unreadable"))
+        print(f"(unreadable cursor in state.json: {e})", file=sys.stderr)
+        messages.report_refusal("refresh", "cursor_unreadable")
+        sys.exit(1)
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     kind = "refresh-slack" if SLACK_ONLY else "refresh"
-    print(f"[{stamp}] {kind}: {n_open} open loops, cursor {s.get('slack_cursor') or s['cursor'] if SLACK_ONLY else s['cursor']}")
+    print(f"[{stamp}] {kind}: {n_open} open loops, cursor {s.get('slack_cursor') or s.get('cursor') if SLACK_ONLY else s.get('cursor')}")
     tools = SLACK_TOOLS if SLACK_ONLY else (SLACK_TOOLS if slack_on else []) + GMAIL_TOOLS
+    # the new cursor is taken BEFORE the agent searches: anything that lands while it runs is after it
+    now = datetime.now().astimezone().isoformat(timespec="minutes")
     p = agent.run(prompt, tools)
     (LOG / f"{kind}-{stamp}.log").write_text(p.stdout + "\n--- stderr ---\n" + p.stderr, encoding="utf-8")
+    if getattr(p, "refused", "") == "nosources":  # Codex: neither source is connected in the ChatGPT account
+        print("SKIPPED: " + p.stdout.strip()); sys.exit(2)
+    # Codex drops a source that is not connected in the ChatGPT account; that source's cursor must not move
+    dropped = set(getattr(p, "dropped", []) or [])
     # some agents drop the markers and emit bare JSON - accept that too
     m = re.search(r"<<<OPENLOOPS>>>(.*?)<<<END>>>", p.stdout, re.S) or re.search(r'(\{\s*"new_loops"\s*:.*\})', p.stdout, re.S)
     if not m:
         print("!! no OPENLOOPS block in output (rc %s). See log." % p.returncode)
         print(p.stdout[-1500:])
+        messages.report(p, "refresh")   # this run's failure file (state/jobs/): why the AI failed, if its stderr says (app.py reads only that)
         sys.exit(1)
     out = json.loads(m.group(1))
-    now = datetime.now().astimezone().isoformat(timespec="minutes")
     counts = {}
     # re-read state.json at write time: the page may have added notes or snoozes meanwhile
-    s = update_state(lambda fresh: counts.update(zip(("new", "upd"), apply(fresh, out, SLACK_ONLY, now))))
+    s = update_state(lambda fresh: counts.update(zip(("new", "upd"), apply(fresh, out, SLACK_ONLY, now,
+                                                                           slack_on and "slack" not in dropped,
+                                                                           "gmail" not in dropped))))
     gm = "" if SLACK_ONLY else f", gmail={'yes' if s.get('gmail_available') else 'NO'}"
     print(f"done: {counts['new']} new, {counts['upd']} updated{gm}")
 

@@ -3,29 +3,89 @@
     python3 -m openloops.app            -> http://localhost:8765
                                            (or the next free port if 8765 is taken; OPENLOOPS_PORT overrides)
 """
-import json, re, shlex, socket, subprocess, sys, threading, time, webbrowser
-from datetime import date, datetime
+import itertools, json, re, shlex, shutil, socket, subprocess, sys, threading, time, uuid, webbrowser
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import messages
 from .paths import PKG, ROOT
-from .store import load_cfg, norm_date, read_json, write_json
+from .store import LockTimeout, _locked, isolated, load_cfg, norm_date, read_json, update_json, write_json
+
+# ---- the command line (#64): checked before anything below runs, so `--help` or a typo writes, checks and opens
+# nothing. Everything this module does at import (config.json / state.json created, the port read from config.json)
+# comes after this check; the imports above only define things. Keep HELP in step with the flags read below
+# (_port_arg, --stop, --now, --no-browser): tests/test_app_help.py checks that each one has a row.
+_PY = "python" if sys.platform == "win32" else "python3"
+USAGE = f"usage: {_PY} -m openloops.app [options]"
+HELP = """
+Options:
+  --port N        the port to answer on (default 8765, or this copy's own)
+  --no-browser    start without opening the page in your browser
+  --stop          ask the Open Loops already running to quit
+  --now           with --stop: stop a running scan too, not wait for it
+  -h, --help      show this list and start nothing
+"""
+
+
+def check_args(argv):
+    """The app's options, read before it does anything: -> None to carry on. `-h` / `--help` prints the list and exits 0;
+    an option it does not know, or `--port` without a number, prints one line saying which plus the usage line on
+    stderr and exits 1 (it used to be ignored and the app started, opening the browser)."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(USAGE + "\n" + HELP.rstrip("\n"))
+            sys.exit(0)
+        if a in ("--no-browser", "--stop", "--now"):
+            i += 1
+            continue
+        if a == "--port" or a.startswith("--port="):
+            val = a.split("=", 1)[1] if "=" in a else (argv[i + 1] if i + 1 < len(argv) else "")
+            # ASCII digits only: str.isdigit() also passes "²", which int() cannot read (review of #66); and a port
+            # the app can listen on, as config.json's "port" is checked
+            if not (re.fullmatch(r"[0-9]{1,5}", val) and 1024 <= int(val) <= 65535):
+                _bad_option("--port needs a number from 1024 to 65535, for example: --port 8790")
+            i += 1 if "=" in a else 2
+            continue
+        _bad_option(f"unknown option: {a}")
+
+
+def _bad_option(line):
+    """One line saying what was wrong, the usage line, where to look; exit 1 before anything is read or started."""
+    print(f"  {line}\n  {USAGE}\n  ({_PY} -m openloops.app --help lists what each option does)", file=sys.stderr)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    check_args(sys.argv[1:])
 STATE = ROOT / "state.json"
 INDEX = PKG / "index.html"
 CONFIG = ROOT / "config.json"
 VOICEF = ROOT / "voice.json"
-EDITABLE = ("agent", "model", "effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
+EDITABLE = ("first_scan", "agent", "model", "effort", "codex_model", "codex_effort", "use_slack", "history_days", "owner_name", "chase_external_email", "send_internal", "send_external", "internal_domains", "auto_chase", "tone", "people", "exclude_people", "exclude_topics", "voice_sample_people", "escalation", "vault_path", "standing_file", "pinned_links", "slack_source", "miro_source", "roadmap_board", "roadmap_frame")
 import os
 def _port_arg():
-    """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats 8765. `npm run dev` uses 8766 so a checkout never
-    collides with, or is mistaken for, the installed copy on 8765."""
+    """`--port N` (or `--port=N`) beats OPENLOOPS_PORT beats config.json "port" beats 8765. `npm run dev` uses 8766
+    so a checkout never collides with, or is mistaken for, the installed copy on 8765; a test install
+    (`install.sh --dest … --port 8790`) keeps its port in its own config.json so every launch uses it.
+    An OPENLOOPS_PORT the app could never listen on (99999, "abc") counts as unset and the next source is used, as a
+    hand-edited config.json "port" is treated (review of #70); --port is checked by check_args before this runs."""
     a = sys.argv
     for i, x in enumerate(a):
         if x.startswith("--port="):
             return int(x.split("=", 1)[1])
         if x == "--port" and i + 1 < len(a):
             return int(a[i + 1])
-    return int(os.environ.get("OPENLOOPS_PORT", "8765"))
+    env_port = os.environ.get("OPENLOOPS_PORT", "")
+    if re.fullmatch(r"[0-9]{1,5}", env_port) and 1024 <= int(env_port) <= 65535:  # ASCII digits, a port it can listen on
+        return int(env_port)
+    try:
+        p = int(load_cfg().get("port") or 8765)
+    except (TypeError, ValueError):  # a hand-edited "port": "abc" falls back to the default rather than not starting
+        return 8765
+    return p if 1024 <= p <= 65535 else 8765  # so does one the app could never listen on
 
 
 PREFERRED = _port_arg()
@@ -42,6 +102,9 @@ last_seen = time.time()
 pages = {}
 bye_at = 0.0
 STARTED = datetime.now().isoformat(timespec="seconds")
+# This server's identity, new at every start: job "seq" numbers count from 1 again after a restart, so the page
+# names a job end by (INSTANCE, seq) and forgets what it had seen when this changes (#49 review)
+INSTANCE = uuid.uuid4().hex
 quit_requested = False
 quit_now = False  # `--stop --now`: do not wait for a running job, cut it short
 PAGE_GRACE_S = 4
@@ -75,6 +138,9 @@ if not STATE.exists():
 (ROOT / "state" / "logs").mkdir(parents=True, exist_ok=True)
 
 doctor_cache = {"at": 0, "result": None}
+# Bumped whenever the answer may have changed under a check already running (a setup step finished, Start over):
+# such a check still answers its caller but is never cached, so it cannot bring back a row the user just fixed.
+doctor_gen = {"n": 0}
 JOB_MOD = {"refresh": "refresh", "chase": "chase", "voice": "voice", "people": "people", "standing": "close_standing",
            "daylog": "daylog", "roadmap": "roadmap"}
 jobs = {k: {"running": False, "log": ""} for k in JOB_MOD}
@@ -87,6 +153,13 @@ def load():
 
 def save(s):
     write_json(STATE, s)
+
+
+def state_lock():
+    """The lock every state.json read-modify-write holds (store.update_state for the jobs, update_json for Forget
+    where I was): a click saved here can no longer write back a copy read before a cursor repair or a refresh's
+    write, undoing it (review of #59). Held only around the file work, never around a job start or an AI run."""
+    return _locked(STATE)
 
 
 def kill_tree(p):
@@ -105,30 +178,764 @@ def kill_tree(p):
         pass  # already gone, or never ours: nothing left to stop
 
 
+def _ai_now():
+    """The AI chosen now, by name for a sentence ("Claude"); read when a job STARTS, so a switch in Settings while it
+    runs never blames the other AI (#25 review)."""
+    from . import agent
+    try:
+        return agent.display_name()
+    except Exception:  # an unreadable config.json must not lose the job's result
+        return "Claude"
+
+
+finished_seq = itertools.count(1)   # every job end, of any job, takes the next number: see _ended
+
+
+def _ended(name, rc, log, ai="Claude", failure=None):
+    """A finished job's entry in `jobs`. A failure (not 0, not 2 = SKIPPED) also carries "failure" (a messages.py id)
+    and "said", the plain sentence the page shows (#25), from the job's own state/jobs/<job>.failure.json only; the log
+    itself stays for the Console and Settings.
+    "seq" goes up by one with every job that ends, in this server's life, and "finished_at" says when (#49): the page
+    notices an end by a seq it has not seen, so a job that starts and fails between two of its polls is not missed."""
+    j = {"running": False, "log": log, "rc": rc, "seq": next(finished_seq),
+         "finished_at": datetime.now().isoformat(timespec="seconds")}
+    if rc not in (0, 2):
+        j["failure"], j["said"] = messages.job_failure(name, rc, log, ai=ai, failure=failure)
+    return j
+
+
+jobs_lock = threading.Lock()  # two requests at once (two tabs, a double click) must still start one run
+# Jobs claimed but whose process is not registered in procs yet. The reaper never shuts the server down while one is
+# here, and a "Quit now" that lands in that gap sets cut_jobs, which run_job checks when it registers the process: the
+# process is stopped then, so a job cannot outlive the server that started it.
+starting = set()
+cut_jobs = False
+
+
+def _run_failure(name, run_id, rc):
+    """This run's own failure record (messages.report), or None: missing, unreadable, or naming another run. The file
+    is deleted once read; a file that will not go is reported in the job's log -> (record or None, note for the log)."""
+    ff, rec, note = messages.failure_file(name, run_id), None, ""
+    if rc not in (0, 2):
+        try:
+            got = json.loads(ff.read_text(encoding="utf-8"))
+            rec = got if isinstance(got, dict) and got.get("run_id") == run_id else None
+        except (OSError, ValueError):
+            rec = None
+    try:
+        ff.unlink(missing_ok=True)
+    except OSError as e:
+        note = f"\n(could not remove {ff.name}: {type(e).__name__}: {e})"
+    return rec, note
+
+
 def run_job(name, extra=None):
-    if jobs[name]["running"]:
-        return False
+    with jobs_lock:  # claimed before the process starts: a second start in the meantime sees "running" and does nothing
+        if jobs[name]["running"] or quit_requested:  # nothing new starts once Open Loops is closing
+            return False
+        jobs[name] = {"running": True, "log": ""}
+        starting.add(name)
     args = [sys.executable, "-m", f"openloops.{JOB_MOD[name]}", *(extra or [])]
+    # what the failure sentence calls this run: the button pressed (Update Slack is "The Slack update", #50)
+    said_as = "refresh_slack" if name == "refresh" and "--slack-only" in (extra or []) else name
+    ai = _ai_now()  # the AI this run uses, for its sentence if it fails; the job gets the same name (OPENLOOPS_AI)
     try:  # started here, not in the thread: a job the page sees as running always has a process /api/quit can stop
-        p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        run_id = uuid.uuid4().hex  # the job writes its failure record under this id, and only that file is read back
+        env = dict(os.environ, OPENLOOPS_RUN_ID=run_id, OPENLOOPS_AI=ai)
+        p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
                              encoding="utf-8", errors="replace", start_new_session=sys.platform != "win32")
     except Exception as e:  # no interpreter, no permission: say so in the job log rather than hang as "running"
-        jobs[name] = {"running": False, "log": f"could not start {name}: {type(e).__name__}: {e}", "rc": -1}
+        with jobs_lock:
+            starting.discard(name)
+            jobs[name] = _ended(said_as, -1, f"could not start {name}: {type(e).__name__}: {e}", ai)
         return False
-    procs[name] = p
-    jobs[name] = {"running": True, "log": ""}
+    with jobs_lock:  # registered under the lock the quit takes: a "Quit now" is either before this (cut_jobs) or sees p
+        procs[name] = p
+        starting.discard(name)
+        late = cut_jobs
+    if late:  # "Quit now" arrived while this process was starting: stop it too
+        kill_tree(p)
 
     def go():
         try:
             out, err = p.communicate()
-            jobs[name] = {"running": False, "log": (out + err)[-4000:], "rc": p.returncode}
+            failure, note = _run_failure(name, run_id, p.returncode)  # never read from the job's output
+            jobs[name] = _ended(said_as, p.returncode, ((out + err)[-4000:] + note), ai, failure)
         except Exception as e:
-            jobs[name] = {"running": False, "log": f"{name} broke off: {type(e).__name__}: {e}", "rc": -1}
+            jobs[name] = _ended(said_as, -1, f"{name} broke off: {type(e).__name__}: {e}", ai)
         finally:
             procs.pop(name, None)
 
     threading.Thread(target=go, daemon=True).start()
     return True
+
+
+# ---- Setup buttons: /api/connect/<step> runs agent.login_cmd(step) (Claude's sign-ins, Codex's `codex login`), opens
+# agent.connect_url(step) in the browser (Codex's Gmail / Slack: connected on ChatGPT's apps page), or, for "install",
+# runs the selected AI's installer (agent.install_cmd, any agent) in the background ----
+# Nothing here keeps a token: the Claude CLI stores whatever the sign-in gives it, as it does from a terminal.
+# The log (state/connect-<step>.log) holds what the CLI printed, minus the sign-in link's query, for the page and Console.
+CONNECT_TIMEOUT_S = 5 * 60  # a sign-in nobody finishes is stopped, so a later click can start afresh
+# an install downloads a few hundred MB: longer, but still not for ever (the tests shorten it)
+INSTALL_TIMEOUT_S = int(os.environ.get("OPENLOOPS_INSTALL_TIMEOUT_S") or 10 * 60)
+URL_RE = re.compile(r"https://[^\s\x1b\x07]+")
+# On disk a link keeps its address but not its query: that is where an authorisation request's state and
+# challenge live. The full link stays in memory only (connects[step]["url"]), for the page's fallback link.
+REDACT_RE = re.compile(r"(https://[^\s?\x1b\x07]+)\?[^\s\x1b\x07]+")
+ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\r")
+CONNECT_KEEP = 64000  # characters of a step's output its log keeps (the newest); a line longer than this is cut
+
+
+class SigninOutput:
+    """A setup step's output, fed in pieces of any size as it arrives -> the text for its log (every link without
+    its query) and the sign-in link once it has arrived whole. Pure Python over bytes and str: no files, no
+    processes, the same on every platform, so tests/test_connect_output.py runs it anywhere.
+
+    Review of #70: the Windows runner used to read only the last 64 KB of its output file on each poll, so a link
+    followed by more than that before the next poll was never seen, and the tail of its query could reach the log
+    with the https:// that the redaction looks for cut off. Now every byte is looked at once, in order:
+    - only whole lines are decoded, stripped of escape codes and redacted; the bytes after the last newline wait in
+      `carry` (memory only, never written) until the rest arrives, so a link, an escape code or a UTF-8 character
+      split between two reads is read whole;
+    - `kept` holds redacted text only, trimmed to its newest CONNECT_KEEP characters at a line break;
+    - a line with no end is not held for ever: past `limit` bytes it is cut at its last space (a link has none,
+      so a link is never split), or, with no space at all, dropped up to its newline (`skip`), so no part of it,
+      query included, is ever written without the start that would have got it redacted."""
+    NOTE = "(rest of the link not saved)"
+
+    def __init__(self, limit=CONNECT_KEEP):
+        self.limit, self.kept, self.carry, self.url, self.skip = limit, "", b"", "", False
+
+    @staticmethod
+    def redact(text):
+        return REDACT_RE.sub(r"\1?" + SigninOutput.NOTE, text)
+
+    @staticmethod
+    def _clean(raw):
+        # errors="replace": output that is not UTF-8 (a cp1252 console, say) still reads, a stray character aside;
+        # a sign-in link is ASCII, so it survives whatever the rest is in
+        return ANSI_RE.sub("", raw.decode("utf-8", "replace"))
+
+    def _look(self, text, whole):
+        """Note the first link in text if it is complete: followed by whitespace, or ending a whole line."""
+        u = None if self.url else URL_RE.search(text)
+        if u and (text[u.end():u.end() + 1].isspace() or (whole and u.end() == len(text))):
+            self.url = u.group(0)
+
+    def _take(self, raw, end):
+        """One whole line (or a piece cut at a space) -> kept, redacted."""
+        text = self._clean(raw)
+        self._look(text, True)
+        self.kept += self.redact(text) + end
+
+    def feed(self, chunk):
+        """The next bytes of output, as they came."""
+        data = self.carry + chunk
+        if self.skip:  # the rest of an over-long line with no space in it: dropped up to its newline
+            nl = data.find(b"\n")
+            if nl < 0:
+                self.carry = b""
+                return
+            data, self.skip = data[nl + 1:], False
+        *lines, self.carry = data.split(b"\n")
+        for ln in lines:
+            self._take(ln, "\n")
+        if len(self.carry) > self.limit:
+            cut = max(self.carry.rfind(b" "), self.carry.rfind(b"\t"))
+            if cut >= 0:
+                piece, self.carry = self.carry[:cut + 1], self.carry[cut + 1:]
+                self._take(piece, "")
+            else:
+                self.carry, self.skip = b"", True
+                self.kept += "(a very long line not saved)\n"
+        if len(self.kept) > self.limit:  # the newest lines; kept is redacted already, so any cut is safe
+            nl = self.kept.find("\n", len(self.kept) - self.limit)
+            self.kept = self.kept[nl + 1:] if nl >= 0 else self.kept[-self.limit:]
+        self._look(self._partial(), False)  # a link on the line still arriving counts once whitespace follows it
+
+    def _partial(self):
+        """The line still arriving, as text: an unfinished escape code at its end left out."""
+        return self._clean(self.carry).split("\x1b")[0]
+
+    def text(self):
+        """The log's text now: the kept lines, then the line still arriving, redacted like the rest."""
+        return self.kept + self.redact(self._partial())
+
+
+connects = {}  # step -> {"running", "rc", "url", "started", "agent", "run_id"}
+# run_id (#27): one id per run, uuid4 hex, returned by the POST that starts it and by every GET. It is what the page
+# keys a run on (a closed Allow pop-up is remembered for one run_id); "started" is for display only (to the second).
+connect_lock = threading.Lock()  # two clicks (two tabs) at once must still start one run
+connect_procs = {}  # step -> Popen of the command running now, so quitting the app stops it
+# Windows: step -> the raw output file (state/connect-<step>.out) of the command running now. It holds the sign-in
+# link with its query, so stop_connects() removes it too: the worker that would is a daemon thread, which dies with
+# the app before its own clean-up can run (review of #70).
+connect_outs = {}
+# #67: the sign-ins that wait in the browser, which the row's "Stop this sign-in" may stop. The installs (the AI's own
+# and the Slack plugin's) are left to finish: cut short they could leave a half-installed CLI, and they end by themselves.
+STOPPABLE = ("login", "slack", "gmail", "miro")
+
+
+def stop_connects():
+    """Quit or exit: stop every setup step still waiting (Windows: the hidden console it runs in too). quit_requested is set
+    first, and _launch checks it under the same lock, so a step about to start either is in this list or never starts."""
+    with connect_lock:
+        running = list(connect_procs.values())
+        outs = list(connect_outs.items())
+    for p in running:
+        kill_tree(p)
+    for step, out in outs:  # Windows only: the raw output files, once nothing holds them open
+        _drop_out(step, out)
+
+
+STOP_OPENING_WAIT_S = 2  # how long a Stop waits for a browser call already under way to return
+
+
+def stop_connect(step, run_id):
+    """#67: the row's "Stop this sign-in": stop that one step's run, the one the row shows (run_id) -> (why, record,
+    tab). tab: _tab_state once the bounded wait below is over (the API reads it again when it replies).
+    why: "stopped", "not running" (it had already ended) or "other run" (it ended and another run of the step started
+    since, perhaps in another tab: that one is never stopped for it). record: the run's own connects entry, so a caller
+    waiting for it to end watches that run, not whatever holds the step by then. The run is marked "stopped" under the
+    same lock _launch checks, so a run between two commands (or not yet started) starts nothing more; the command
+    running now is killed as stop_connects() does. The worker then ends the run as usual (running false, and the log
+    says why)."""
+    with connect_lock:
+        c = connects.get(step)
+        if not c or c.get("run_id") != run_id:
+            return ("other run" if c and c.get("running") else "not running"), c, "no"
+        if not c.get("running"):
+            return "not running", c, "no"
+        c["stopped"] = True  # under connect_lock: _link_found's last check sees it unless "opening" is already set
+        p = connect_procs.get(step)
+    if p is not None:
+        kill_tree(p)
+    end = time.time() + STOP_OPENING_WAIT_S  # a browser call under way: let it finish (bounded), so the reply is true
+    while c.get("opening") and time.time() < end:  # read without the lock; _link_found clears it under the lock
+        time.sleep(0.05)
+    return "stopped", c, _tab_state(c)
+
+
+def _tab_state(c):
+    """Whether a run's sign-in tab opened in the browser, as far as the app can know it now -> "yes" (the browser call
+    returned success: link_opened), "maybe" (the call is still under way: it may yet open a tab, or fail) or "no".
+    Fourth review of #70: read when the Stop's reply is built, never earlier, so a call that finishes (or fails)
+    during the reply's own wait is reported as it ended; only "yes" claims a tab."""
+    with connect_lock:
+        return "yes" if c.get("link_opened") else "maybe" if c.get("opening") else "no"
+
+
+def _launch(step, *args, **kw):
+    """Popen for a setup step, registered for stop_connects() in the same breath -> Popen, or None once quitting
+    (or once this step's run was stopped from its row, #67)."""
+    with connect_lock:
+        if quit_requested or (connects.get(step) or {}).get("stopped"):
+            return None
+        p = connect_procs[step] = subprocess.Popen(*args, **kw)
+        return p
+
+
+def _reap(step, p, secs, on_timeout=None):
+    """Wait for a setup step's process (killing it if it outstays secs) -> exit code, then stop tracking it.
+    Tracked until here, so a child that closed its terminal but lives on can still be stopped by Quit.
+    on_timeout, if given, is called once the outstayer has been killed (the install says why it stopped)."""
+    try:
+        return p.wait(max(1, secs))
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+        if on_timeout:
+            on_timeout()
+        return -1
+    finally:
+        with connect_lock:
+            if connect_procs.get(step) is p:
+                connect_procs.pop(step)
+
+
+def connect_log(step):
+    return ROOT / "state" / f"connect-{step}.log"
+
+
+def add_install_dirs():
+    """Append the folders the CLI installers use (agent.install_dirs) that exist to this process's PATH; the checks and
+    jobs it starts inherit it. Run at start (an app opened from a terminal that predates the install) and after an
+    install (the installer adds the folder to the user's shell profile, which this process never reads)."""
+    from . import agent
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    extra = [str(d) for d in agent.install_dirs() if d.is_dir() and str(d) not in parts]
+    if extra:
+        os.environ["PATH"] = os.pathsep.join(parts + extra)
+
+
+def _connect_one(step, argv, log, deadline):
+    """Run one command of a setup step -> exit code. Its output goes to the log as it comes (the sign-in link kept
+    without its query), and the link into connects[step]["url"] for the page's fallback link; with --no-browser
+    the CLI prints the link instead of opening it, and it is opened here, once.
+    The CLI refuses to wait for the browser when stdin is not a terminal (`claude mcp login` gives up at once), so:
+    - off Windows the command runs on a pseudo-terminal (stdlib pty) and its output is read from there;
+    - on Windows (no stdlib pty) it runs in a console of its own that has no window (CREATE_NO_WINDOW): stdin is a
+      real console, so the CLI waits for the browser's callback, and its output is sent to a file beside the log
+      that is read as it grows and removed at the end. Before #27 it ran in a console window of its own with
+      nothing captured: a failed sign-in had nothing to show, there was no fallback link, and closing that window
+      by hand ended the sign-in without a word."""
+    shown = subprocess.list2cmdline(argv) if WIN else " ".join(shlex.quote(a) for a in argv)
+    saw = _output_handler(connects[step], argv, log, log.read_text(encoding="utf-8") + "$ " + shown + "\n")
+    if WIN:
+        return _connect_one_win(step, argv, log, deadline, saw)
+    import os, pty, select
+    m, s = pty.openpty()
+    try:
+        p = _launch(step, argv, cwd=ROOT, stdin=s, stdout=s, stderr=s, start_new_session=True, close_fds=True)
+    finally:
+        os.close(s)
+    if p is None:  # Open Loops is closing
+        os.close(m)
+        return -1
+    tail, rc = "", -1
+    try:
+        while True:
+            if time.time() > deadline:
+                kill_tree(p)
+                tail = "\nstopped: no answer from the browser within 5 minutes\n"
+                break
+            if select.select([m], [], [], 0.5)[0]:
+                try:
+                    chunk = os.read(m, 4096)
+                except OSError:  # the command exited and closed its end (Linux says so with EIO)
+                    chunk = b""
+                if not chunk:
+                    break
+                saw(chunk)
+            elif p.poll() is not None:
+                break
+    finally:  # however the loop ended, the process is waited for (or killed) before it stops being tracked
+        os.close(m)
+        rc = _reap(step, p, 5)
+    if tail:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(tail)
+    return rc
+
+
+def _output_handler(me, argv, log, before):
+    """The one handler both runners give each new piece of a command's output -> saw(chunk). me: the run's own
+    connects record; before: the log's text so far, then the command. SigninOutput carries a link or escape code
+    split between two reads over to the next, so each byte is handed over once, never the whole output again."""
+    out = SigninOutput()
+
+    def saw(chunk):
+        """New output (bytes, as read) -> the log rewritten (links without their query), the link kept and opened once."""
+        out.feed(chunk)
+        log.write_text(before + out.text(), encoding="utf-8")
+        if out.url and not me.get("url"):  # the whole link is in
+            _link_found(me, out.url, "--no-browser" in argv)
+    return saw
+
+
+def _link_found(me, url, open_it):
+    """A run's sign-in link has been read whole -> True if it was taken: kept for the page's fallback link and, if
+    open_it (the CLI was told --no-browser), opened in the browser, once. Review of #70: never for a run that has
+    been stopped (Stop this sign-in, or Quit). A Stop can land after the CLI printed the link but before it was read,
+    or before the first read at all; that read must not open a browser tab for a sign-in the person just stopped.
+    Checked under connect_lock, the lock stop_connect() marks the run under, twice: when the link is taken, and
+    again (second review of #70) immediately before the browser is asked to open it, where the run is marked
+    "opening". The browser call itself is made outside the lock (it can take a while, and every /api/connect
+    request needs that lock). So a Stop that lands between taking the link and that last check opens nothing. One
+    that lands while the browser call is under way cannot take that tab back (third review of #70): "opening" is
+    set just before the call and cleared, under the lock, once it has returned or raised, and "link_opened" records
+    a call that succeeded ("opened" is not used: on a Codex step it means a page was opened instead of a sign-in).
+    stop_connect() waits briefly for "opening" to clear, so its reply can say that a tab had opened."""
+    with connect_lock:
+        if me.get("stopped") or quit_requested or me.get("url"):
+            return False
+        me["url"] = url
+    if not open_it:
+        return True
+    if _before_open is not None:  # tests only; None in the app
+        _before_open(me)
+    with connect_lock:  # the last word before dispatch: a Stop since the link was taken wins
+        if me.get("stopped") or quit_requested:
+            me["url"] = ""  # nor a fallback link on the page for a sign-in that was stopped
+            return False
+        me["opening"] = True
+    ok = False
+    try:
+        ok = bool(webbrowser.open(url))
+    finally:
+        with connect_lock:
+            me["opening"] = False
+            if ok:
+                me["link_opened"] = True
+    return True
+
+
+# A test hook, None in the app: called with the run's record between taking a link and the last check before the
+# browser is asked to open it, so a test can land a Stop exactly there (tests/test_connect_output.py).
+_before_open = None
+
+
+def _read_on(path, offset, saw):
+    """Hand saw() what path holds past offset, a MB at a time -> the new offset. A file not there yet (or not
+    readable just now) is read next time from the same place. Platform-independent, for the tests."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            while chunk := f.read(1 << 20):
+                offset += len(chunk)
+                saw(chunk)
+    except OSError:
+        pass
+    return offset
+
+
+ICACLS = ["icacls"]   # the command _private_file restricts a file with on Windows; tests point it at a fake
+ICACLS_TIMEOUT_S = 15
+
+
+class PrivateFileError(OSError):
+    """_private_file could not make its file private; str() is the plain-words sentence (messages.py)."""
+
+
+def _private_file(path, restrict=None):
+    """A new, empty file only this user may read, for a command's raw output -> an OS-level descriptor open for
+    writing (the caller hands it to the child, then closes it). Review of #70: the file used to be made by cmd.exe's
+    `>` redirection, with whatever the folder passed on. Any earlier file there (left by a run the app could not clean
+    up after: a forced end, a power cut) is removed first; O_EXCL then refuses anything that appears in its place.
+    Mac and Linux: mode 0600. Windows (restrict, the default there): the mode only sets read-only-or-not, so icacls
+    drops the inherited permissions and grants this user alone full control. Second review of #70: that must work
+    before anything is written. If icacls fails, times out or there is no user name to grant, the file is removed
+    and PrivateFileError is raised: the sign-in does not start and its log says why in plain words, rather than
+    the link's query going to a file others may read."""
+    restrict = WIN if restrict is None else restrict
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+    if not restrict:
+        return fd
+    user, ok = os.environ.get("USERNAME", ""), False
+    if user:
+        if os.environ.get("USERDOMAIN"):
+            user = os.environ["USERDOMAIN"] + "\\" + user
+        try:
+            r = subprocess.run([*ICACLS, str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
+                               timeout=ICACLS_TIMEOUT_S, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            ok = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):  # icacls missing, or no answer within ICACLS_TIMEOUT_S
+            ok = False
+    if not ok:
+        os.close(fd)
+        try:
+            path.unlink()
+        except OSError:
+            pass  # empty, and removed again before the next run writes
+        raise PrivateFileError(messages.say("signin_private_failed"))
+    return fd
+
+
+def _drop_out(step, out):
+    """Remove a sign-in's raw output file -> True once it is gone (or was never there). cmd.exe or the CLI may still
+    hold it for a moment after taskkill, so it is tried for two seconds. A file that stays is said once, in plain
+    words (messages.py), in the step's log for the Console and on the app's own output; the next run of the step
+    removes it before it starts (_private_file)."""
+    for _ in range(10):
+        try:
+            out.unlink()
+            break
+        except FileNotFoundError:
+            break
+        except OSError:
+            time.sleep(0.2)
+    else:
+        line = messages.say("signin_file_left")
+        print(line, file=sys.stderr, flush=True)  # pythonw has no stderr: print() then writes nothing
+        try:
+            with open(connect_log(step), "a", encoding="utf-8") as f:
+                f.write("\n" + line + "\n")
+        except OSError:
+            pass
+        return False
+    with connect_lock:
+        if connect_outs.get(step) == out:
+            connect_outs.pop(step)
+    return True
+
+
+def _connect_one_win(step, argv, log, deadline, saw):
+    """_connect_one on Windows (#27): the command in a hidden console (a real terminal for the CLI, no window to
+    close), its output written to state/connect-<step>.out, which is read every quarter second and handed to
+    saw() (the log, the link). Each poll reads on from where the last one stopped (review of #70: a snapshot of the
+    file's last 64 KB could skip a link altogether), a MB at a time. The .out file holds the link query and all
+    while the command runs, as the console window did before, so (review of #70) the app makes it itself, for this
+    user only (_private_file), hands it to the child as stdout and stderr, and removes it on every way out: the
+    command ending, Stop, the deadline, a failed start, and Quit (stop_connects, via connect_outs).
+    stdin: with stdout given, Python passes the child standard handles, and stdin would be the app's own (a pipe
+    under pythonw.exe), which the CLI refuses. `<CON` makes cmd.exe open the hidden console's own input for the
+    command instead, so the CLI still sees a real terminal (tests/test_connect_win.py proves it under pythonw)."""
+    out = log.with_suffix(".out")
+    fd = _private_file(out)  # an error here (a file some process still holds) ends the step; the log says why
+    with connect_lock:
+        connect_outs[step] = out
+    try:
+        # argv is quoted for cmd.exe by list2cmdline; the server names it can hold are limited to plain characters
+        # (agent.usable_name), so nothing in it means anything to cmd
+        p = _launch(step, f"{subprocess.list2cmdline(argv)} <CON", cwd=ROOT, shell=True, stdout=fd, stderr=fd,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+    except BaseException:
+        os.close(fd)
+        _drop_out(step, out)
+        raise
+    os.close(fd)  # the child has its own copy; ours would keep the file open (and undeletable) after it ends
+    if p is None:  # Open Loops is closing, or this run was stopped from its row
+        _drop_out(step, out)
+        return -1
+    offset, tail, rc, me = 0, "", -1, connects[step]  # offset: how much of the .out file saw() has been given
+    try:
+        while True:
+            ended = p.poll() is not None  # looked at before the read, so the last lines are never missed
+            if me.get("stopped"):  # review of #70: stopped from its row: nothing more is read (so nothing opened)
+                break
+            offset = _read_on(out, offset, saw)
+            if ended:
+                break
+            if time.time() > deadline:
+                kill_tree(p)
+                tail = "\nstopped: no answer from the browser within 5 minutes\n"
+                break
+            time.sleep(0.25)
+    finally:
+        rc = _reap(step, p, 5)
+        _drop_out(step, out)
+    if tail:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(tail)
+    return rc
+
+
+def run_connect(step):
+    """Start a Claude or Codex setup step in the background -> (started, error). One run per step at a time."""
+    from . import agent
+    who = agent.name()   # read once (#27): the run is recorded, checked and run for this AI, whatever Settings say later
+    if step not in agent.connect_steps(who):
+        return False, "no such setup step for " + agent.display_name(who)
+    with connect_lock:  # check and claim in one go
+        if quit_requested:
+            return False, "Open Loops is closing"
+        if (connects.get(step) or {}).get("running"):
+            return False, "already running"
+        # "agent": the AI this run is for (#27), so a page reloaded after the AI was changed does not pick it up as the new one's
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
+                          "agent": who, "run_id": uuid.uuid4().hex}
+    log = connect_log(step)
+
+    def go():
+        rc, deadline, me = -1, time.time() + CONNECT_TIMEOUT_S, connects[step]  # me: this run's record
+        try:  # login_cmd may ask the CLI a question itself (is the marketplace known?), so not on the request
+            url = agent.connect_url(step, who)
+            if url:  # a page to open, not a command: done once the browser has it; the user presses Check again after
+                with open(log, "a", encoding="utf-8") as f:
+                    f.write(f"opened {url} in the browser\n")
+                connects[step].update(url=url, opened=True)
+                rc = 0 if webbrowser.open(url) else 1
+                return
+            for argv in agent.login_cmd(step, who) or []:
+                rc = _connect_one(step, argv, log, deadline)
+                if rc != 0:
+                    break
+        except PrivateFileError as e:  # Windows could not make the output file private: not started, said plainly
+            me["reason"] = "private_file"  # third review of #70: the row shows signin_private_failed, not connect_failed
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\n{e}\n")
+        except Exception as e:  # CLI missing, pty refused: say so in the log rather than hang as "running"
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\ncould not run {step}: {type(e).__name__}: {e}\n")
+        finally:
+            doctor_gen["n"] += 1  # a check already running started before this sign-in: do not cache what it says
+            doctor_cache["at"] = 0  # the next check asks the CLI again rather than answer from before the sign-in
+            if me.get("stopped"):  # #67: however it was stopped (mid-command, between two, before the first, Windows),
+                try:               # the log's last line says why, for the Console and /api/diag
+                    with open(log, "a", encoding="utf-8") as f:
+                        f.write("\nstopped: Stop this sign-in was pressed\n")
+                except OSError:
+                    pass
+            me.update(running=False, rc=rc)
+
+    try:  # anything failing between the claim and the worker would leave the step "already running" for good
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
+        threading.Thread(target=go, daemon=True).start()
+    except Exception as e:
+        connects[step].update(running=False, rc=-1)
+        return False, f"could not start {step}: {type(e).__name__}: {e}"
+    return True, ""
+
+
+def _install_one(step, argv, log, deadline):
+    """Run one command of an install -> (exit code, stopped at the deadline?), its output appended to the log as it comes (Windows too: no console
+    window, so the page and Console see what went wrong). No terminal: stdin is empty, so an installer that stops to ask
+    a question reads end-of-input and fails at once instead of waiting for an answer nobody can type, and in a session
+    of its own it has no terminal to open either. Stopped at the deadline, and the log says why."""
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("$ " + (subprocess.list2cmdline(argv) if WIN else shlex.join(argv)) + "\n")
+        f.flush()
+        how = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if WIN else {}
+        if sys.platform != "win32":  # a process group of its own, which is what kill_tree stops off Windows
+            how["start_new_session"] = True
+        # started and registered through _launch, stopped and untracked through _reap, as the sign-ins are
+        p = _launch(step, argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, **how)
+        if p is None:
+            f.write("\nnot started: Open Loops is closing\n")
+            return -1, False
+        late = []
+        rc = _reap(step, p, deadline - time.time(), on_timeout=lambda: late.append(True))
+        if late:
+            f.write(f"\nstopped: the install did not finish within {INSTALL_TIMEOUT_S} seconds\n")
+        return rc, bool(late)
+
+
+def run_install(body):
+    """Start the selected AI's installer in the background -> (started, error, HTTP code). Works for any AI; shares the
+    sign-in steps' one-run-at-a-time claim, process tracking and log. Runs only what the page showed: the press sends the
+    "agent" and "command_id" from the checklist row, and if either no longer matches (another tab changed the AI in
+    Settings since) nothing runs. The run keeps its own agent and command, which the status reports while it runs."""
+    from . import agent
+    step, ic = agent.INSTALL_STEP, agent.install_cmd()
+    if not ic:
+        return False, "no installer known for " + agent.display_name(), 400
+    if body.get("agent") != ic["agent"]:  # another tab chose a different AI in Settings since this row was shown
+        return False, "changed", 409
+    if body.get("command_id") != ic["id"]:  # same AI, other command: Open Loops was updated or moved since the page loaded
+        return False, "updated", 409
+    with connect_lock:  # check and claim in one go
+        if quit_requested:
+            return False, "Open Loops is closing", 400
+        if (connects.get(step) or {}).get("running"):
+            return False, "already running", 200
+        connects[step] = {"running": True, "rc": None, "url": "", "started": datetime.now().isoformat(timespec="seconds"),
+                          "why": "", "agent": ic["agent"], "command": ic["command"], "command_id": ic["id"],
+                          "vendor": ic.get("vendor", ""), "run_id": uuid.uuid4().hex}
+    log = connect_log(step)
+
+    def go():
+        rc, deadline, why, kind = -1, time.time() + INSTALL_TIMEOUT_S, "", "download"
+        script = Path(ic["script"])
+        try:
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.unlink(missing_ok=True)  # never run a script left over from an earlier try
+            for kind, argv in ic["steps"]:
+                if kind == "install" and not (script.is_file() and script.stat().st_size):  # Windows has no test -s step
+                    rc, why = 1, "vendor"  # the vendor's server sent an empty file
+                    break
+                if kind == "check":  # the installer exited 0: find the new CLI in its folders, PATH untouched for now
+                    look = os.pathsep.join([os.environ.get("PATH", "")] + [str(d) for d in agent.install_dirs()])
+                    argv = [shutil.which(argv[0], path=look) or argv[0]] + argv[1:]
+                rc, late = _install_one(step, argv, log, deadline)
+                if rc != 0:
+                    why = "timeout" if late else download_why(argv, rc, log) if kind == "download" else kind
+                    break
+            else:  # every step worked, the CLI answered --version: only now its folder goes on this process's PATH
+                add_install_dirs()
+        except Exception as e:  # bash or PowerShell missing, say: in the log and as "start", rather than hang as "running"
+            rc, why = -1, why or ("check" if kind == "check" else "start")  # no CLI to run after the install: "check"
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"\ncould not run the installer: {type(e).__name__}: {e}\n")
+        finally:
+            try:
+                script.unlink(missing_ok=True)
+            except OSError:
+                pass
+            doctor_gen["n"] += 1  # a check already running started before this install: do not cache what it says
+            doctor_cache["at"] = 0
+            connects[step].update(running=False, rc=rc, why=why)
+
+    try:  # as run_connect: anything failing between the claim and the worker would leave the install "running" for good
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
+        threading.Thread(target=go, daemon=True).start()
+    except Exception as e:
+        connects[step].update(running=False, rc=-1, why="start")
+        return False, f"could not start the install: {type(e).__name__}: {e}", 500
+    return True, "", 200
+
+
+# curl's exit codes (curl -f): 22 = the server answered with an HTTP error (a vendor 404 / 500, not the user's
+# internet); these = could not reach it at all (DNS, refused, timed out, TLS handshake, nothing received).
+CURL_NETWORK = {5, 6, 7, 28, 35, 52, 56}
+# Windows: Invoke-WebRequest's messages, as they land in the install log
+PS_VENDOR = re.compile(r"\((?:4|5)\d\d\)|returned an error|The download was empty", re.I)
+PS_NETWORK = re.compile(r"remote name could not be resolved|No such host is known|Unable to connect|actively refused|"
+                        r"timed out|could not be established", re.I)
+
+
+def download_why(argv, rc, log):
+    """Why a download step failed -> "vendor" (their site answered with an error or an empty file), "network" (this
+    computer could not reach it) or "download" (can't tell). The page's sentence depends on it (#25): a vendor 404 must
+    not be blamed on the user's internet."""
+    name = Path(argv[0]).name.lower() if argv else ""
+    if name.startswith("curl"):
+        return "vendor" if rc == 22 else "network" if rc in CURL_NETWORK else "download"
+    if name == "test":  # test -s: the file arrived empty
+        return "vendor"
+    if name.startswith("powershell"):
+        try:
+            tail = log.read_text(encoding="utf-8", errors="replace")[-2000:]
+        except OSError:
+            tail = ""
+        return "vendor" if PS_VENDOR.search(tail) else "network" if PS_NETWORK.search(tail) else "download"
+    return "download"
+
+
+# how an install ended (connects["install"]["why"]) -> the messages.py sentence the page shows
+INSTALL_WHY = {"download": "install_download", "network": "install_network", "vendor": "install_vendor",
+               "check": "install_check", "install": "install_error", "timeout": "install_timeout", "start": "install_start"}
+
+
+def connect_status(step):
+    c = dict(connects.get(step) or {"running": False, "rc": None, "url": "", "started": None})
+    log = connect_log(step)
+    try:
+        lines = [x.strip() for x in log.read_text(encoding="utf-8", errors="replace").splitlines()]
+    except OSError:  # not written yet, or not writable at all
+        lines = []
+    c["last"] = next((x for x in reversed(lines) if x), "")[:300]
+    c["step"] = step
+    from . import agent
+    if step == agent.INSTALL_STEP:
+        ran = c.get("agent")  # the AI the last run installed, if there was one
+        if not c.get("running"):  # idle: what the button would run now, so the page can show it before the press.
+            ic = agent.install_cmd() or {}  # A running install keeps reporting its own agent and command instead.
+            c.update(agent=ic.get("agent", ""), command=ic.get("command", ""), command_id=ic.get("id", ""))
+        if c.get("why"):  # the page shows this sentence, never the installer's raw last line ("last", for the Console)
+            n = INSTALL_TIMEOUT_S  # the limit actually in force, in the unit a person would say it
+            limit = f"{n // 60} minutes" if n >= 120 and n % 60 == 0 else "1 minute" if n == 60 else f"{n} seconds"
+            vendor = c.get("vendor") or (agent.install_cmd(ran or c.get("agent")) or {}).get("vendor", "")
+            c["said"] = messages.say(INSTALL_WHY.get(c["why"], "install_error"), ai=agent.display_name(ran or c["agent"]),
+                                     limit=limit, vendor=vendor or "the download site")
+    return c
+
+
+def _diag_model():
+    """/api/diag's "model" (#67): the model the jobs run on now, as agent.model() reads it for the chosen AI, so Codex
+    reports codex_model rather than Claude's "sonnet". Grok ignores both keys: ""."""
+    from . import agent
+    return "" if agent.name() == "grok" else agent.model()
+
+
+def test_copy():
+    """Whether this install is a test copy: config.json "test_copy" (install.sh --dest --no-app --no-task) or an isolated
+    one (#36). Such a copy has no Desktop or Applications icon, so the page's "not running" banner names the command."""
+    from . import doctor
+    return doctor.is_test_copy() or isolated()
+
+
+def index_bytes(table=None):
+    """index.html with the page's copy of messages.py filled in, for this platform and this install (a test copy gets
+    its own "not running" fix, #50), escaped for an inline <script>."""
+    return (INDEX.read_bytes().replace(b"/*OL_MESSAGES*/{}", messages.page_json(WIN, table, test_copy()).encode("utf-8"), 1)
+            # a failed card click's verb ("Couldn't snooze that", #64)
+            .replace(b"/*OL_ACTION_FAILED*/{}", messages.page_action_failed_json().encode("utf-8"), 1)
+            .replace(b"/*OL_LABELS*/{}", messages.page_json(WIN, messages.LABELS).encode("utf-8"), 1))  # #67: button names, Console marks
 
 
 class H(BaseHTTPRequestHandler):
@@ -151,34 +958,69 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        try:
+            self._get()
+        except LockTimeout as e:   # a writer held state.json past the deadline: say so, plainly, rather than hang
+            print(f"busy: {e}", file=sys.stderr)
+            # "code": what the page tells apart by (#66 review), never the sentence, which may be reworded
+            self._json({"error": messages.say("app_busy"), "code": "app_busy"}, 503)
+
+    def do_POST(self):
+        try:
+            self._post()
+        except LockTimeout as e:
+            print(f"busy: {e}", file=sys.stderr)
+            # "code": what the page tells apart by (#66 review), never the sentence, which may be reworded
+            self._json({"error": messages.say("app_busy"), "code": "app_busy"}, 503)
+
+    def _get(self):
         if self.path.split("?")[0] in ("/", "/index.html"):
-            b = INDEX.read_bytes()
+            # the page's copy of messages.py, for this platform: it can still say "not running" once the server is gone
+            b = index_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")  # a restored or cached page would keep an older copy of the wording
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             self.wfile.write(b)
         elif self.path == "/api/state":
             from . import standing
-            s = load()
-            s = dict(s)
+            # the to-do file can live on a synced or mounted folder: read it outside the lock, on a plain read of
+            # state.json; only the vault_seen keys this read changed are then applied, under the lock, onto a fresh
+            # read (#61): two overlapping polls each keep the other's first_seen / changed_at
+            s = dict(load())
+            seen_before = s.get("vault_seen") or {}
             vault_loops, dirty = standing.as_loops(s)
             if dirty:
-                save(s)
+                with state_lock():
+                    fresh = load()
+                    if standing.merge_seen(fresh, seen_before, s.get("vault_seen") or {}):
+                        save(fresh)
             s["loops"] = list(s.get("loops") or []) + vault_loops
             self._json({"state": s, "jobs": jobs, "today": date.today().isoformat(),
-                        "pages": len(pages), "quitting": quit_requested})  # who is holding the server up
+                        "pages": len(pages), "quitting": quit_requested,   # who is holding the server up
+                        "isolated": isolated(),   # a test copy (#36): the page starts no scan by itself, and says so
+                        "instance": INSTANCE})   # which server's seq numbers these are
         elif self.path == "/api/config":
             self._json({"config": cfg(), "voice": read_json(VOICEF), "people_suggested": read_json(PEOPLEF)})
         elif self.path == "/api/diag":  # what the Console's "Copy all" pastes: enough to debug from a screenshot-free report
             c = cfg()
             stamp = ROOT / "INSTALLED.txt"
             dl = ROOT / "state" / "logs" / "doctor-last.log"
-            self._json({"python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
+            le = ROOT / "state" / "logs" / "launchd.err.log"  # Mac: why the weekday morning refresh did not start (#24)
+            self._json({"app": "openloops",   # identity: install.sh only asks a server to quit if this is here and root matches
+                        "python": sys.version.split()[0], "platform": sys.platform, "port": PORT, "root": str(ROOT),
                         "build": stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout",
-                        "up_since": STARTED, "agent": c.get("agent") or "claude", "model": c.get("model") or "",
+                        # #67: the active AI's model (Codex: codex_model); Grok takes none, so none is reported
+                        "up_since": STARTED, "agent": c.get("agent") or "claude",
+                        "model": _diag_model(),
+                        "isolated": isolated(),   # #36: a test copy that reads no to-do file and starts no scan by itself
                         "pages": len(pages), "jobs": {k: {"running": j["running"], "rc": j.get("rc"), "tail": (j.get("log") or "")[-1200:]} for k, j in jobs.items()},
-                        "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else ""})
+                        "doctor": doctor_cache["result"], "doctor_log": dl.read_text(encoding="utf-8", errors="replace")[-2000:] if dl.exists() else "",
+                        "launchd_err_log": le.read_text(encoding="utf-8", errors="replace")[-2000:] if le.exists() else ""})
+        elif self.path == "/api/schedule/status":  # the morning refresh's last start, from its logs only (#24)
+            from . import doctor
+            self._json({"step": doctor.schedule_step() if MAC else None})
         elif self.path.split("?")[0] == "/api/daylog":
             from . import daylog
             q = self._query()
@@ -200,6 +1042,12 @@ class H(BaseHTTPRequestHandler):
         elif self.path.split("?")[0] == "/api/standing":
             from . import standing
             self._json(standing.status(self._query().get("path") or None))
+        elif self.path.split("?")[0].startswith("/api/connect/"):
+            from . import agent
+            step = self.path.split("?")[0].rsplit("/", 1)[1]
+            if step not in agent.CONNECT_STEPS + (agent.INSTALL_STEP,):
+                return self._json({"error": "unknown setup step"}, 404)
+            self._json(connect_status(step))
         elif self.path == "/api/roadmap":
             from . import roadmap
             st, conf = roadmap.load(), roadmap.configured()
@@ -214,8 +1062,15 @@ class H(BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlsplit
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
 
-    def do_POST(self):
+    def _post(self):
         global doctor_cache
+        # Every POST changes something (a job, a sign-in, a file), and any web page open in the browser can send one
+        # to localhost. Browsers always say where a POST comes from (Origin), so one from anywhere but this page is
+        # refused. The page's own requests and its close-tab beacon carry this page's origin; `--stop`, the tests
+        # and other local scripts send no Origin at all and are let through.
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"):
+            return self._json({"error": "refused: request from another site"}, 403)
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
         if self.path == "/api/bye":  # a page closed (or reloaded: its successor says hello within a second)
@@ -224,13 +1079,18 @@ class H(BaseHTTPRequestHandler):
             bye_at = time.time()
             return self._json({"ok": True, "pages": len(pages)})
         if self.path == "/api/quit":  # Settings button or `python -m openloops.app --stop [--now]`
-            global quit_requested, quit_now
-            quit_requested = True
-            busy = [k for k, j in jobs.items() if j["running"]]
-            if body.get("now") and busy:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
-                for k in busy:
-                    if k in procs:
-                        kill_tree(procs[k])
+            global quit_requested, quit_now, cut_jobs
+            with jobs_lock:  # the same lock run_job registers its process under: no job slips between the two
+                quit_requested = True
+                busy = [k for k, j in jobs.items() if j["running"]]
+                cut = bool(body.get("now") and busy)
+                if cut:
+                    cut_jobs = True  # a job still starting stops itself as soon as its process is registered
+                to_stop = [procs[k] for k in busy if k in procs] if cut else []
+            stop_connects()  # a sign-in still waiting in the browser is not worth holding a quit for
+            if cut:  # `npm run dev` restarting a dev session: a half-done refresh is not worth waiting for
+                for p in to_stop:
+                    kill_tree(p)
                 self._json({"ok": True, "after_jobs": [], "cut_short": busy})
                 quit_now = True  # only once the answer is out: the reaper stops the server the moment it sees this
                 return
@@ -261,14 +1121,20 @@ class H(BaseHTTPRequestHandler):
             try:
                 p = standing.create_starter(body.get("path") or None)
             except FileExistsError as e:
-                return self._json({"ok": False, "error": f"there is already a file at {e}"}, 400)
-            except OSError as e:
-                return self._json({"ok": False, "error": f"could not write there: {e}"}, 400)
+                return self._json({"ok": False, "error": messages.say("standing_exists"), "detail": str(e)}, 400)
+            except ValueError as e:  # no path set: standing.py's own sentence (messages "standing_no_path")
+                return self._json({"ok": False, "error": str(e)}, 400)
+            except OSError as e:  # the OS's reason is developer detail
+                return self._json({"ok": False, "error": messages.say("standing_write"), "detail": str(e)}, 400)
             return self._json({"ok": True, "path": str(p)})
         if self.path == "/api/doctor":
             import time as _t
             if body.get("force") or _t.time() - doctor_cache["at"] > 55:
-                args = [sys.executable, "-m", "openloops.doctor"] + (["--detect"] if body.get("detect") else [])
+                gen = doctor_gen["n"]
+                # --recheck: a press of Check again (or a finished setup step) asks Codex afresh instead of reusing
+                # its last answer about Gmail / Slack; Claude and Grok read their CLIs every time anyway
+                args = ([sys.executable, "-m", "openloops.doctor"] + (["--detect"] if body.get("detect") else [])
+                        + (["--recheck"] if body.get("force") else []))
                 for attempt in (1, 2):  # a check that produced nothing gets one quiet retry before anyone hears about it
                     try:
                         r = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -286,13 +1152,49 @@ class H(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 try:
-                    doctor_cache = {"at": _t.time(), "result": json.loads(out.strip().splitlines()[-1])}
+                    res = json.loads(out.strip().splitlines()[-1])
                 except Exception:
                     why = (out + err).strip()[-300:] or f"the check produced no output (exit code {rc})"
                     # not a connection problem: the checker itself did not answer. The page keeps its last good answer.
-                    doctor_cache = {"at": _t.time(), "result": {"all_ok": False, "error": why, "steps": [], "rc": rc}}
+                    res = {"all_ok": False, "error": why, "steps": [], "rc": rc}
+                if gen == doctor_gen["n"]:  # a check that started before a sign-in finished answers, but is not kept
+                    doctor_cache = {"at": _t.time(), "result": res}
+                return self._json(res)
             return self._json(doctor_cache["result"])
-        if self.path == "/api/open-claude":
+        if self.path == "/api/connect/install":  # the Install button: {"agent", "command_id"} as the row showed them
+            from . import agent
+            started, why, code = run_install(body)
+            busy = (connects.get(agent.INSTALL_STEP) or {}).get("agent") or agent.name()
+            said = (messages.say("ai_changed") if why == "changed" else messages.say("app_updated") if why == "updated"
+                    else messages.say("install_busy", ai=agent.display_name(busy)) if why == "already running" else "")
+            rid = (connects.get(agent.INSTALL_STEP) or {}).get("run_id", "") if started or why == "already running" else ""
+            return self._json({"started": started, "run_id": rid, **({"error": why} if why else {}), **({"said": said} if said else {})}, code)
+        if self.path.startswith("/api/connect/") and self.path.endswith("/stop"):  # #67: the row's Stop this sign-in
+            step = self.path[len("/api/connect/"):-len("/stop")]
+            if step not in STOPPABLE:  # an install, or not a step at all: nothing here stops it
+                return self._json({"ok": False, "error": "not a sign-in that can be stopped"}, 400)
+            rid = str(body.get("run_id") or "")
+            if not rid:  # the page sends the run it shows; nothing else is stopped on its behalf
+                return self._json({"ok": False, "error": "no run_id"}, 400)
+            why, c, _ = stop_connect(step, rid)
+            if why == "other run":  # the run the row showed is over, and another has started since: left alone
+                # ...with the run that holds the step now, so the row can show it and a second Stop targets it
+                return self._json({"ok": False, "error": why, "running": True, "said": messages.say("connect_stop_other"),
+                                   "run_id": c.get("run_id", ""), "url": c.get("url", ""), "started": c.get("started")}, 409)
+            end = time.time() + 8  # kill_tree waits up to 3 s, the worker's reap up to 5 s: answer once it has ended
+            while why == "stopped" and c.get("running") and time.time() < end:  # this run's own record, not the step's
+                time.sleep(0.1)
+            # tab_opened: "yes" / "maybe" / "no" (_tab_state), read now, after the wait above; the toast words each
+            return self._json({"ok": why == "stopped", "running": bool(c and c.get("running")), "run_id": (c or {}).get("run_id", ""),
+                               **({"tab_opened": _tab_state(c)} if why == "stopped" else {"error": why})})
+        if self.path.startswith("/api/connect/"):  # a setup button: sign in, install Slack, connect a source
+            step = self.path.rsplit("/", 1)[1]
+            started, why = run_connect(step)
+            said = messages.say("connect_busy") if why == "already running" else ""
+            rid = (connects.get(step) or {}).get("run_id", "") if started or why == "already running" else ""  # #27: which run
+            return self._json({"started": started, "run_id": rid, **({"error": why} if why else {}), **({"said": said} if said else {})},
+                              200 if started or why == "already running" else 400)
+        if self.path == "/api/open-claude":  # the fallback: a terminal running the agent, for anything the buttons can't do
             # opens a terminal running the configured agent so the user can sign in / connect
             from . import agent
             cli, title = agent.cli(), agent.display_name()
@@ -316,17 +1218,57 @@ class H(BaseHTTPRequestHandler):
             else:
                 r = subprocess.run(["bash", str(ROOT / "scripts" / "register-task.sh"), "--at", t],
                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if r.returncode == 0:
-                c = cfg()
-                c["refresh_time"] = t
-                write_json(CONFIG, c)
+            if r.returncode == 0 and update_json(CONFIG, lambda c: c.update(refresh_time=t)) is False:
+                return self._json({"ok": False, "error": "config.json could not be read, so the new time was not saved there"}, 500)
             return self._json({"ok": r.returncode == 0, "out": (r.stdout + r.stderr)[-500:]})
+        if self.path == "/api/setup-done":  # the page reached "ready" (#38 review): setup stays done, whatever is connected later
+            with state_lock():
+                s = load()
+                if not s.get("setup_done"):
+                    s["setup_done"] = True
+                    save(s)
+            return self._json({"ok": True})
+        if self.path == "/api/cursor/forget":
+            # "Forget where I was" (#56), offered on the cursor_unreadable toast: a cursor in state.json that is not a
+            # date stops every refresh (refresh.parse_when). Only the unreadable cursors change, each from what is
+            # recorded about its own source (refresh.apply), never from a time that does not prove that source was read:
+            # - cursor (the shared one): last_refresh, written with it by every full run;
+            # - slack_cursor: last_slack_refresh, written only when a Slack-only pass searched Slack;
+            # - gmail_cursor: nothing records when Gmail was last searched (last_refresh moves on runs that could
+            #   not reach Gmail too), so it is always the History window.
+            # With no such time the cursor is set to the start of Settings > History, the first scan's window (not
+            # removed: a missing slack/gmail cursor falls back to the shared one, which proves nothing for them).
+            # The list, people picks and learned tone are kept: that is what Start over would wipe.
+            def when(v):
+                try:
+                    return datetime.fromisoformat(str(v).strip())
+                except (TypeError, ValueError):
+                    return None
+
+            def readable(v):
+                return v is None or (isinstance(v, str) and not v.strip()) or when(v) is not None
+            proof = {"cursor": "last_refresh", "slack_cursor": "last_slack_refresh", "gmail_cursor": None}
+            window = (datetime.now().astimezone() - timedelta(days=history_days())).isoformat(timespec="minutes")
+            done = {}
+
+            def forget(s):
+                bad = [k for k in proof if k in s and not readable(s[k])]
+                if not bad:
+                    return False   # nothing unreadable: nothing is written
+                for k in bad:
+                    src = proof[k] and s.get(proof[k])
+                    ok = bool(src) and when(src) is not None
+                    s[k] = src if ok else window
+                    done[k] = proof[k] if ok else "history"
+            if update_json(STATE, forget) is False:
+                return self._json({"ok": False, "error": messages.say("server_error")}, 500)
+            since = "" if not done else "history" if "history" in done.values() else "recorded"
+            return self._json({"ok": True, "forgot": sorted(done), "how": done, "since": since})
         if self.path == "/api/voice":
             return self._json({"started": run_job("voice")})
         if self.path == "/api/people":
             return self._json({"started": run_job("people")})
         if self.path == "/api/config":
-            c = cfg()
             if "pinned_links" in body:  # http(s) only, one entry per url, label trimmed
                 seen, clean = set(), []
                 for p in body.get("pinned_links") or []:
@@ -336,27 +1278,30 @@ class H(BaseHTTPRequestHandler):
                     seen.add(u)
                     clean.append({"url": u, "label": str((p or {}).get("label") or "").strip()[:60]})
                 body["pinned_links"] = clean
-            for k, v in body.items():
-                if k in EDITABLE:
-                    c[k] = v
-            write_json(CONFIG, c)
+            # applied to config.json as it is now, under the lock doctor.py takes too (its own process)
+            if update_json(CONFIG, lambda c: c.update({k: v for k, v in body.items() if k in EDITABLE})) is False:
+                return self._json({"ok": False, "error": messages.say("config_unreadable"),
+                                   "detail": "config.json could not be read; nothing saved (fix or delete it)"}, 500)
             return self._json({"ok": True})
         if self.path == "/api/reset":
             # "Start over": back to the state a brand-new user sees, keeping only name/domains/tone settings.
-            for f in (STATE, VOICEF, PEOPLEF):
-                if f.exists():
-                    f.unlink()
-            c = cfg()
-            for k in ("people", "voice_sample_people", "slack_self_id"):
-                c[k] = {} if k == "people" else ([] if k == "voice_sample_people" else "")
-            write_json(CONFIG, c)
-            STATE.write_text(fresh_state(), encoding="utf-8")
+            # Config first: if it cannot be read, refuse before deleting anything, so an unreadable
+            # config.json never leaves the user with no list AND stale people/Slack id (Codex review, #21).
+            # first_scan "later": a brand-new user again, so the weekday task reads nothing until Start the first scan
+            if update_json(CONFIG, lambda c: c.update(people={}, voice_sample_people=[], slack_self_id="", slack_self_name="", first_scan="later")) is False:
+                return self._json({"ok": False, "error": messages.say("config_unreadable"),
+                                   "detail": "config.json could not be read; nothing was reset (fix or delete it)"}, 500)
+            with state_lock():
+                for f in (STATE, VOICEF, PEOPLEF):
+                    if f.exists():
+                        f.unlink()
+                STATE.write_text(fresh_state(), encoding="utf-8")
+            doctor_gen["n"] += 1
             doctor_cache = {"at": 0, "result": None}
             return self._json({"ok": True})
         if self.path == "/api/chase":
             return self._json({"started": run_job("chase", [body["id"]])})
         if self.path == "/api/action":
-            s = load()
             act = body.get("action")
             vid = str(body.get("id") or "")
             if vid.startswith("vault-"):
@@ -376,69 +1321,78 @@ class H(BaseHTTPRequestHandler):
                                ensure_ascii=False), encoding="utf-8")
                 started = run_job("standing")
                 return self._json({"ok": True, "id": vid, "started": started})
-            if act == "add":
-                owner = (body.get("owner") or "").strip()[:80]
-                ask = (body.get("ask") or "").strip()[:300]
-                notes = (body.get("notes") or "").strip()[:2000]
-                if not ask:
-                    return self._json({"error": "need something to do"}, 400)
-                email = None
-                for name, p in (cfg().get("people") or {}).items():
-                    if name.lower() == owner.lower():
-                        owner = name
-                        email = (p or {}).get("email")
-                        break
-                slug = lambda t: re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:32] or "x"
-                now = datetime.now().astimezone()
-                lid = f"note-{slug(owner or 'me')}-{slug(ask)}-{now.strftime('%Y%m%d%H%M%S')}"
-                s["loops"].insert(0, {
-                    "id": lid, "owner": owner, "owner_email": email, "ask": ask,
-                    "channel": "note", "thread": None, "link": None,
-                    "asked_at": now.isoformat(timespec="minutes"),
-                    "status": "needs_me", "inbound": True, "manual": True,
-                    "notes": notes, "links": [], "last_reply_at": None, "reply_snippet": None,
-                    "chases": 0, "snooze_until": None,
-                })
-                save(s)
-                return self._json({"ok": True, "id": lid})
-            for lp in s["loops"]:
-                if lp["id"] == body["id"]:
-                    if act == "done":
-                        lp["status"] = "done"
-                        lp["closed_at"] = datetime.now().isoformat(timespec="minutes")
-                    elif act == "reopen":
-                        # typed reminders belong in Needs me, not Waiting on them
-                        lp["status"] = "needs_me" if lp.get("channel") == "note" or lp.get("manual") else "waiting"
-                        lp["snooze_until"] = None
-                    elif act == "snooze":
-                        try:
-                            lp["snooze_until"] = norm_date(body.get("until"))
-                        except ValueError as e:
-                            return self._json({"error": str(e)}, 400)
-                    elif act == "unsnooze":
-                        lp["snooze_until"] = None
-                    elif act == "priority":
-                        pr = body.get("priority")
-                        if pr not in ("high", "normal", "low"):
-                            return self._json({"error": "priority is high, normal or low"}, 400)
-                        lp["priority"], lp["priority_by"] = pr, "you"
-                    elif act == "auto_off":
-                        lp["auto_off"] = True
-                    elif act == "auto_on":
-                        lp["auto_off"] = False
-                    elif act == "note":
-                        lp["notes"] = (body.get("notes") or "").strip()[:2000]
-                    elif act == "add_link":
-                        url = (body.get("url") or "").strip()
-                        if not url.startswith("http"):
-                            return self._json({"error": "link must start with http"}, 400)
-                        links = lp.setdefault("links", [])
-                        if not any(x.get("url") == url for x in links):
-                            links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
-                    elif act == "drop_link":
-                        lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
-            save(s)
-            return self._json({"ok": True})
+            people = cfg().get("people") or {}   # read before the lock: the lock covers state.json only
+
+            def act_on(s):
+                """The click applied to s -> (answer, status, write): s is saved only when write is true."""
+                if act == "add":
+                    owner = (body.get("owner") or "").strip()[:80]
+                    ask = (body.get("ask") or "").strip()[:300]
+                    notes = (body.get("notes") or "").strip()[:2000]
+                    if not ask:
+                        return {"error": "need something to do"}, 400, False
+                    email = None
+                    for name, p in people.items():
+                        if name.lower() == owner.lower():
+                            owner = name
+                            email = (p or {}).get("email")
+                            break
+                    slug = lambda t: re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:32] or "x"
+                    now = datetime.now().astimezone()
+                    lid = f"note-{slug(owner or 'me')}-{slug(ask)}-{now.strftime('%Y%m%d%H%M%S')}"
+                    s["loops"].insert(0, {
+                        "id": lid, "owner": owner, "owner_email": email, "ask": ask,
+                        "channel": "note", "thread": None, "link": None,
+                        "asked_at": now.isoformat(timespec="minutes"),
+                        "status": "needs_me", "inbound": True, "manual": True,
+                        "notes": notes, "links": [], "last_reply_at": None, "reply_snippet": None,
+                        "chases": 0, "snooze_until": None,
+                    })
+                    return {"ok": True, "id": lid}, 200, True
+                for lp in s["loops"]:
+                    if lp["id"] == body["id"]:
+                        if act == "done":
+                            lp["status"] = "done"
+                            lp["closed_at"] = datetime.now().isoformat(timespec="minutes")
+                        elif act == "reopen":
+                            # typed reminders belong in Needs me, not Waiting on them
+                            lp["status"] = "needs_me" if lp.get("channel") == "note" or lp.get("manual") else "waiting"
+                            lp["snooze_until"] = None
+                        elif act == "snooze":
+                            try:
+                                lp["snooze_until"] = norm_date(body.get("until"))
+                            except ValueError as e:
+                                return {"error": str(e)}, 400, False
+                        elif act == "unsnooze":
+                            lp["snooze_until"] = None
+                        elif act == "priority":
+                            pr = body.get("priority")
+                            if pr not in ("high", "normal", "low"):
+                                return {"error": "priority is high, normal or low"}, 400, False
+                            lp["priority"], lp["priority_by"] = pr, "you"
+                        elif act == "auto_off":
+                            lp["auto_off"] = True
+                        elif act == "auto_on":
+                            lp["auto_off"] = False
+                        elif act == "note":
+                            lp["notes"] = (body.get("notes") or "").strip()[:2000]
+                        elif act == "add_link":
+                            url = (body.get("url") or "").strip()
+                            if not url.startswith("http"):
+                                return {"error": "link must start with http"}, 400, False
+                            links = lp.setdefault("links", [])
+                            if not any(x.get("url") == url for x in links):
+                                links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
+                        elif act == "drop_link":
+                            lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
+                return {"ok": True}, 200, True
+            # one locked read-modify-write (a cursor repair or a job's write in between is kept); the answer after it
+            with state_lock():
+                s = load()
+                answer, code, write = act_on(s)
+                if write:
+                    save(s)
+            return self._json(answer, code)
         self._json({"error": "not found"}, 404)
 
 
@@ -465,12 +1419,13 @@ def pick_port(start=None):
     running=False -> the port is free, start there.
     Ports held by other programs are skipped, so the app is never confused with a stray server."""
     start = start or PORT
-    for p in range(start, start + 20):
+    stop = min(start + 20, 65536)  # never past the last port: 65535 + 1 would crash the scan
+    for p in range(start, stop):
         if not port_busy(p):
             return p, False
         if already_running(p):
             return p, True
-    raise SystemExit(f"Open Loops: no free port between {start} and {start + 19}; set OPENLOOPS_PORT")
+    raise SystemExit(messages.say("no_free_port") + f"\n(detail: no free port between {start} and {stop - 1}; set OPENLOOPS_PORT)")
 
 
 def stop_running(now=False):
@@ -479,7 +1434,8 @@ def stop_running(now=False):
     import urllib.request
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(20) as ex:  # probe the whole range at once: closed ports take the full timeout each
-        busy = [p for p, b in zip(range(PORT, PORT + 20), ex.map(port_busy, range(PORT, PORT + 20))) if b]
+        span = range(PORT, min(PORT + 20, 65536))
+        busy = [p for p, b in zip(span, ex.map(port_busy, span)) if b]
     for p in busy:
         if already_running(p):
             req = urllib.request.Request(f"http://127.0.0.1:{p}/api/quit", data=json.dumps({"now": now}).encode(),
@@ -492,6 +1448,19 @@ def stop_running(now=False):
             return 0
     print("Open Loops is not running")
     return 1
+
+
+class Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer minus the socket.getfqdn() that HTTPServer.server_bind does: a reverse lookup of 127.0.0.1
+    that some Macs (GitHub's macOS runners, for one) take 35 s to answer, before the app can print its address."""
+    # Connections waiting to be accepted. Python's default is 5; the page's reattach sweep alone asks about six setup
+    # steps at once (#27, #62), and with the poll on top a full queue reset a connection now and then (ECONNRESET).
+    request_queue_size = 64
+
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "localhost", self.server_address[1]
 
 
 if __name__ == "__main__":
@@ -513,10 +1482,17 @@ if __name__ == "__main__":
         if "--no-browser" not in sys.argv:
             open_browser()
         sys.exit(0)
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+    add_install_dirs()  # a CLI installed after this terminal (or Finder session) started is still found
+    srv = Server(("127.0.0.1", PORT), H)
     print("Open Loops ->", url)
+    try:  # Codex run folders a killed job left behind, with their link to the user's sign-in (#42)
+        from .agent import codex_sweep
+        codex_sweep()
+    except Exception:
+        pass
     if PORT != PREFERRED:
-        print(f"(port {PREFERRED} was taken by another program; use --port or OPENLOOPS_PORT to choose)")
+        print(messages.say("port_moved", port=PORT))
+        print(f"(detail: port {PREFERRED} was taken by another program; use --port or OPENLOOPS_PORT to choose)")
     if "--no-browser" not in sys.argv:
         threading.Timer(1.0, open_browser).start()
 
@@ -527,8 +1503,12 @@ if __name__ == "__main__":
             for pid, seen in list(pages.items()):
                 if now - seen > PAGE_STALE_S:
                     pages.pop(pid, None)
+            if starting:
+                continue  # a job's process is being started: never shut down before it is registered (and stoppable)
             if any(j["running"] for j in jobs.values()) and not quit_now:
                 continue  # never pull the rug from under a refresh/chase; check again once it is done
+            if any(c.get("running") for c in connects.values()) and not quit_requested:
+                continue  # a sign-in outlives its tab: the browser may still send Allow, up to the 5-minute deadline
             no_pages = bye_at and not pages and now - bye_at > PAGE_GRACE_S and now - last_seen > PAGE_GRACE_S
             if quit_requested or no_pages or now - last_seen > IDLE_EXIT_S:
                 srv.shutdown()
@@ -539,3 +1519,10 @@ if __name__ == "__main__":
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        stop_connects()
+        if quit_now:  # "Quit now": whatever job process is still registered (one registered late included) goes too
+            with jobs_lock:
+                late_procs = list(procs.values())
+            for p in late_procs:
+                kill_tree(p)
