@@ -30,7 +30,10 @@ _CODEX_JOBS = ROOT / "state" / "codex-home"  # one job home per ChatGPT account 
 # Miro (Roadmap card) is the official Miro plugin; jobs allow the whole server ("miro.*").
 _CLAUDE_SLACK = {"plugin": "mcp__plugin_slack_slack__slack_{}", "connector": "mcp__claude_ai_Slack__slack_{}"}
 # Miro likewise: the Miro plugin (plugin:miro:miro) or the claude.ai Miro connector. Jobs allow the
-# whole server either way; doctor.py stores which one is connected as config "miro_source".
+# whole server on EVERY route, detected one first: since Claude Code 2.1.284 a session drops a plugin server
+# that duplicates a claude.ai connector ("[MCP] Lazy dedup" in its debug log), so a job that allowed only the
+# plugin found no Miro tools while `claude mcp list` still called the plugin connected. Allowing a server that
+# is not in the session is harmless. doctor.py stores which one is connected as config "miro_source".
 _CLAUDE_MIRO = {"plugin": "mcp__plugin_miro_miro", "connector": "mcp__claude_ai_Miro",
                 "server": "mcp__miro"}
 # "server" = a user-added HTTP server literally named "miro":
@@ -866,6 +869,8 @@ def _qualify(tools):
         fmt["slack"] = tool_prefix(server_name("slack")) + "__slack_{}"
         fmt["gmail"] = tool_prefix(server_name("gmail")) + "__{}"
         fmt["miro"] = tool_prefix(server_name("miro"))
+        # both usual routes as well, whichever was detected (see _CLAUDE_MIRO)
+        extra_miro = [p for p in (_CLAUDE_MIRO["plugin"], _CLAUDE_MIRO["connector"]) if p != fmt["miro"]]
     out = []
     for t in tools:
         svc, tool = t.split(".", 1)
@@ -874,6 +879,8 @@ def _qualify(tools):
         pat = fmt[svc]
         # "miro.*" -> the bare server id: Claude Code reads that as every tool on that server
         out.append(pat.format(tool) if "{}" in pat else pat)
+        if svc == "miro" and name() == "claude":
+            out += extra_miro
     return list(dict.fromkeys(out))
 
 
@@ -1088,11 +1095,44 @@ def effort():
     return str(_cfg().get("codex_effort" if name() == "codex" else "effort") or "").strip().lower()
 
 
+# The Miro plugin's own server definition (its .mcp.json), so a job can name that exact server on the command line
+# and Claude Code finds the plugin's sign-in for it (the credential is keyed by the server's name and config).
+# Read from the installed plugin when it can be found, else what the plugin shipped with (miro 2.0.0, 2026-09).
+_MIRO_PLUGIN_SERVER = {"type": "http", "url": "https://mcp.miro.com/", "headers": {"X-AI-Source": "claude-code-plugin"}}
+
+
+def _miro_plugin_server():
+    for p in sorted((Path.home() / ".claude" / "plugins").glob("*/**/miro*/.mcp.json")):
+        try:
+            srv = json.loads(p.read_text(encoding="utf-8-sig")).get("mcpServers", {}).get("miro")
+            if isinstance(srv, dict) and srv.get("url"):
+                return srv
+        except Exception:
+            continue
+    return dict(_MIRO_PLUGIN_SERVER)
+
+
+def miro_mcp_args(tools):
+    """Extra `claude -p` flags for a job that needs only Miro (the Roadmap card) on the plugin route, else [].
+    Since Claude Code 2.1.284 a session drops a plugin MCP server when the claude.ai account has a connector with
+    the same URL ("[MCP] Lazy dedup" in its debug log) - and that connector is a separate sign-in, done on
+    claude.ai, which `claude mcp list` does not even show. So the job says which server it wants: --mcp-config with
+    the plugin's own server under the plugin's own name, --strict-mcp-config so nothing else (the connector included)
+    is loaded next to it. The session then has exactly that server, signed in as the plugin is (verified 2026-09-29
+    on 2.1.284: 47 Miro tools, connected). Slack / Gmail jobs are untouched: they are not Miro-only."""
+    if name() != "claude" or not tools or not all(t.startswith("miro.") for t in tools) or miro_source() != "plugin":
+        return []
+    f = ROOT / "state" / "mcp-miro.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"mcpServers": {server_name("miro"): _miro_plugin_server()}}, indent=1), encoding="utf-8")
+    return ["--strict-mcp-config", "--mcp-config", str(f)]
+
+
 def claude_args(tools, effort_=None):
     # json, not text (#46): one result object whose is_error flag says whether the CLI itself failed (signed out, usage
     # limit, no network), so a failure is classified from that flag and never from prose mixed into the answer.
     # effort_: this run's own effort, overriding config.json "effort" (run()'s per-job override, #50).
-    args = ["claude", "-p", "--output-format", "json", "--allowedTools", ",".join(_qualify(tools))]
+    args = ["claude", "-p", "--output-format", "json", "--allowedTools", ",".join(_qualify(tools))] + miro_mcp_args(tools)
     if model():
         args += ["--model", model()]
     e = effort() if effort_ is None else effort_

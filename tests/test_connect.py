@@ -189,15 +189,18 @@ cfg["slack_source"], cfg["claude_servers"] = "plugin", {"slack": "plugin:slack:x
 check(agent.login_cmd("slack")[0][3] == "plugin:slack:slack", "a listed name with shell characters is ignored")
 # tool ids follow the same server: today's names give today's ids, a renamed server its own
 cfg.pop("claude_servers")
-for src_s, src_m, want in (("plugin", "plugin", ["mcp__plugin_slack_slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__plugin_miro_miro"]),
-                           ("connector", "connector", ["mcp__claude_ai_Slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Miro"]),
-                           ("plugin", "server", ["mcp__plugin_slack_slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__miro"])):
+# Miro: the detected route's server first, then the other usual routes, as Claude Code (2.1.284) drops the plugin from
+# a session when the claude.ai connector is there too - the job must not be left allowing only the dropped one.
+MIRO_BOTH = ["mcp__plugin_miro_miro", "mcp__claude_ai_Miro"]
+for src_s, src_m, want in (("plugin", "plugin", ["mcp__plugin_slack_slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__plugin_miro_miro", "mcp__claude_ai_Miro"]),
+                           ("connector", "connector", ["mcp__claude_ai_Slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Miro", "mcp__plugin_miro_miro"]),
+                           ("plugin", "server", ["mcp__plugin_slack_slack__slack_search_users", "mcp__claude_ai_Gmail__search_threads", "mcp__miro"] + MIRO_BOTH)):
     cfg["slack_source"], cfg["miro_source"] = src_s, src_m
     got = agent._qualify(["slack.search_users", "gmail.search_threads", "miro.*"])
-    check(got == want, f"tool ids for slack={src_s} miro={src_m} unchanged from the fixed prefixes (got {got})")
+    check(got == want, f"tool ids for slack={src_s} miro={src_m}: the detected Miro route first, then both usual routes (got {got})")
 cfg.update(slack_source="plugin", miro_source="plugin", claude_servers={"slack": "plugin:slack-v2:slack", "miro": "plugin:miro-next:miro"})
 got = agent._qualify(["slack.search_users", "miro.*"])
-check(got == ["mcp__plugin_slack-v2_slack__slack_search_users", "mcp__plugin_miro-next_miro"],
+check(got == ["mcp__plugin_slack-v2_slack__slack_search_users", "mcp__plugin_miro-next_miro"] + MIRO_BOTH,
       f"a renamed server's tools are allowed under its own name, as it is signed in to (got {got})")
 cfg.pop("claude_servers")
 
@@ -250,8 +253,23 @@ doctor.CONFIG = _real_cfg
 shutil.rmtree(_cfgdir, ignore_errors=True)
 check(cfg["claude_servers"] == {"slack": "plugin:slack-next:slack", "gmail": "claude.ai Gmail Next"},
       f"saved: the new names replace the old, and Miro's older saved name is removed, not kept (got {cfg['claude_servers']})")
-check(agent._qualify(["miro.*"]) == ["mcp__plugin_miro_miro"] and agent.login_cmd("miro")[0][3] == "plugin:miro:miro",
+check(agent._qualify(["miro.*"]) == MIRO_BOTH and agent.login_cmd("miro")[0][3] == "plugin:miro:miro",
       "...so Miro's jobs and sign-in cannot fall back to the stale saved name")
+# A Miro-only job on the plugin route names the plugin's server on the command line and loads nothing else, so a
+# claude.ai Miro connector cannot shadow it (Claude Code 2.1.284 drops the plugin from the session when one exists)
+_ROOT, agent.ROOT = agent.ROOT, Path(tempfile.mkdtemp(prefix="openloops-mcp-"))
+a = agent.claude_args(["miro.*"])
+i = a.index("--mcp-config") if "--mcp-config" in a else -1
+check("--strict-mcp-config" in a and i > 0 and a[i + 1].endswith("mcp-miro.json"), f"Miro-only job: --strict-mcp-config + --mcp-config state/mcp-miro.json (got {a})")
+mc = json.loads(Path(a[i + 1]).read_text(encoding="utf-8"))
+check(list(mc["mcpServers"]) == ["plugin:miro:miro"] and mc["mcpServers"]["plugin:miro:miro"]["url"].startswith("https://mcp.miro.com"),
+      f"...naming the plugin's own server so its sign-in is found (got {mc})")
+check("--strict-mcp-config" not in agent.claude_args(["slack.search_users", "gmail.search_threads"]), "Slack / Gmail jobs load MCP as before")
+check("--strict-mcp-config" not in agent.claude_args(["miro.*", "gmail.search_threads"]), "a mixed job is not Miro-only")
+cfg["miro_source"] = "connector"
+check("--strict-mcp-config" not in agent.claude_args(["miro.*"]), "connector route: the claude.ai connector is only there without --strict-mcp-config")
+cfg["miro_source"] = "plugin"
+shutil.rmtree(agent.ROOT, ignore_errors=True); agent.ROOT = _ROOT
 got = agent._qualify(["slack.search_users", "gmail.search_threads"])
 check(got == ["mcp__plugin_slack-next_slack__slack_search_users", "mcp__claude_ai_Gmail_Next__search_threads"],
       f"...and the jobs allow the renamed servers' own tool ids (got {got})")
