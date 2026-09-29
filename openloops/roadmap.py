@@ -1,9 +1,13 @@
-"""Roadmap card: paste standup notes, stage rows, add cards to a Miro frame.
+"""Roadmap card: paste standup notes, stage rows, add cards to a Miro frame or rows to a Miro Kanban.
 
-    python -m openloops.roadmap read              -> read the board's frame: lanes, columns, what's on it
+    python -m openloops.roadmap read              -> read the board's frame or Kanban: lanes, columns, what's on it
     python -m openloops.roadmap parse             -> turn the pasted notes into rows (no Miro call)
     python -m openloops.roadmap preview           -> plan which rows would be added / skipped
-    python -m openloops.roadmap build --confirm   -> add ONE sticky note per planned row. Adds only.
+    python -m openloops.roadmap build --confirm   -> add ONE card (frame) or ONE row (Kanban) per planned row. Adds only.
+
+The target named in Settings ("frame") may be a frame laid out as a lane / column grid, or a Miro table shown as a
+Kanban: Read finds out which ("kind" in the store) and the other steps follow. On a Kanban the "columns" are the
+statuses of its Status column, there are no lanes, and Add inserts rows with table_sync_rows.
 
 Store: state/roadmap.json (rows, pasted, board, preview). Staging rows live here, never in
 state.json, because refresh.py rewrites state.json. Miro is reached through the agent (agent.py)
@@ -19,32 +23,46 @@ CREATED = ROOT / "state" / "roadmap-created.txt"
 LOG = ROOT / "state" / "logs"
 
 MODES = ("read", "parse", "preview", "build")
+KINDS = ("frame", "table")                                        # what the item named in Settings turned out to be
+FIELDS = {"title": "Title", "detail": "Description", "status": "Status"}   # a Kanban's column titles, as Read found them
 STATES = ("not_started", "in_progress", "blocked", "done")
 MIRO_TOOLS = ["miro.*"]
 
 HEAD = """UNATTENDED RUN - nobody can answer questions. Do not ask any. Output only what is requested.
 The Miro tools come from the Miro plugin; use whichever of them fit (board_list_items / canvas_search /
-canvas_read_as_svg for reading, canvas_update_from_svg / canvas_create_from_svg for creating). If a tool
+canvas_read_as_svg for reading a frame, table_list_rows for reading a table or Kanban, canvas_update_from_svg /
+canvas_create_from_svg for creating on a frame, table_sync_rows for adding rows to a table or Kanban). If a tool
 fails, try another approach once, then report what you could.
 
 """
 
 READ_PROMPT = HEAD + """Find {name}'s roadmap board on Miro: "{board}" (a board name, or a board link - if it is a
-link, open that board). On it, find the frame titled "{frame}".
+link, open that board). On it, find the item titled "{frame}" (canvas_search with result_mode "matches" and that
+title finds it and says its type). It is one of two kinds:
 
-The frame is a grid. Lane names run down the LEFT edge (one per row - e.g. teams or workstreams);
-period / column names run ACROSS THE TOP (e.g. weeks or months). Sticky notes and cards inside the
-frame are roadmap items, each sitting in one lane row and one column. Read the frame's contents:
-list the items inside it and infer the lane names and column names from the text items along the
-frame's left edge and top edge (positions tell you which is which). For every sticky note / card
-inside the grid, give its text and the lane and column it sits in.
+(a) A FRAME laid out as a grid. Lane names run down the LEFT edge (one per row - e.g. teams or workstreams);
+period / column names run ACROSS THE TOP (e.g. weeks or months). Sticky notes and cards inside the frame are
+roadmap items, each sitting in one lane row and one column. Read the frame's contents (canvas_read_as_svg on
+it): list the items inside it and infer the lane names and column names from the text items along the frame's
+left edge and top edge (positions tell you which is which). For every sticky note / card inside the grid, give
+its text and the lane and column it sits in. kind = "frame".
+
+(b) A TABLE, usually shown as a KANBAN (type "kanban" or "table"). Read it with table_list_rows, miro_url =
+the board link + "?moveToWidget=<its id>", and follow next_cursor until every row is read. Its "columns" are
+the options of its Status select column, in the order listed (the Kanban's lanes); it has no lanes. Every row
+is an existing item: title = its title cell as plain text (a cell may come wrapped as {{"format":"delta",
+"ops":[{{"insert":"..."}}]}} - give the inserted text only), column = its Status. Also report which column
+titles hold the title, the description and the status (usually "Title", "Description", "Status"). kind = "table".
 
 Reply with ONLY a JSON object between the markers, nothing else:
 <<<ROADMAP>>>
-{{"board_url": "https://miro.com/app/board/...", "frame_title": "{frame}", "frame_id": "<the frame item's id>",
+{{"board_url": "https://miro.com/app/board/...", "frame_title": "{frame}", "frame_id": "<the item's id>",
+  "kind": "frame" | "table",
+  "fields": {{"title": "Title", "detail": "Description", "status": "Status"}},
   "lanes": ["lane name", "..."], "columns": ["column name", "..."],
   "existing": [{{"title": "card text", "lane": "lane name", "column": "column name"}}]}}
 <<<END>>>
+("fields" and an empty "lanes" for a table; "fields" may be left out for a frame.)
 """
 
 PARSE_PROMPT = HEAD + """Turn {name}'s standup notes into roadmap rows. One row per distinct piece of work; skip
@@ -54,7 +72,7 @@ chatter. Notes:
 
 Known lanes (must match exactly, or "" if unsure): {lanes}
 Known columns (must match exactly, or "" if unsure): {columns}
-People {name} works with (use for owners when a first name appears): {people}
+{hint}People {name} works with (use for owners when a first name appears): {people}
 
 For each row: title (short, imperative or noun phrase), detail (one line, may be ""), owners
 (comma-separated names or ""), lane, column, state - "blocked" if it is waiting on someone /
@@ -67,20 +85,23 @@ Reply with ONLY a JSON object between the markers, nothing else:
 {{"rows": [{{"title": "...", "detail": "...", "owners": "...", "lane": "...", "column": "...", "state": "not_started"}}]}}
 <<<END>>>
 """
+# the parse prompt's extra line on a Kanban: its columns are statuses, so the column follows the state
+PARSE_TABLE_HINT = ('The columns are the statuses of a Kanban: there are no lanes (leave lane ""), and each row\'s column '
+                    'is the status matching its state - blocked -> Blocked, done -> Complete / Done, in_progress -> In '
+                    'Progress, not_started -> Not Started / To Do (the closest name among the known columns).\n')
 
-PREVIEW_PROMPT = HEAD + """{name} wants to add these rows to the frame "{frame}" on the Miro board "{board}" ({url}).
+PREVIEW_PROMPT = HEAD + """{name} wants to add these rows to {what} "{frame}" on the Miro board "{board}" ({url}).
 Nothing is created in this run - only plan it.
 
 Rows to consider (id, title, owners, lane, column):
 {rows}
 
-What is already inside the frame (from the last read; re-read the frame with the Miro tools if
-you can, to be sure):
+What is already on it (from the last read; re-read it with the Miro tools if you can, to be sure -
+{reread}):
 {existing}
 
-For each row decide "add" or "skip". Skip when: an item with the same meaning is already in the
-frame (say which), or the lane / column is empty or not one of the frame's lanes {lanes} /
-columns {columns}. Otherwise add.
+For each row decide "add" or "skip". Skip when: an item with the same meaning is already there
+(say which), or {where}. Otherwise add.
 
 Reply with ONLY a JSON object between the markers, nothing else:
 <<<ROADMAP>>>
@@ -124,11 +145,38 @@ Reply with ONLY a JSON object between the markers, nothing else:
 <<<END>>>
 """
 
+BUILD_TABLE_PROMPT = HEAD + """Add roadmap items to the Kanban "{frame}" on {name}'s Miro board "{board}" ({url}).
+The Kanban is a Miro table item; its link is {item_url}
+
+Insert exactly ONE ROW per row below with ONE table_sync_rows call: miro_url = that link, every row WITHOUT a
+rowId (inserts only). Cells for each row:
+  "{title_col}"  = the row's title
+  "{detail_col}" = the detail, followed by "  Owners: <owners>" when there are owners (leave this cell out when
+                   there is neither)
+  "{status_col}" = the row's column, exactly as listed (one of: {columns}); if a row's column is not one of those,
+                   use the one matching its state (blocked -> Blocked, done -> Complete / Done, in_progress ->
+                   In Progress, else Not Started / To Do)
+Set no other cells. NEVER pass a rowId, never edit, move or delete an existing row, do not create anything not
+listed here. Then read the Kanban back with table_list_rows (filter_by the statuses you used) and report, for each
+row, the rowId of the row you created as "item_id" (match on the title; never invent one) and the Kanban link as
+"url". If a row could not be created, report it with "item_id": "" and why in "note".
+
+Rows (id, title, owners, lane, column, state):
+{rows}
+Details (id: detail text):
+{details}
+
+Reply with ONLY a JSON object between the markers, nothing else:
+<<<ROADMAP>>>
+{{"created": [{{"id": "r1", "item_id": "<rowId, or empty when not created>", "url": "<the Kanban link, or empty>", "note": "<empty, or why it was not created>"}}]}}
+<<<END>>>
+"""
+
 
 def _default():
     return {"rows": [], "pasted": "", "updated_at": "",
-            "board": {"name": "", "url": "", "frame": "", "frame_id": "", "lanes": [], "columns": [],
-                      "read_at": "", "existing": []},
+            "board": {"name": "", "url": "", "frame": "", "frame_id": "", "kind": "frame", "lanes": [], "columns": [],
+                      "fields": dict(FIELDS), "read_at": "", "existing": []},
             "preview": {"at": "", "plan": []}}
 
 
@@ -216,6 +264,18 @@ def embed_url(board_url, frame_id=""):
     return url
 
 
+def item_url(board_url, item_id):
+    """'https://miro.com/app/board/<id>/?moveToWidget=<item>': the link Miro's table tools take. "" without both."""
+    bid = board_id(board_url)
+    return f"https://miro.com/app/board/{bid}/?moveToWidget={item_id}" if bid and item_id else ""
+
+
+def _fields(b):
+    f = dict(FIELDS)
+    f.update({k: str(v) for k, v in (b.get("fields") or {}).items() if k in f and str(v or "").strip()})
+    return f
+
+
 def configured():
     cfg = store.load_cfg()
     board = str(cfg.get("roadmap_board") or "").strip()
@@ -263,8 +323,11 @@ def main(mode, confirm=False):
 
     if mode == "read":
         out = _ask(mode, READ_PROMPT.format(name=name, board=c["board"], frame=c["frame"]), MIRO_TOOLS)
+        kind = str(out.get("kind") or "").strip().lower()
         b.update({"url": str(out.get("board_url") or b.get("url") or ""),
                   "frame_id": str(out.get("frame_id") or b.get("frame_id") or ""),
+                  "kind": kind if kind in KINDS else "frame",
+                  "fields": _fields({"fields": out.get("fields") if isinstance(out.get("fields"), dict) else {}}),
                   "lanes": [str(x) for x in out.get("lanes") or []],
                   "columns": [str(x) for x in out.get("columns") or []],
                   "existing": [{"title": str(e.get("title") or ""), "lane": str(e.get("lane") or ""),
@@ -272,7 +335,10 @@ def main(mode, confirm=False):
                                if isinstance(e, dict)],
                   "read_at": datetime.now().isoformat(timespec="minutes")})
         save(d)
-        print(f"done: {len(b['lanes'])} lanes, {len(b['columns'])} columns, {len(b['existing'])} items on the frame")
+        if b["kind"] == "table":
+            print(f"done: a Kanban with {len(b['columns'])} statuses, {len(b['existing'])} rows on it")
+        else:
+            print(f"done: {len(b['lanes'])} lanes, {len(b['columns'])} columns, {len(b['existing'])} items on the frame")
         return
 
     if mode == "parse":
@@ -280,8 +346,9 @@ def main(mode, confirm=False):
             print("SKIPPED: nothing pasted"); sys.exit(2)
         out = _ask(mode, PARSE_PROMPT.format(
             name=name, pasted=d["pasted"].strip(),
-            lanes=", ".join(b["lanes"]) or "(unknown - read the board first)",
+            lanes=", ".join(b["lanes"]) or ("(none - this is a Kanban)" if b["kind"] == "table" else "(unknown - read the board first)"),
             columns=", ".join(b["columns"]) or "(unknown - read the board first)",
+            hint=PARSE_TABLE_HINT if b["kind"] == "table" else "",
             people=", ".join((cfg.get("people") or {}).keys()) or "none listed"), [])
         before = len(d["rows"])
         d["rows"] = merge_rows(d["rows"], [r for r in out.get("rows") or [] if isinstance(r, dict)])
@@ -293,11 +360,17 @@ def main(mode, confirm=False):
     if mode == "preview":
         if not pending:
             print("SKIPPED: no unposted rows"); sys.exit(2)
+        table = b["kind"] == "table"
         out = _ask(mode, PREVIEW_PROMPT.format(
             name=name, frame=c["frame"], board=c["board"], url=b.get("url") or "url unknown",
+            what="the Kanban" if table else "the frame",
+            reread=(f"table_list_rows on {item_url(b.get('url'), b.get('frame_id')) or 'the Kanban'}" if table
+                    else "canvas_read_as_svg on the frame"),
             rows=_rows_text(pending),
-            existing="\n".join(f'- {e["title"]} ({e["lane"]} / {e["column"]})' for e in b["existing"]) or "- (nothing, or not read yet)",
-            lanes=b["lanes"], columns=b["columns"]), MIRO_TOOLS)
+            existing="\n".join(f'- {e["title"]} ({e["column"]})' if table else f'- {e["title"]} ({e["lane"]} / {e["column"]})'
+                                for e in b["existing"]) or "- (nothing, or not read yet)",
+            where=(f"the column is empty or not one of the Kanban's statuses {b['columns']}" if table else
+                   f"the lane / column is empty or not one of the frame's lanes {b['lanes']} / columns {b['columns']}")), MIRO_TOOLS)
         ids = {r["id"] for r in pending}
         plan = [{"id": str(p.get("id")), "action": "add" if str(p.get("action")).lower() == "add" else "skip",
                  "why": str(p.get("why") or "")} for p in out.get("plan") or [] if isinstance(p, dict) and str(p.get("id")) in ids]
@@ -311,9 +384,18 @@ def main(mode, confirm=False):
     todo = [r for r in pending if plan.get(r["id"], "add" if not plan else "skip") == "add"]
     if not todo:
         print("SKIPPED: nothing planned to add - run Preview first"); sys.exit(2)
-    out = _ask(mode, BUILD_PROMPT.format(name=name, frame=c["frame"], board=c["board"],
-                                         url=b.get("url") or "url unknown", rows=_rows_text(todo),
-                                         details="\n".join(f'- {r["id"]}: {r["detail"]}' for r in todo if r.get("detail")) or "- (none)"), MIRO_TOOLS)
+    details = "\n".join(f'- {r["id"]}: {r["detail"]}' for r in todo if r.get("detail")) or "- (none)"
+    if b["kind"] == "table":
+        f = _fields(b)
+        prompt = BUILD_TABLE_PROMPT.format(name=name, frame=c["frame"], board=c["board"], url=b.get("url") or "url unknown",
+                                           item_url=item_url(b.get("url"), b.get("frame_id")) or "(unknown - find the Kanban by its title and use its link)",
+                                           title_col=f["title"], detail_col=f["detail"], status_col=f["status"],
+                                           columns=", ".join(b["columns"]) or "the Status column's options",
+                                           rows=_rows_text(todo), details=details)
+    else:
+        prompt = BUILD_PROMPT.format(name=name, frame=c["frame"], board=c["board"], url=b.get("url") or "url unknown",
+                                     rows=_rows_text(todo), details=details)
+    out = _ask(mode, prompt, MIRO_TOOLS)
     by_id = {r["id"]: r for r in todo}
     n = 0
     lines, missed, flagged, seen = [], [], [], set()
@@ -342,7 +424,7 @@ def main(mode, confirm=False):
         print("check on the board: " + m)
     for m in missed:
         print("not added: " + m)
-    print(f"done: {n} of {len(todo)} added to the board" + (f" ({len(missed)} not added - see the job log)" if missed else ""))
+    print(f"done: {n} of {len(todo)} added to the {'Kanban' if b['kind'] == 'table' else 'board'}" + (f" ({len(missed)} not added - see the job log)" if missed else ""))
     if n < len(todo):
         sys.exit(1)
 

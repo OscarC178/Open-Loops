@@ -393,9 +393,9 @@ select.pri{min-height:24px;font:inherit;font-size:11px;padding:0 2px;border:1px 
  </div>
  <div class="box">
   <h3>Roadmap (Miro)</h3>
-  <div class="sub">The Roadmap section on Home adds cards to a frame on a Miro board. Board = its name or link; frame = the title of the roadmap frame on it. Needs Miro connected in Claude — the connection checklist on Home says how.</div>
+  <div class="sub">The Roadmap section on Home adds cards to a frame, or rows to a Kanban, on a Miro board. Board = its name or link; frame = the title of the roadmap frame or Kanban on it (Read board works out which). Needs Miro connected in Claude — the connection checklist on Home says how.</div>
   <input id="cfg_rm_board" style="margin:6px 0 0;width:100%" placeholder="board name or https://miro.com/app/board/…">
-  <input id="cfg_rm_frame" style="margin:6px 0 0;width:100%" placeholder="frame title, e.g. Roadmap Sep 2026">
+  <input id="cfg_rm_frame" style="margin:6px 0 0;width:100%" placeholder="frame or Kanban title, e.g. Roadmap Sep 2026">
  </div>
  </div></details>
  <details class="cfg danger" id="cs_app" ontoggle="cfgRemember(this)"><summary><b>App</b><span class="sub">quit · start over</span></summary><div class="body">
@@ -1240,20 +1240,22 @@ function paintRm(){if(!RM||!$('#roadmap'))return;
  const busy=running('roadmap');for(const id of ['#rm_parsebtn','#rm_readbtn','#rm_prevbtn'])$(id).disabled=busy;
  $('#rm_parsebtn').textContent=busy?'Working…':'Read these notes';if(busy)$('#rm_postbtn').disabled=true;
  const key=JSON.stringify(RM.store);if(key===rmRendered)return;rmRendered=key;   // only redraw rows when the store changes - never under your cursor
- $('#rm_board').innerHTML=b.read_at?`<b>${esc(b.frame||'')}</b>${b.url?` · <a href="${esc(b.url)}" target="_blank">open board</a>`:''} · lanes: ${(b.lanes||[]).map(esc).join(', ')||'?'} · columns: ${(b.columns||[]).map(esc).join(', ')||'?'} · ${(b.existing||[]).length} cards on it`:'Press <b>Read board</b> once so the lane and column choices match the frame.';
+ // a Kanban (a Miro table) has statuses instead of lanes / columns; Read board says which kind the item is
+ $('#rm_board').innerHTML=b.read_at?`<b>${esc(b.frame||'')}</b>${b.url?` · <a href="${esc(b.url)}" target="_blank">open board</a>`:''} · ${b.kind==='table'?`Kanban · statuses: ${(b.columns||[]).map(esc).join(', ')||'?'} · ${(b.existing||[]).length} rows on it`:`lanes: ${(b.lanes||[]).map(esc).join(', ')||'?'} · columns: ${(b.columns||[]).map(esc).join(', ')||'?'} · ${(b.existing||[]).length} cards on it`}`:'Press <b>Read board</b> once so the lane and column choices match the frame or Kanban.';
  if(document.activeElement!==$('#rm_paste'))$('#rm_paste').value=RM.store.pasted||'';
  $('#rm_embed_wrap').style.display=RM.embed?'':'none';rmEmbed();
  renderRmRows();renderRmPreview()}
 // Miro Live Embed: loaded only once the section is opened, and re-pointed when the frame id changes after a Read board
 function rmEmbed(){const w=$('#rm_embed_wrap'),f=$('#rm_embed');if(!RM||!RM.embed||!w.open){return}if(f.getAttribute('src')!==RM.embed)f.setAttribute('src',RM.embed)}
-function renderRmRows(){const rows=rmRows(),b=(RM.store.board||{}),lanes=b.lanes||[],cols=b.columns||[];
+function renderRmRows(){const rows=rmRows(),b=(RM.store.board||{}),lanes=b.lanes||[],cols=b.columns||[],table=b.kind==='table';
  const opt=(list,v)=>['<option value="">—</option>'].concat((list.includes(v)||!v?list:[v].concat(list)).map(x=>`<option ${x===v?'selected':''}>${esc(x)}</option>`)).join('');
- const head='<div class="rmrow rmhead"><div>title</div><div>detail</div><div>owners</div><div>lane</div><div>column</div><div>state</div><div></div></div>';
+ // on a Kanban the "column" is the row's status and there is no lane: that select stays, greyed, so the grid keeps its shape
+ const head=`<div class="rmrow rmhead"><div>title</div><div>detail</div><div>owners</div><div>${table?'<span title="a Kanban has no lanes">lane —</span>':'lane'}</div><div>${table?'status':'column'}</div><div>state</div><div></div></div>`;
  $('#rm_rows').innerHTML=rows.length?head+rows.map((r,i)=>{const d=r.posted_id?'disabled':'';return `<div class="rmrow${r.posted_id?' snoozed':''}">
   <input value="${esc(r.title)}" placeholder="what" onchange="rmSet(${i},'title',this.value)" ${d}>
   <input value="${esc(r.detail)}" placeholder="detail" onchange="rmSet(${i},'detail',this.value)" ${d}>
   <input value="${esc(r.owners)}" placeholder="who" onchange="rmSet(${i},'owners',this.value)" ${d}>
-  <select onchange="rmSet(${i},'lane',this.value)" ${d}>${opt(lanes,r.lane)}</select>
+  <select onchange="rmSet(${i},'lane',this.value)" ${table?'disabled title="a Kanban has no lanes"':d}>${opt(lanes,r.lane)}</select>
   <select onchange="rmSet(${i},'column',this.value)" ${d}>${opt(cols,r.column)}</select>
   <select onchange="rmSet(${i},'state',this.value)" ${d}>${['not_started','in_progress','blocked','done'].map(s=>`<option value="${s}" ${s===r.state?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
   <div>${r.posted_id?'<span class="pill" title="already on the board">✓</span>':`<button onclick="rmDrop(${i})" title="remove row">×</button>`}</div></div>`}).join(''):'<div class="empty">no rows yet — paste notes and press Read these notes, or add a row by hand</div>'}

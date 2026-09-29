@@ -29,7 +29,9 @@ roadmap.LOG = tmp / "logs"
 try:
     d = roadmap.load()
     check(set(d) == {"rows", "pasted", "updated_at", "board", "preview"}, "load() has every top-level key")
-    check(set(d["board"]) == {"name", "url", "frame", "frame_id", "lanes", "columns", "read_at", "existing"}, "board shape")
+    check(set(d["board"]) == {"name", "url", "frame", "frame_id", "kind", "lanes", "columns", "fields", "read_at", "existing"}, "board shape")
+    check(d["board"]["kind"] == "frame" and d["board"]["fields"] == {"title": "Title", "detail": "Description", "status": "Status"},
+          "a board is a frame until Read says otherwise; a Kanban's column titles default to Miro's")
     check(set(d["preview"]) == {"at", "plan"} and d["rows"] == [], "preview shape, no rows")
 
     r = roadmap.normalise_row({"title": "  Fix layout tool ", "state": "bogus", "owners": "Rafe"})
@@ -90,6 +92,43 @@ try:
     e = roadmap.embed_url("https://miro.com/app/board/uXjVK1abc=/", "3074457350605242225")
     check(e == "https://miro.com/app/live-embed/uXjVK1abc=/?autoplay=true&embedMode=view_only_without_ui&moveToWidget=3074457350605242225", "embed_url focuses the frame")
     check("moveToWidget" not in roadmap.embed_url("https://miro.com/app/board/uXjVK1abc=/"), "embed_url without a frame id shows the whole board")
+    check(roadmap.item_url("https://miro.com/app/board/uXjVK1abc=/?share_link_id=1", "3074457350605242225")
+          == "https://miro.com/app/board/uXjVK1abc=/?moveToWidget=3074457350605242225", "item_url: the table tools' link, query string dropped")
+    check(roadmap.item_url("Planning", "1") == "" and roadmap.item_url("https://miro.com/app/board/uXjVK1abc=/", "") == "", "item_url needs both a board link and an item id")
+
+    # A Kanban: Read stores kind "table", its statuses as columns, the column titles; Add uses the table prompt
+    roadmap.configured = lambda: {"board": "https://miro.com/app/board/uXjVK1abc=/", "frame": "WEEK 40", "ok": True}
+    asked = []
+    def fake_run(prompt, tools, **k):
+        asked.append(prompt)
+        if "find the item titled" in prompt:
+            return _P('<<<ROADMAP>>>{"board_url": "https://miro.com/app/board/uXjVK1abc=/", "frame_title": "WEEK 40", "frame_id": "345", '
+                      '"kind": "table", "fields": {"title": "Title", "detail": "Description", "status": "Status", "bogus": "x"}, "lanes": [], '
+                      '"columns": ["Not Started", "In Progress", "Blocked", "Complete"], '
+                      '"existing": [{"title": "Fix layout tools", "lane": "", "column": "Not Started"}]}<<<END>>>')
+        return _P('<<<ROADMAP>>>{"created": [{"id": "k1", "item_id": "row-9", "url": "https://miro.com/app/board/uXjVK1abc=/?moveToWidget=345", "note": ""}]}<<<END>>>')
+    roadmap.agent.run = fake_run
+    roadmap.main("read")
+    b = roadmap.load()["board"]
+    check(b["kind"] == "table" and b["frame_id"] == "345" and b["columns"] == ["Not Started", "In Progress", "Blocked", "Complete"] and b["lanes"] == [],
+          "read of a Kanban: kind table, statuses as columns, no lanes")
+    check(b["fields"] == {"title": "Title", "detail": "Description", "status": "Status"} and b["existing"][0]["column"] == "Not Started",
+          "read of a Kanban: column titles kept (unknown keys dropped), rows as existing items")
+    d = roadmap.load(); d["rows"] = [roadmap.normalise_row({"id": "k1", "title": "Ship it", "detail": "the last step", "owners": "Rafe", "column": "In Progress", "state": "in_progress"})]
+    d["preview"] = {"at": "x", "plan": [{"id": "k1", "action": "add", "why": ""}]}; roadmap.save(d)
+    roadmap.main("build", confirm=True)
+    bp = asked[-1]
+    check("table_sync_rows" in bp and "https://miro.com/app/board/uXjVK1abc=/?moveToWidget=345" in bp and '"Status"' in bp and "Not Started, In Progress, Blocked, Complete" in bp,
+          "build on a Kanban: the table prompt, with the Kanban's link, its Status column and statuses")
+    check("canvas_update_from_svg" not in bp.split("Insert exactly")[1] and "NEVER pass a rowId" in bp, "build on a Kanban: inserts only, no card SVG")
+    check(roadmap.load()["rows"][0]["posted_id"] == "row-9", "build on a Kanban: the rowId is the posted id")
+    d = roadmap.load(); d["board"]["kind"] = "frame"; roadmap.save(d)
+    d["rows"].append(roadmap.normalise_row({"id": "k2", "title": "Frame card", "lane": "Comp", "column": "W1"})); d["preview"] = {"at": "x", "plan": [{"id": "k2", "action": "add", "why": ""}]}; roadmap.save(d)
+    try:
+        roadmap.main("build", confirm=True)
+    except SystemExit:
+        pass
+    check("canvas_update_from_svg" in asked[-1] and "table_sync_rows" not in asked[-1].split("Create exactly")[1], "build on a frame: the card prompt as before")
     say("all good")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
