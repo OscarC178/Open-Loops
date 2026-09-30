@@ -469,8 +469,11 @@ state/logs/       one log per run
 2. **Miro (Roadmap card only).** Two routes, like Slack: the *claude.ai Miro connector* (add it at claude.ai →
    Connectors) or the *Miro plugin* (`claude plugin install miro@claude-plugins-official`); then press **Connect Miro**
    on the checklist (fallback: *Open Claude (advanced)* → `/mcp` → **Miro** → Authenticate). The connection check
-   detects whichever is connected and stores it as `miro_source`; the plugin wins if both are. Each Miro login is tied
-   to one Miro team.
+   detects whichever is connected and stores it as `miro_source`. On the plugin route a Miro job names the plugin's
+   server on the command line (`--strict-mcp-config`, see `agent.miro_mcp_args`): Claude Code 2.1.284 otherwise drops
+   the plugin from a session when the claude.ai account also has a Miro connector, which is a separate sign-in made at
+   claude.ai → Settings → Connectors. The named item may be a frame (a lane / column grid) or a table shown as a
+   Kanban; Read board works out which. Each Miro login is tied to one Miro team.
 3. **Second launch only opens the browser.** If Open Loops is already running, double-clicking the icon just opens the
    page. After editing anything in `openloops/`, close the tab (the app stops a few seconds later) or run
    `python -m openloops.app --stop`, then launch again. Developers: run a checkout side by side with the installed
