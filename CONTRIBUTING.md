@@ -25,9 +25,34 @@ Run from the checkout folder.
 | `npm run doctor` | the connection checklist with Slack / Miro route detection |
 | `npm run refresh` | one refresh job in the foreground |
 | `npm run setup` | install or upgrade the installed copy from this checkout |
+| `npm run cli -- <command>` | the developer console for this checkout (see below): `status`, `list`, `act done <id>`, `run refresh`, `logs refresh`, `api GET /api/state` |
 
 Anything after `--` is passed through: `npm run dev -- --no-browser`, `npm run refresh -- --slack-only`.
 No Node? `python -m openloops.app --port 8766`, `python -m openloops.app --stop [--now] --port 8766`, `python tests/run_all.py`.
+
+## The developer console
+
+`python3 -m openloops <command>` (from a checkout: `npm run cli -- <command>`, which aims it at the dev port) is the
+page without the page: everything you would otherwise click or read in the browser, from the terminal, so a change
+can be built, run and checked in one place. It works on the copy it is run from, so the same command in
+`~/Library/Application Support/OpenLoops` is the live install. `python3 -m openloops --help` lists everything;
+the ones you will use most:
+
+| Command | What it does |
+|---|---|
+| `status` | this copy: root and commit, whether its server is up (and whether the port holds another copy), agent / model / effort, loop counts, the jobs' last results |
+| `list [needs-me\|waiting\|snoozed\|done\|all]` | the loops as the page lists them, age in workdays and colour band included; `show <id>` for one loop in full |
+| `act done\|reopen\|snooze\|priority\|note\|add_link … <id>`, `add "<ask>"` | the card's buttons; the same code path as `/api/action` (`openloops/actions.py`) |
+| `run refresh [--slack-only]`, `run chase <id>`, `run daylog`, … | one job in the foreground with its output as it comes, then its exit code, failure record and log path; refused if the server is already running that job |
+| `jobs`, `logs [job]`, `diag`, `doctor` | what the server's jobs are doing, the newest run logs (`logs refresh` tails the last refresh), the Console's *Copy all*, the connection checklist |
+| `config [key]`, `config set <key> <value>` | the settings in force; change one (`config set effort medium`, `config set auto_chase.enabled true`) |
+| `agent [--check]` | which AI runs the jobs, the exact `claude -p …` command line, and with `--check` the sign-in kind; warns if a provider API key sits in your shell, because a job started from that shell would inherit it |
+| `app start\|stop\|open\|url` | this copy's server; `api <METHOD> </api/path> [json]` hits any route on it |
+| `test [name …]` | `npm test`, or only the tests whose file name contains a word (`test cli connect`) |
+
+With the server running, `list`, `act`, `add` and `jobs` go through it, so the page sees the change on its next
+poll; without it, loops are read from `state.json` and actions are applied under the same file lock the jobs use.
+`--json` gives machine-readable output on the commands that list things. `--help` writes nothing, like the app's.
 
 ## Two copies, two ports
 
@@ -73,6 +98,8 @@ you would be reading old code while thinking you were on new.
 | Path | What |
 |---|---|
 | `openloops/app.py` | the local server and every `/api/*` route |
+| `openloops/cli.py`, `openloops/__main__.py` | the developer console, `python3 -m openloops <command>` |
+| `openloops/actions.py` | one click on a loop (done, snooze, priority, note, link, add), shared by `/api/action` and the console |
 | `openloops/index.html` | the whole page: CSS, markup, JS |
 | `openloops/agent.py` | how a job calls Claude / Grok / Codex and which tools it may use |
 | `openloops/refresh.py`, `chase.py`, `daylog.py`, `roadmap.py`, `people.py`, `voice.py` | the jobs; each runs as `python -m openloops.<name>` |

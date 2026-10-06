@@ -118,6 +118,7 @@ checkout folder, in any terminal (needs Node for the `npm` wrapper, nothing is i
 | `npm run doctor` | the connection checklist with Slack / Miro route detection |
 | `npm run refresh` | one refresh job in the foreground (`-- --slack-only` for the quick pass) |
 | `npm run setup` | install or upgrade the installed copy from this checkout (keeps its config and state) |
+| `npm run cli -- <command>` | the developer console: `status`, `list`, `act done <id>`, `run refresh`, `logs refresh`, `api GET /api/state` and more, without the page (see CONTRIBUTING.md) |
 
 Anything after `--` is passed through, e.g. `npm run dev -- --no-browser`. Without Node:
 `python -m openloops.app --port 8766`, `python -m openloops.app --stop [--now] --port 8766`, `python tests/run_all.py`.
