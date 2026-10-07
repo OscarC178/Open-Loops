@@ -47,6 +47,7 @@ Commands:
                            refresh [--slack-only], chase <id>,
                            daylog [--digest-only], people, voice,
                            roadmap <mode> [--confirm], standing
+                           (OPENLOOPS_AGENT=mock: canned answers, no AI)
   jobs                     what the running server's jobs are doing
   logs [job] [-n N] [--all]
                            the newest run logs, or the tail of a job's newest
@@ -74,9 +75,10 @@ JOB_MOD = {"refresh": "refresh", "chase": "chase", "voice": "voice", "people": "
 LOGS = ROOT / "state" / "logs"
 SCAN = 20  # the app moves up to SCAN - 1 ports past a taken one (app.pick_port); --stop scans the same range
 FLAGS = {"--json", "--detect", "--recheck", "--now", "--no-browser", "--force", "--all", "--check", "-h", "--help"}
-VALUED = {"--port", "--until", "--priority", "--notes", "--url", "--label", "--owner", "-n"}
+VALUED = {"--port", "--until", "--priority", "--notes", "--url", "--label", "--owner", "-n", "--width", "--out"}
 PASSTHROUGH = ("run", "api", "test")  # everything after the command's first word belongs to what it runs
 KEY_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY")  # a job started here inherits these (agent.run)
+MOCK_SAID = "mock (no AI is called: canned answers, for development)"  # how status, agent and doctor name it (#76)
 
 
 # ---------------------------------------------------------------- the command line
@@ -299,6 +301,7 @@ def cmd_status(words, opts):
               "snoozed": sum(l.get("status") != "done" and (l.get("snooze_until") or "") > today for l in loops),
               "done": sum(l.get("status") == "done" for l in loops)}
     cfg = load_cfg()
+    from . import agent   # name() honours OPENLOOPS_AGENT=mock (#76); importing it writes nothing
     stamp = ROOT / "INSTALLED.txt"
     build = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else "checkout"
     if build == "checkout" and (ROOT / ".git").exists() and shutil.which("git"):
@@ -308,7 +311,8 @@ def cmd_status(words, opts):
             build = f"checkout, {branch.stdout.strip()} @ {g.stdout.strip()}"
     info = {"root": str(ROOT), "build": build, "isolated": isolated(cfg), "config": CONFIG.exists(),
             "preferred_port": port, "server": None, "other_servers": others,
-            "agent": cfg.get("agent") or "claude", "model": cfg.get("codex_model") if (cfg.get("agent") == "codex") else cfg.get("model"),
+            "agent": agent.name(), "mock": agent.name() == "mock",
+            "model": cfg.get("codex_model") if (cfg.get("agent") == "codex") else cfg.get("model"),
             "effort": cfg.get("codex_effort") if (cfg.get("agent") == "codex") else cfg.get("effort"),
             "slack_source": cfg.get("slack_source") or "", "miro_source": cfg.get("miro_source") or "",
             "send_internal": bool(cfg.get("send_internal")), "send_external": bool(cfg.get("send_external")),
@@ -333,7 +337,7 @@ def cmd_status(words, opts):
     for root, p in (others if not sp else {}).items():
         print(f"          (port {p} is another copy: {root})")
     send = ", ".join(x for x, on in (("internal", info["send_internal"]), ("external", info["send_external"])) if on) or "drafts only"
-    print(f"agent     {info['agent']} · model {info['model'] or '(CLI default)'} · effort {info['effort'] or '(CLI default)'}"
+    print(f"agent     {MOCK_SAID if info['mock'] else info['agent']} · model {info['model'] or '(CLI default)'} · effort {info['effort'] or '(CLI default)'}"
           f" · slack via {info['slack_source'] or '-'} · miro via {info['miro_source'] or '-'} · send: {send}")
     c = counts
     print(f"loops     needs me {c['needs_me']} · waiting {c['waiting']} · snoozed {c['snoozed']} · done {c['done']}"
@@ -562,8 +566,8 @@ def cmd_doctor(words, opts):
         print(f"{mark} {st.get('title')}" + (f"  [{st['detail']}]" if st.get("detail") else ""))
         if not st.get("ok") and st.get("fix"):
             print(f"       {st['fix']}")
-    print(f"agent {out.get('agent')} · slack via {out.get('slack_source') or '-'} · miro via {out.get('miro_source') or '-'}"
-          f" · {'all ok' if out.get('all_ok') else 'not ready'}")
+    print(f"agent {MOCK_SAID if out.get('mock') else out.get('agent')} · slack via {out.get('slack_source') or '-'}"
+          f" · miro via {out.get('miro_source') or '-'} · {'all ok' if out.get('all_ok') else 'not ready'}")
     sys.exit(0 if out.get("all_ok") else 1)
 
 
@@ -649,9 +653,14 @@ def cmd_agent(words, opts):
     info = {"agent": name, "display": agent.display_name(), "command": exe, "found": found, "model": agent.model(),
             "effort": agent.effort(), "slack_source": agent.slack_source(), "miro_source": agent.miro_source(),
             "env_keys_set": [v for v in KEY_VARS if os.environ.get(v)]}
+    if name == "mock":   # #76: said in so many words, so it can never be read as a real sign-in
+        info.update(mock=True, command="(none)", found=None, note=MOCK_SAID + "; chosen by " + (
+            "OPENLOOPS_AGENT=mock in this shell" if os.environ.get("OPENLOOPS_AGENT", "").lower() == "mock" else "config.json agent=mock"))
     if name == "claude":
         info["job_argv"] = agent.claude_args(["slack.search_users", "gmail.search_threads"])
     if opts.get("check"):
+        if name == "mock":
+            info["signed_in_as"] = "nobody: " + MOCK_SAID
         if found:
             try:
                 p = subprocess.run([found, "--version"], capture_output=True, text=True, timeout=30, shell=WIN)
