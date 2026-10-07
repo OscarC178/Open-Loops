@@ -105,6 +105,16 @@ try:
     typed = next(l for l in api("/api/state")[1]["state"]["loops"] if l["id"] == out["id"])
     check(typed["links"] == [], "typed reminders start with an empty links list")
 
+    # ---- a click on nothing is refused and writes nothing (#75 review): a bad id, a bad action, no id
+    before = (tmp / "state.json").read_text(encoding="utf-8")
+    code, err = api("/api/action", {"id": "no-such-loop", "action": "done"})
+    check(code == 404 and "no-such-loop" in err.get("error", ""), "an unknown loop id is 404, not ok")
+    code, err = api("/api/action", {"id": "alice-report", "action": "explode"})
+    check(code == 400 and "explode" in err.get("error", ""), "an unknown action is 400, not ok")
+    code, _ = api("/api/action", {"action": "done"})
+    check(code == 404, "a click with no id is 404")
+    check((tmp / "state.json").read_text(encoding="utf-8") == before, "none of those wrote state.json")
+
     # ---- slack-only refresh: accepted by the app, skipped by the job (no Slack id), cursor untouched
     code, out = api("/api/refresh", {"slack_only": True})
     check(code == 200 and out["started"] is True, "slack-only refresh starts")

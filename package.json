@@ -9,6 +9,7 @@
     "test": "node scripts/loops.mjs test",
     "doctor": "node scripts/loops.mjs doctor",
     "refresh": "node scripts/loops.mjs refresh",
-    "setup": "node scripts/loops.mjs setup"
+    "setup": "node scripts/loops.mjs setup",
+    "cli": "node scripts/loops.mjs cli"
   }
 }

@@ -9,6 +9,8 @@
 //   npm test          every tests/test_*.py, one after the other
 //   npm run doctor    the connection checklist, with route detection
 //   npm run refresh   one refresh job, in the foreground, from this checkout's state.json
+//   npm run cli       the developer console for this checkout (python -m openloops), aimed at the dev port:
+//                     npm run cli -- status | list | act done <id> | run refresh | logs refresh | api GET /api/state
 //   npm run setup     install/refresh %LOCALAPPDATA%\OpenLoops (Windows) or ~/Library/Application Support/OpenLoops (Mac)
 //                     from this checkout (install.sh moves an older ~/Documents/OpenLoops there first)
 import { spawnSync } from "node:child_process";
@@ -101,6 +103,8 @@ const scripts = {
     return run(py, ["-m", "openloops.app", ...extra], { cwd: INSTALLED, env });
   },
   test: () => run(py, ["tests/run_all.py", ...extra]),
+  // the console works on the copy it runs from (this checkout) and looks for its server on the dev port
+  cli: () => run(py, ["-m", "openloops", ...extra], { env: { ...process.env, OPENLOOPS_PORT: DEV_PORT } }),
   doctor: () => run(py, ["-m", "openloops.doctor", "--detect", ...extra]),
   refresh: () => run(py, ["-m", "openloops.refresh", ...extra]),
   setup: () => {
