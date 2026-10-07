@@ -190,4 +190,7 @@ r = subprocess.run([sys.executable, "-m", "openloops", "config", "set", "agent",
 r2 = subprocess.run([sys.executable, "-m", "openloops", "agent", "--json"], cwd=tmp, env=e2, capture_output=True, text=True)
 check(r.returncode == 0 and json.loads(r2.stdout)["mock"] is True and "config.json agent=mock" in json.loads(r2.stdout)["note"],
       "config set agent mock: the mock without the variable, and agent says which chose it")
+r3 = subprocess.run([sys.executable, "-m", "openloops", "agent", "--json"], cwd=tmp, env=dict(e2, OPENLOOPS_AGENT=" Mock "), capture_output=True, text=True)
+check("OPENLOOPS_AGENT=mock in this shell" in json.loads(r3.stdout)["note"],
+      "a padded ' Mock ' in the variable is the variable choosing it, as agent.name() reads it (#77 review)")
 show("ALL OK")

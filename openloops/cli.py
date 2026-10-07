@@ -659,7 +659,7 @@ def cmd_agent(words, opts):
             "env_keys_set": [v for v in KEY_VARS if os.environ.get(v)]}
     if name == "mock":   # #76: said in so many words, so it can never be read as a real sign-in
         info.update(mock=True, command="(none)", found=None, note=MOCK_SAID + "; chosen by " + (
-            "OPENLOOPS_AGENT=mock in this shell" if os.environ.get("OPENLOOPS_AGENT", "").lower() == "mock" else "config.json agent=mock"))
+            "OPENLOOPS_AGENT=mock in this shell" if os.environ.get("OPENLOOPS_AGENT", "").strip().lower() == "mock" else "config.json agent=mock"))
     if name == "claude":
         info["job_argv"] = agent.claude_args(["slack.search_users", "gmail.search_threads"])
     if opts.get("check"):
