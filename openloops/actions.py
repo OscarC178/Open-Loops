@@ -4,7 +4,7 @@
 
 `body` is what the page sends to /api/action ({"action", "id", ...}); `people` is config.json "people" (read before
 the state lock, which covers state.json only). The state is changed in place and saved by the caller only when
-`write` is true, so a refused click (a bad date, an unknown priority) writes nothing. The page (app.py) and the
+`write` is true, so a refused click (a bad date, an unknown priority, an unknown action or loop id) writes nothing. The page (app.py) and the
 developer console (cli.py) both go through here, so a `done` from a terminal is the same `done` as the button's.
 Vault (to-do file) items are not loops and are closed by standing.close_item, not here.
 """
@@ -26,6 +26,8 @@ def apply(s, body, people=None):
     """The click in `body` applied to state `s` -> (answer, http status, write): s is saved only when write is true."""
     act = body.get("action")
     people = people or {}
+    if act not in ACTIONS:
+        return {"error": f"unknown action {act!r}; one of: {', '.join(ACTIONS)}"}, 400, False
     if act == "add":
         owner = (body.get("owner") or "").strip()[:80]
         ask = (body.get("ask") or "").strip()[:300]
@@ -40,6 +42,12 @@ def apply(s, body, people=None):
                 break
         now = datetime.now().astimezone()
         lid = f"note-{_slug(owner or 'me')}-{_slug(ask)}-{now.strftime('%Y%m%d%H%M%S')}"
+        # two alike adds in the same second (a double click on + note, a scripted loop) must not share an id, or a
+        # later done / snooze on it would hit both: -2, -3 ... against what is there, as refresh.py does for the agent's
+        taken = {l.get("id") for l in s["loops"]}
+        base, k = lid, 2
+        while lid in taken:
+            lid, k = f"{base}-{k}", k + 1
         s["loops"].insert(0, {
             "id": lid, "owner": owner, "owner_email": email, "ask": ask,
             "channel": "note", "thread": None, "link": None,
@@ -85,4 +93,5 @@ def apply(s, body, people=None):
                     links.append({"url": url, "label": (body.get("label") or "").strip()[:60]})
             elif act == "drop_link":
                 lp["links"] = [x for x in lp.get("links") or [] if x.get("url") != body.get("url")]
-    return {"ok": True}, 200, True
+            return {"ok": True}, 200, True
+    return {"error": f"no loop with id {body.get('id')!r}"}, 404, False

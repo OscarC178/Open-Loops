@@ -114,6 +114,20 @@ try:
     check("actions.apply(" in src and "def act_on" not in src, "app.py's /api/action goes through actions.apply")
     check(set(actions.ACTIONS) == {"add", "done", "reopen", "snooze", "unsnooze", "priority", "auto_on", "auto_off",
                                    "note", "add_link", "drop_link"}, "actions.ACTIONS lists every click")
+    # two alike adds within a second get distinct ids, so a later done hits one loop, not both (#75 review)
+    s = {"loops": []}
+    a = actions.apply(s, {"action": "add", "ask": "send the deck", "owner": "Alice"})[0]["id"]
+    b = actions.apply(s, {"action": "add", "ask": "send the deck", "owner": "Alice"})[0]["id"]
+    check(a != b and a.startswith("note-alice-send-the-deck-") and b.startswith("note-alice-send-the-deck-"),
+          "add: two alike adds within a second get distinct ids")
+    actions.apply(s, {"action": "done", "id": a})
+    check([l["status"] for l in s["loops"]] == ["needs_me", "done"], "done on one of them closes only that one")
+    # a click on nothing is refused and writes nothing: an unknown id, an unknown action, no id
+    ans, code, write = actions.apply(s, {"action": "done", "id": "no-such-loop"})
+    check(code == 404 and not write and "no-such-loop" in ans["error"], "apply: an unknown loop id is 404, write=False")
+    ans, code, write = actions.apply(s, {"action": "explode", "id": a})
+    check(code == 400 and not write and "explode" in ans["error"], "apply: an unknown action is 400, write=False")
+    check(actions.apply(s, {"action": "done"})[1:] == (404, False), "apply: a click with no id is 404, write=False")
 
     # ------------------------------------------------------------ 3. offline: no server on this port
     port = free_port()
@@ -230,6 +244,8 @@ try:
     check(rc == 0 and next(l for l in got["state"]["loops"] if l["id"] == "alice-report")["status"] == "done", "api GET /api/state: the server has the change")
     rc, out, _ = cli("api", "POST", "/api/action", '{"action": "reopen", "id": "alice-report"}', port=port)
     check(rc == 0 and json.loads(out) == {"ok": True} and loop("alice-report")["status"] == "waiting", "api POST /api/action: a body, applied")
+    rc, out, _ = cli("api", "POST", "/api/action", '{"action": "done", "id": "typo"}', port=port)
+    check(rc == 1 and "typo" in out, "api POST /api/action: a click on an unknown id is refused by the server, exit 1")
     rc, out, err = cli("api", "POST", "/api/action", "{not json", port=port)
     check(rc == 1 and "not JSON" in err, "api: a bad body is refused before any request")
     rc, out, _ = cli("api", "GET", "/api/nothing", port=port)
