@@ -48,11 +48,27 @@ the ones you will use most:
 | `config [key]`, `config set <key> <value>` | the settings in force; change one (`config set effort medium`, `config set auto_chase.enabled true`) |
 | `agent [--check]` | which AI runs the jobs, the exact `claude -p …` command line, and with `--check` the sign-in kind; warns if a provider API key sits in your shell, because a job started from that shell would inherit it |
 | `app start\|stop\|open\|url` | this copy's server; `api <METHOD> </api/path> [json]` hits any route on it |
+| `screenshot [--width N] [--out F]` | the running page captured headless (Chrome + Node) to a PNG, `state/logs/page-<stamp>.png` by default; prints the path. Refused in one line without Chrome |
 | `test [name …]` | `npm test`, or only the tests whose file name contains a word (`test cli connect`) |
 
 With the server running, `list`, `act`, `add` and `jobs` go through it, so the page sees the change on its next
 poll; without it, loops are read from `state.json` and actions are applied under the same file lock the jobs use.
 `--json` gives machine-readable output on the commands that list things. `--help` writes nothing, like the app's.
+
+An agent working in a checkout finds all this by itself: `.claude/skills/openloops-console/SKILL.md` (the commands,
+the `--json` shapes, when to prefer which) and the pointer in `CLAUDE.md`.
+
+### The mock agent: a job end to end with no sign-in
+
+`OPENLOOPS_AGENT=mock npm run cli -- run refresh` (or `config set agent mock` for a whole copy) runs the jobs
+against `openloops/mock_agent.py` instead of an AI: each gets, in seconds, canned text of the shape its prompt asks
+for, so a change to a job's prompt, parsing or state write-back can be checked without Slack, Gmail or a sign-in.
+A refresh writes two plausible loops to `state.json` (the page and `list` show them), a chase counts a draft,
+people / daylog / voice / roadmap / standing write their files. `doctor`, `agent` and `status` say "mock" in so
+many words, the template default stays `claude`, and Settings offer no such choice, so it never ships as a default.
+Directives, in `OPENLOOPS_MOCK` or anywhere in the prompt (as Slipway's fleet mock takes them): `MOCK:SLEEP=<s>`,
+`MOCK:FAIL` (the plain "didn't finish"), `MOCK:FAIL=expired|limit|network` (that AI failure, with its sentence).
+What the AI actually does with Slack or Gmail still needs the real agent.
 
 ## Two copies, two ports
 
@@ -102,6 +118,9 @@ you would be reading old code while thinking you were on new.
 | `openloops/actions.py` | one click on a loop (done, snooze, priority, note, link, add), shared by `/api/action` and the console |
 | `openloops/index.html` | the whole page: CSS, markup, JS |
 | `openloops/agent.py` | how a job calls Claude / Grok / Codex and which tools it may use |
+| `openloops/mock_agent.py` | the mock agent: canned answers for every job, no AI (`OPENLOOPS_AGENT=mock`) |
+| `openloops/screenshot.py`, `headless_chrome.js` | the console's `screenshot`: finds Chrome, drives it headless over the DevTools protocol (the tests' layout checks use the same script) |
+| `.claude/skills/openloops-console/`, `CLAUDE.md` | what an AI agent working in the checkout reads: the console, the mock, the tests |
 | `openloops/refresh.py`, `chase.py`, `daylog.py`, `roadmap.py`, `people.py`, `voice.py` | the jobs; each runs as `python -m openloops.<name>` |
 | `openloops/store.py` | JSON helpers; `update_state()` so a long job never overwrites clicks made meanwhile |
 | `openloops/doctor.py` | the connection checklist |
