@@ -12,7 +12,8 @@ of another copy: a server that answers on the port but reports a different root 
 
 Nothing here keeps a key or a token. Jobs started with `run` use agent.py exactly as the page does, with the AI CLI
 the user is signed in to; `agent` warns when a provider key sits in this shell's environment, because a job started
-from this terminal would inherit it.
+from this terminal would inherit it. OPENLOOPS_AGENT=mock (or `config set agent mock`) runs them against the mock
+agent instead, canned answers in seconds and no sign-in (mock_agent.py, #76); `screenshot` captures the page itself.
 
 `--help` imports nothing but this module's stdlib needs and writes nothing (as `python3 -m openloops.app --help`,
 #64): the modules that create config.json / state.json are imported only by the commands that need them.
@@ -59,6 +60,9 @@ Commands:
   agent [--check]          which AI runs the jobs, its command line, sign-in
   app [start|stop|open|url] [--no-browser] [--now]
                            this copy's server: start it, stop it, open its page
+  screenshot [--width N] [--out F]
+                           the page, captured headless (Chrome + Node), as a
+                           PNG in state/logs/; prints the file's path
   api <METHOD> </api/path> [json body]
                            any route on the running server
   test [name ...]          every test, or the tests whose file name contains
@@ -728,6 +732,27 @@ def cmd_app(words, opts):
     bad(f"app takes start, stop, open, url or nothing (not {verb})")
 
 
+def cmd_screenshot(words, opts):
+    """The page as this copy's running server serves it, captured headless -> a PNG, its path printed (#76). Chrome
+    and Node are checked before the server, each a one-line refusal; the server missing is need_server's."""
+    from . import screenshot
+    if words:
+        bad("screenshot takes no words, only --width N and --out F")
+    if opts.get("width") is not None and not (re.fullmatch(r"[0-9]{3,4}", opts["width"]) and 320 <= int(opts["width"]) <= 4000):
+        bad("--width needs a number of pixels from 320 to 4000, for example: --width 800")
+    why = screenshot.missing()
+    if why:
+        bad(f"screenshot: {why}")
+    sp, _ = need_server(preferred_port(opts))
+    out = Path(opts["out"]).expanduser() if opts.get("out") else screenshot.default_out()
+    if out.is_dir():
+        out = out / screenshot.default_out().name
+    ok, said = screenshot.capture(f"http://localhost:{sp}", out, int(opts.get("width") or 1280))
+    if not ok:
+        bad(f"screenshot: {said}")
+    print(said)
+
+
 def cmd_api(words, opts):
     if len(words) < 2:
         bad('api needs a method and a path: api GET /api/state, api POST /api/action {"action":"done","id":"x"}')
@@ -776,7 +801,7 @@ def cmd_test(words, opts):
 
 COMMANDS = {"status": cmd_status, "list": cmd_list, "show": cmd_show, "act": cmd_act, "add": cmd_add, "run": cmd_run,
             "jobs": cmd_jobs, "logs": cmd_logs, "doctor": cmd_doctor, "diag": cmd_diag, "config": cmd_config,
-            "agent": cmd_agent, "app": cmd_app, "api": cmd_api, "test": cmd_test}
+            "agent": cmd_agent, "app": cmd_app, "screenshot": cmd_screenshot, "api": cmd_api, "test": cmd_test}
 
 
 def main(argv=None):

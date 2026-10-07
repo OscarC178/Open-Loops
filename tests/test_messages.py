@@ -506,21 +506,16 @@ check("st==='ready'||scanned()||(setupDone()&&(st==='connect'||st==='checkfail')
 # #52 review: toasts never lie over a checklist row, at 400 px and at 1280 px, even with more arriving than the cap.
 # Layout needs a real browser: headless Chrome renders the served page from a file (the app is not needed: the check
 # paints the checklist itself), then measures every .row against every toast.
-def find_chrome():
-    if hasattr(os, "getuid"):  # the real home, not this test's temp HOME; pwd is not a Windows module (#27 review)
+def real_home():
+    """The real home, not this test's temp HOME: Chrome for Testing lives under it (#27 review: pwd is not a Windows module)."""
+    if hasattr(os, "getuid"):
         import pwd  # noqa: E402
-        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    else:  # Windows: Path.home() is this test's temp USERPROFILE by now; the real one was noted before isolation
-        home = Path(REAL_PROFILE) if REAL_PROFILE else Path.home()
-    names = [os.environ.get("CHROME_BIN") or ""] + [shutil.which(n) or "" for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")]
-    names += ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"]
-    for pf in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")):
-        if pf:  # Windows: Chrome's usual folders (per-machine and per-user)
-            names.append(str(Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe"))
-    browsers = home / ".agent-browser" / "browsers"  # Chrome for Testing, as agent-browser installs it
-    names += [str(x) for x in sorted(browsers.glob("**/Google Chrome for Testing")) + sorted(browsers.glob("**/chrome.exe"))]
-    return next((n for n in names if n and Path(n).is_file() and os.access(n, os.X_OK)), "")
-chrome = find_chrome()
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    return Path(REAL_PROFILE) if REAL_PROFILE else Path.home()   # Windows: the real profile was noted before isolation
+
+
+from openloops.screenshot import find_chrome  # noqa: E402  (the console's own Chrome lookup, #76)
+chrome = find_chrome(real_home())
 if not chrome:
     show("SKIP the toast layout check: no Chrome or Chromium found (set CHROME_BIN)")
 else:
@@ -564,7 +559,7 @@ window.addEventListener('load',()=>setTimeout(async()=>{let r={};try{stopped=tru
             # Chrome on Windows never opens its DevTools port with USERPROFILE pointed away from the user's profile; the
             # page is a file and the app takes no part here, so the browser gets the real one back
             env_ = dict(os.environ, USERPROFILE=REAL_PROFILE) if REAL_PROFILE else None
-            rc_ = subprocess.run([node_, str(REPO / "tests" / "_chrome_layout.js"), chrome, (work / "page.html").as_uri(), str(w_), wait_],
+            rc_ = subprocess.run([node_, str(REPO / "openloops" / "headless_chrome.js"), chrome, (work / "page.html").as_uri(), str(w_), wait_],
                                  capture_output=True, text=True, timeout=120, env=env_)
         finally:
             shutil.rmtree(work, ignore_errors=True)
