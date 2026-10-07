@@ -316,7 +316,7 @@ def cmd_status(words, opts):
             "cursor": s.get("cursor"), "setup_done": bool(s.get("setup_done")), "jobs": {}}
     if sp:
         code, got = api(sp, "GET", "/api/state")
-        jobs = ((got or {}).get("jobs") or {}) if code == 200 else {}
+        jobs = (got.get("jobs") or {}) if code == 200 and isinstance(got, dict) else {}
         info["server"] = {"port": sp, "up_since": d.get("up_since"), "pages": d.get("pages"), "python": d.get("python"),
                           "instance": d.get("instance") or "", "model": d.get("model"), "url": f"http://localhost:{sp}"}
         info["jobs"] = {k: {kk: v.get(kk) for kk in ("running", "rc", "finished_at", "failure", "said") if kk in v}
@@ -458,7 +458,7 @@ def cmd_run(words, opts):
     sp, _ = find_server(port)
     if sp and not opts.get("force"):
         code, got = api(sp, "GET", "/api/state")
-        if code == 200 and ((got.get("jobs") or {}).get(job) or {}).get("running"):
+        if code == 200 and isinstance(got, dict) and ((got.get("jobs") or {}).get(job) or {}).get("running"):
             bad(f"the server on {sp} is running {job} now; two at once race on state.json (--force runs it anyway)")
     run_id = uuid.uuid4().hex
     env = dict(os.environ, OPENLOOPS_RUN_ID=run_id, OPENLOOPS_AI=agent.name(), PYTHONUNBUFFERED="1")
@@ -492,7 +492,9 @@ def cmd_run(words, opts):
 def cmd_jobs(words, opts):
     sp, _ = need_server(preferred_port(opts))
     code, got = api(sp, "GET", "/api/state")
-    jobs = (got or {}).get("jobs") or {}
+    if code != 200 or not isinstance(got, dict):
+        bad(f"/api/state on {sp} answered {code}: {str(got)[:200]}")
+    jobs = got.get("jobs") or {}
     if opts.get("json"):
         return out_json(jobs)
     for name, j in jobs.items():
@@ -572,6 +574,8 @@ def cmd_diag(words, opts):
                 "root": str(ROOT), "preferred_port": port, "agent": cfg.get("agent") or "claude", "others": others}
         return out_json(info) if opts.get("json") else print("\n".join(f"{k:16} {v}" for k, v in info.items()))
     code, d = api(sp, "GET", "/api/diag")
+    if code != 200 or not isinstance(d, dict):
+        bad(f"/api/diag on {sp} answered {code}: {str(d)[:200]}")
     if opts.get("json"):
         return out_json(d)
     for k in ("root", "build", "python", "platform", "port", "up_since", "agent", "model", "isolated", "pages"):
