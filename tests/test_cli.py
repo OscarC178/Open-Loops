@@ -6,7 +6,8 @@ Checks, in a throwaway install seeded with four loops:
   1. --help: exit 0, every command in cli.COMMANDS has a row, every line under 80 columns, nothing written (run in a
      bare copy holding only openloops/). An unknown command or option: exit 1, one line plus the usage line on stderr.
   2. drift guards, in-process: cli.JOB_MOD is app.JOB_MOD; every --option named in the help text is one the parser
-     knows; actions.ACTIONS lists what app.py's /api/action used to switch on.
+     knows; actions.ACTIONS lists what app.py's /api/action used to switch on; the console skill file
+     (.claude/skills/openloops-console, #76) has a row for every command and CLAUDE.md points at it.
   3. offline (no server on the port): status, list (each view, the page's order), show, act (done / reopen / snooze
      with a good and a bad date / priority / add_link refused / unknown id), add, config get and set (nested keys,
      JSON values, a note for an unknown key), logs on an empty folder, agent, run (daylog --digest-only writes the
@@ -110,6 +111,15 @@ try:
     check(named - job_opts <= known, f"every option the help names is one the parser knows ({sorted(named - job_opts - known)})")
     for cmd in console.COMMANDS:
         check(any(re.match(rf"  {re.escape(cmd)}( |$)", ln) for ln in console.HELP.splitlines()), f"help has a row for {cmd}")
+    # #76: an agent in a checkout discovers the console from the skill file and the project CLAUDE.md, unprompted
+    skill = (REPO / ".claude" / "skills" / "openloops-console" / "SKILL.md").read_text(encoding="utf-8")
+    check(skill.startswith("---\nname: openloops-console\ndescription: ") and "python3 -m openloops" in skill,
+          "the console skill file has its frontmatter and names the command")
+    missing = [cmd for cmd in console.COMMANDS if not re.search(rf"\| `{re.escape(cmd)}( |`)", skill)]
+    check(not missing and "--json" in skill and "OPENLOOPS_PORT" in skill and "8766" in skill and "OPENLOOPS_AGENT=mock" in skill,
+          f"the skill's table has a row for every command, the --json shapes, the two-ports rule and the mock ({missing})")
+    claude_md = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    check(".claude/skills/openloops-console/SKILL.md" in claude_md and "python3 -m openloops" in claude_md, "CLAUDE.md points at the skill")
     src = (REPO / "openloops" / "app.py").read_text(encoding="utf-8")
     check("actions.apply(" in src and "def act_on" not in src, "app.py's /api/action goes through actions.apply")
     check(set(actions.ACTIONS) == {"add", "done", "reopen", "snooze", "unsnooze", "priority", "auto_on", "auto_off",

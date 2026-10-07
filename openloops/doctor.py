@@ -1,6 +1,7 @@
 """Connection check. Prints JSON describing what's set up and what the user still needs to do,
 in plain language. Used by the app's first-run panel (auto-refreshes until all green).
-Which AI it checks comes from config.json "agent" (claude by default - see agent.py).
+Which AI it checks comes from config.json "agent" (claude by default - see agent.py). The mock agent (#76) gets
+rows that are all ticked and all say "mock", so the page gets past setup without any of it being a real sign-in.
 
     python doctor.py            -> JSON
     python doctor.py --detect   -> also asks the agent for the user's Slack id and saves it to config.json
@@ -173,6 +174,21 @@ def claude_steps(steps):
     steps.append(row("miro", miro, "Miro connected (optional, for the Roadmap card)", m_st, "miro",
                      (say("miro_missing"), None), say("miro_signin"), "Miro"))
     return email, slack, gmail, slack_source, miro, miro_source, names
+
+
+MOCK_TITLE = "Mock agent in use: no AI is called, every job gets canned text (development only)"
+
+
+def mock_steps(steps):
+    """The mock agent (#76): no CLI, no sign-in, nothing connected. Every row is ticked, so the page gets past setup
+    and the jobs run, and every title says "mock", so no tick here can be read as a real sign-in or a real source."""
+    how = "config.json agent=mock, or OPENLOOPS_AGENT=mock in the environment"
+    steps.append({"id": "claude", "ok": True, "title": MOCK_TITLE, "fix": "", "detail": how})
+    steps.append({"id": "login", "ok": True, "title": "No sign-in: the mock agent answers every job itself", "fix": ""})
+    for id_, svc in (("slack", "Slack"), ("gmail", "Gmail"), ("miro", "Miro")):
+        steps.append({"id": id_, "ok": True, "optional": True, "fix": "",
+                      "title": f"{svc}: pretend-connected by the mock agent (nothing is read or written)"})
+    return "", True, True, "", True, "", {}
 
 
 def grok_steps(steps):
@@ -622,9 +638,10 @@ def blocker(steps):
 
 def main(detect=False, recheck=False):
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig")) if CONFIG.exists() else {}
-    out = {"steps": [], "agent": agent.name()}
+    out = {"steps": [], "agent": agent.name(), "mock": agent.name() == "mock"}   # "mock": plainly not a real sign-in (#76)
     email, slack, gmail, slack_source, miro, miro_source, names = (grok_steps if agent.name() == "grok" else
-        (lambda s: codex_steps(s, recheck)) if agent.name() == "codex" else claude_steps)(out["steps"])
+        (lambda s: codex_steps(s, recheck)) if agent.name() == "codex" else
+        mock_steps if agent.name() == "mock" else claude_steps)(out["steps"])
     out["miro"] = miro
     # Remember which Slack / Miro route Claude has, so the job scripts allow the right tool prefix.
     # ...and the exact server names, so a Connect button signs in to the server that is really there

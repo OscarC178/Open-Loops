@@ -1,4 +1,5 @@
-"""Which AI runs the headless jobs. config.json "agent": "claude" (default), "grok" or "codex".
+"""Which AI runs the headless jobs. config.json "agent": "claude" (default), "grok" or "codex"; "mock" (or
+OPENLOOPS_AGENT=mock) is no AI at all, for development: canned answers in seconds, see mock_agent.py (#76).
 
 The job scripts (refresh/chase/voice/people) name tools logically - "slack.read_channel",
 "gmail.search_threads" - and call run(prompt, tools). This module maps those names to the
@@ -68,6 +69,11 @@ def _cfg():
 
 
 def name():
+    """"claude" (default), "grok", "codex", or "mock". OPENLOOPS_AGENT=mock in the environment beats config.json, and
+    only that value does (#76): the mock answers every job with canned text (mock_agent.py), and a stray variable
+    must never pick a real AI."""
+    if (os.environ.get("OPENLOOPS_AGENT") or "").strip().lower() == "mock":
+        return "mock"
     return (_cfg().get("agent") or "claude").strip().lower()
 
 
@@ -89,13 +95,15 @@ _exists = os.path.exists  # a seam for the tests: where cli() looks
 def display_name(agent=None):
     """"Claude" / "Grok" for the selected agent, or for the one named."""
     n = (agent or name()).strip().lower()
-    return {"claude": "Claude", "grok": "Grok", "codex": "Codex"}.get(n, n.capitalize())
+    return {"claude": "Claude", "grok": "Grok", "codex": "Codex", "mock": "Mock (no AI)"}.get(n, n.capitalize())
 
 
 def cli(agent_name=None):
     """Path or command for the agent's CLI (also used to open its sign-in terminal); agent_name: that AI, not the
     configured one (a setup step already under way, #27)."""
     who = agent_name or name()
+    if who == "mock":
+        return "mock"   # no CLI at all: mock_agent.run answers in-process (#76)
     if who == "grok":
         # grok installs to ~/.grok/bin, which Finder/launchd PATHs usually lack
         return shutil.which("grok") or str(Path.home() / ".grok" / "bin" / "grok")
@@ -1190,6 +1198,9 @@ def run(prompt, tools, timeout=None, effort_=None):
     timeout (seconds) is honoured by Codex only; unset, Codex jobs use config.json "codex_timeout_s" (900).
     effort_: this job's effort whatever Settings say ("low" for the small jobs: doctor's Slack lookup, people, #50);
     None uses config.json "effort" / "codex_effort". Grok always runs at low."""
+    if name() == "mock":   # canned text, no AI (#76): config "agent": "mock" or OPENLOOPS_AGENT=mock
+        from . import mock_agent
+        return mock_agent.run(prompt, tools, effort_)
     if name() == "codex":
         return codex_run(prompt, tools, timeout=timeout, effort_=effort_)
     if name() == "grok":

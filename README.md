@@ -139,6 +139,7 @@ The full developer guide (two copies / two ports, making a change, where things 
 | `openloops/standing.py` | the optional to-do file: reads open lines, writes back how you closed them |
 | `openloops/index.html` | the whole page: CSS, markup, JS |
 | `openloops/doctor.py` | the "are you connected?" check (`python -m openloops.doctor`) |
+| `openloops/cli.py` · `mock_agent.py` · `screenshot.py` | the developer console (`python -m openloops <command>`), the no-AI mock agent for it, and its page capture (see CONTRIBUTING.md) |
 | `config.json` · `state.json` | your settings and your list (private, gitignored) · `state/logs/` one log per run |
 | `scripts/` | weekday scheduled refresh (Task Scheduler / launchd) |
 
