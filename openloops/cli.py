@@ -511,6 +511,8 @@ def cmd_jobs(words, opts):
 
 
 def cmd_logs(words, opts):
+    if opts.get("n") is not None and not re.fullmatch(r"[0-9]{1,6}", opts["n"]):
+        bad("-n needs a whole number of lines, for example: logs refresh -n 40")
     n = int(opts.get("n") or 0)
     if not words:
         files = sorted((p for p in LOGS.iterdir() if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True) if LOGS.exists() else []

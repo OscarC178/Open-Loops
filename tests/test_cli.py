@@ -205,6 +205,8 @@ try:
     check(rc == 0 and "empty" in out, "logs: an empty logs folder says so")
     rc, _, err = cli("logs", "refresh", port=port)
     check(rc == 1 and "no log for refresh" in err, "logs refresh: none yet")
+    rc, _, err = cli("logs", "-n", "ten", port=port)
+    check(rc == 1 and "-n needs a whole number" in err and "Traceback" not in err, "logs -n ten: refused in one line, not a traceback")
     ag = cli_json("agent", port=port)
     check(ag["agent"] == "claude" and ag["job_argv"][:4] == ["claude", "-p", "--output-format", "json"] and "--allowedTools" in ag["job_argv"],
           "agent: the job's command line, as agent.claude_args builds it")
